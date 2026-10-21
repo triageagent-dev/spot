@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/cover.out
+*.test
+.DS_Store
+/charts/tria-spot/charts/
