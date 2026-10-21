@@ -1,0 +1,149 @@
+// Package config holds the supervisor's flags. Credentials are never flag
+// values: --core-token-file and --anthropic-key-file are paths.
+package config
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+)
+
+// Config is the supervisor's complete configuration.
+type Config struct {
+	Tenant           string
+	Name             string
+	CoreMCPURL       string
+	CoreTokenFile    string
+	AnthropicKeyFile string
+	StateDir         string
+	RunDir           string
+	ClaudeBin        string
+	Model            string
+	MinWake          time.Duration
+	MaxWake          time.Duration
+	MaxTurns         int
+	TurnTimeout      time.Duration
+	DailyTokenCeil   int64
+	PollInterval     time.Duration
+	EdgeCooldown     time.Duration
+	LogLevel         string
+
+	// PermissionMode is what the CLI is started in. FallbackPermMode is used
+	// instead when the CLI reports it did not start in PermissionMode.
+	PermissionMode   string
+	FallbackPermMode string
+	ExtraAllowed     string // comma-separated extra --allowedTools rules
+	HeartbeatID      string
+	KubectlWritesHr  int
+	HookBin          string // path of this binary, for the PreToolUse hook; default os.Executable
+}
+
+// Defaults.
+const (
+	DefaultStateDir = "/state"
+	DefaultRunDir   = "/run/tria-spot"
+)
+
+// Parse reads args (without the program name). Output of flag errors goes to
+// out.
+func Parse(args []string, out io.Writer) (Config, error) {
+	var c Config
+	fs := flag.NewFlagSet("tria-spot", flag.ContinueOnError)
+	fs.SetOutput(out)
+	fs.StringVar(&c.Tenant, "tenant", "", "tenant this spot works for (required)")
+	fs.StringVar(&c.Name, "name", "", "spot name; default <tenant>-spot")
+	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
+	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
+	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required)")
+	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "persistent directory: notes, session, schedule, usage")
+	fs.StringVar(&c.RunDir, "run-dir", DefaultRunDir, "memory-backed directory for rendered config")
+	fs.StringVar(&c.ClaudeBin, "claude-bin", "claude", "Claude Code CLI binary")
+	fs.StringVar(&c.Model, "model", "", "model alias or name passed to the CLI (empty = CLI default)")
+	fs.DurationVar(&c.MinWake, "min-wake", 2*time.Minute, "floor for the agent's own wake-up schedule")
+	fs.DurationVar(&c.MaxWake, "max-wake", 2*time.Hour, "ceiling for the agent's own wake-up schedule")
+	fs.IntVar(&c.MaxTurns, "max-turns", 40, "agentic turn cap per wake (CLI --max-turns)")
+	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
+	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
+	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns")
+	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
+	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
+	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")
+	fs.StringVar(&c.FallbackPermMode, "fallback-permission-mode", "dontAsk", "mode used when the CLI does not start in --permission-mode")
+	fs.StringVar(&c.ExtraAllowed, "allowed-tools", "", "extra comma-separated --allowedTools rules")
+	fs.StringVar(&c.HeartbeatID, "heartbeat-id", "", "memory cell id of the heartbeat; default system2-heartbeat-<tenant>")
+	fs.IntVar(&c.KubectlWritesHr, "kubectl-writes-per-hour", 20, "hook cap on mutating kubectl commands per hour")
+	fs.StringVar(&c.HookBin, "hook-bin", "", "path of the binary the PreToolUse hook runs; default this executable")
+	if err := fs.Parse(args); err != nil {
+		return c, err
+	}
+	if fs.NArg() > 0 {
+		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
+	c.applyDefaults()
+	return c, c.Validate()
+}
+
+func (c *Config) applyDefaults() {
+	if c.Name == "" && c.Tenant != "" {
+		c.Name = c.Tenant + "-spot"
+	}
+	if c.HeartbeatID == "" && c.Tenant != "" {
+		c.HeartbeatID = "system2-heartbeat-" + c.Tenant
+	}
+}
+
+// Validate checks the values that have no safe default.
+func (c *Config) Validate() error {
+	var errs []error
+	req := func(v, flagName string) {
+		if strings.TrimSpace(v) == "" {
+			errs = append(errs, fmt.Errorf("--%s is required", flagName))
+		}
+	}
+	req(c.Tenant, "tenant")
+	req(c.CoreMCPURL, "core-mcp-url")
+	req(c.CoreTokenFile, "core-token-file")
+	req(c.AnthropicKeyFile, "anthropic-key-file")
+	req(c.StateDir, "state-dir")
+	req(c.RunDir, "run-dir")
+	if c.MinWake <= 0 {
+		errs = append(errs, errors.New("--min-wake must be positive"))
+	}
+	if c.MaxWake < c.MinWake {
+		errs = append(errs, errors.New("--max-wake must be at least --min-wake"))
+	}
+	if c.MaxTurns < 1 {
+		errs = append(errs, errors.New("--max-turns must be at least 1"))
+	}
+	if c.TurnTimeout <= 0 {
+		errs = append(errs, errors.New("--turn-timeout must be positive"))
+	}
+	if c.PollInterval <= 0 {
+		errs = append(errs, errors.New("--poll-interval must be positive"))
+	}
+	if c.DailyTokenCeil < 0 {
+		errs = append(errs, errors.New("--daily-token-ceiling must not be negative"))
+	}
+	switch c.PermissionMode {
+	case "auto", "dontAsk", "acceptEdits":
+	default:
+		errs = append(errs, fmt.Errorf("--permission-mode %q is not one of auto, dontAsk, acceptEdits", c.PermissionMode))
+	}
+	switch c.FallbackPermMode {
+	case "dontAsk", "acceptEdits":
+	default:
+		errs = append(errs, fmt.Errorf("--fallback-permission-mode %q is not one of dontAsk, acceptEdits", c.FallbackPermMode))
+	}
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+	default:
+		errs = append(errs, fmt.Errorf("--log-level %q is not one of debug, info, warn, error", c.LogLevel))
+	}
+	if strings.ContainsAny(c.Tenant, " /\\\n\t") {
+		errs = append(errs, errors.New("--tenant must not contain spaces or slashes"))
+	}
+	return errors.Join(errs...)
+}
