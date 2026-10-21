@@ -1,0 +1,65 @@
+{{- if and .Values.spot.enabled .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tria-spot.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tria-spot.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tria-spot.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  # Nothing connects to the spot.
+  ingress: []
+  egress:
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespaceLabel }}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # The Anthropic API.
+    - to:
+        {{- range $np.anthropic.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $np.anthropic.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    # The core's MCP endpoint.
+    - to:
+        {{- if or $np.core.namespaceSelector $np.core.podSelector }}
+        - namespaceSelector:
+            {{- toYaml $np.core.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $np.core.podSelector | nindent 12 }}
+        {{- end }}
+        {{- range $np.core.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- if not (or $np.core.namespaceSelector $np.core.podSelector $np.core.cidrs) }}
+        {{- fail "networkPolicy.core needs a namespaceSelector/podSelector or cidrs so egress to the core is explicit" }}
+        {{- end }}
+      ports:
+        {{- range $np.core.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    # The cluster API server (kubectl and the ServiceAccount token).
+    - to:
+        {{- range (required "networkPolicy.apiServer.cidrs is required when the NetworkPolicy is on" $np.apiServer.cidrs) }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $np.apiServer.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+{{- end }}

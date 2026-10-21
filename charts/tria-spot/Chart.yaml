@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tria-spot
+description: The Tria spot for one tenant, a Claude Code agent that watches, acts and talks as a teammate (ADR-095). Off by default.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

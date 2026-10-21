@@ -1,0 +1,24 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+spot:
+  enabled: true
+  tenant: example
+core:
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+anthropic:
+  keySecret:
+    name: example-spot-anthropic-key
+networkPolicy:
+  core:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: example-core
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: core
+  apiServer:
+    cidrs: [10.0.0.1/32]
+actNamespaces:
+  - example-apps
+  - example-more

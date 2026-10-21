@@ -1,0 +1,106 @@
+# The Tria spot (ADR-095). Everything below renders nothing until
+# spot.enabled is true.
+
+spot:
+  # Off in the chart. Setting it to true starts a model-driven agent that
+  # sends what it reads from the cluster to the Anthropic API; a tenant accepts
+  # that before this is on for it.
+  enabled: false
+  # The tenant this spot works for (required when enabled). The spot is named
+  # "<tenant>-spot" unless name is set.
+  tenant: ""
+  name: ""
+
+image:
+  repository: ghcr.io/triageagent-dev/tria-spot
+  tag: ""            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The core's MCP endpoint and the Secret holding this spot's bearer token (a
+# machine identity with r and w on one tenant and no x, i, v: ADR-051).
+core:
+  mcpUrl: ""         # e.g. https://<core-service>.<namespace>.svc/mcp (required)
+  tokenSecret:
+    name: ""         # Secret name only; mounted as a file, never an env var
+    key: token
+
+# The Secret holding the Anthropic API key. Mounted as a file; Claude Code
+# reads it through apiKeyHelper.
+anthropic:
+  keySecret:
+    name: ""
+    key: key
+
+# Supervisor settings (see the README for each flag).
+agent:
+  model: ""                   # model alias or name; empty = the CLI default
+  permissionMode: auto        # auto | dontAsk | acceptEdits
+  fallbackPermissionMode: dontAsk
+  minWake: 2m
+  maxWake: 2h
+  pollInterval: 30s
+  edgeCooldown: 1m
+  maxTurns: 40
+  turnTimeout: 20m
+  dailyTokenCeiling: 2000000  # tokens per UTC day; 0 = no ceiling
+  kubectlWritesPerHour: 20    # PreToolUse hook cap; best effort, RBAC is the boundary
+  logLevel: info
+  extraAllowedTools: []       # extra --allowedTools rules
+  heartbeatId: ""             # default system2-heartbeat-<tenant>
+
+# /state: notes, the CLI's session files, the schedule, the token ledger.
+persistence:
+  size: 2Gi
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+  existingClaim: ""
+
+resources:
+  requests: {cpu: 100m, memory: 512Mi}
+  limits: {memory: 1536Mi}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# READ stage: get/list/watch on workloads, events, nodes, services and
+# namespaces, plus pod logs. No Secrets, no ConfigMaps. Bound cluster-wide.
+rbac:
+  read:
+    enabled: true
+
+# ACT stage: namespaces in which the spot may delete pods and patch
+# Deployments, StatefulSets, DaemonSets and the scale subresource of the first
+# two. Empty = it cannot write anywhere. Deleting a name from this list (or the
+# Role it renders) takes the stage back.
+actNamespaces: []
+
+# Egress limited to DNS, the Anthropic API, the core and the API server.
+# NetworkPolicy has no host names: the CIDRs are the ones Anthropic publishes
+# for its API, and the cluster-specific ones are yours to fill in.
+networkPolicy:
+  enabled: true
+  dns:
+    namespaceLabel: kube-system   # namespace of the cluster DNS (kubernetes.io/metadata.name)
+  anthropic:
+    cidrs:
+      - 160.79.104.0/23
+      - 2607:6bc0::/48
+    ports: [443]
+  core:
+    # Select where the core's MCP endpoint lives: a pod/namespace selector pair
+    # for an in-cluster core, or CIDRs for one outside.
+    namespaceSelector: {}         # e.g. {matchLabels: {kubernetes.io/metadata.name: <core-namespace>}}
+    podSelector: {}               # e.g. {matchLabels: {app.kubernetes.io/name: <core>}}
+    cidrs: []
+    ports: [443]
+  apiServer:
+    cidrs: []                     # required when enabled: the API server's address(es)
+    ports: [443, 6443]

@@ -1,0 +1,42 @@
+{{- if .Values.spot.enabled }}
+{{- $root := . }}
+{{- range .Values.actNamespaces }}
+---
+# ACT stage for one namespace. Deleting this Role (or the namespace from
+# actNamespaces) takes the write grant back; the READ stage is unaffected.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tria-spot.name" $root }}-act
+  namespace: {{ . }}
+  labels:
+    {{- include "tria-spot.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]
+    verbs: [patch]
+  # kubectl scale writes the scale subresource; DaemonSets have none.
+  - apiGroups: [apps]
+    resources: [deployments/scale, statefulsets/scale]
+    verbs: [patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tria-spot.name" $root }}-act
+  namespace: {{ . }}
+  labels:
+    {{- include "tria-spot.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tria-spot.name" $root }}-act
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tria-spot.saName" $root }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+{{- end }}

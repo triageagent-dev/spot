@@ -1,0 +1,128 @@
+{{- if .Values.spot.enabled }}
+{{- $name := include "tria-spot.name" . }}
+{{- $tenant := include "tria-spot.tenant" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tria-spot.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One writer on /state at a time: the old pod stops before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tria-spot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tria-spot.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "tria-spot.saName" . }}
+      # kubectl in the pod authenticates with the projected ServiceAccount token.
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tria-spot
+          image: {{ include "tria-spot.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Flags only. Credentials are file paths; no env var carries one.
+          args:
+            - --tenant={{ $tenant }}
+            - --name={{ $name }}
+            - --core-mcp-url={{ required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl }}
+            - --core-token-file=/secrets/core/{{ .Values.core.tokenSecret.key }}
+            - --anthropic-key-file=/secrets/anthropic/{{ .Values.anthropic.keySecret.key }}
+            - --state-dir=/state
+            - --run-dir=/run/tria-spot
+            - --permission-mode={{ .Values.agent.permissionMode }}
+            - --fallback-permission-mode={{ .Values.agent.fallbackPermissionMode }}
+            - --min-wake={{ .Values.agent.minWake }}
+            - --max-wake={{ .Values.agent.maxWake }}
+            - --poll-interval={{ .Values.agent.pollInterval }}
+            - --edge-cooldown={{ .Values.agent.edgeCooldown }}
+            - --max-turns={{ .Values.agent.maxTurns }}
+            - --turn-timeout={{ .Values.agent.turnTimeout }}
+            - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}
+            - --kubectl-writes-per-hour={{ .Values.agent.kubectlWritesPerHour }}
+            - --log-level={{ .Values.agent.logLevel }}
+            {{- if .Values.agent.model }}
+            - --model={{ .Values.agent.model }}
+            {{- end }}
+            {{- if .Values.agent.heartbeatId }}
+            - --heartbeat-id={{ .Values.agent.heartbeatId }}
+            {{- end }}
+            {{- if .Values.agent.extraAllowedTools }}
+            - --allowed-tools={{ join "," .Values.agent.extraAllowedTools }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: run
+              mountPath: /run/tria-spot
+            - name: tmp
+              mountPath: /tmp
+            - name: core-token
+              mountPath: /secrets/core
+              readOnly: true
+            - name: anthropic-key
+              mountPath: /secrets/anthropic
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-state" $name) .Values.persistence.existingClaim }}
+        # Rendered CLI config (it holds the core token): memory-backed, never on disk.
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: core-token
+          secret:
+            secretName: {{ required "core.tokenSecret.name is required when spot.enabled is true" .Values.core.tokenSecret.name }}
+            defaultMode: 0440
+        - name: anthropic-key
+          secret:
+            secretName: {{ required "anthropic.keySecret.name is required when spot.enabled is true" .Values.anthropic.keySecret.name }}
+            defaultMode: 0440
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
