@@ -28,5 +28,10 @@ app.kubernetes.io/instance: {{ include "tria-spot.name" . }}
 {{- end -}}
 
 {{- define "tria-spot.image" -}}
+{{- /* A tag of digits only (a short git sha can be) is read as a number and
+       would render as %!s(float64=...): refuse it instead of an unstartable pod. */ -}}
+{{- if or (kindIs "float64" .Values.image.tag) (kindIs "int64" .Values.image.tag) -}}
+{{- fail "image.tag must be a string: quote it in the values file or use --set-string image.tag=..." -}}
+{{- end -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
