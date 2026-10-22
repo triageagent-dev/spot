@@ -805,3 +805,43 @@ func TestFailureTextHidesTheModelsWordsUnlessAsked(t *testing.T) {
 		t.Fatalf("--log-content must show it: %q", msg)
 	}
 }
+
+func TestDailyCostCeilingPausesLikeTheTokenOne(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.DailyTokenCeil = 0; c.DailyCostCeilUSD = 0.01 })
+	h.set("next", `{"after":"3m"}`)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1) // the fake CLI reports $0.01 for the turn
+	h.clock.Advance(4 * time.Minute)
+	h.waitFor("pause", func() bool { return h.status().State == "paused-ceiling" })
+	if st := h.status(); st.NextWake == nil || st.NextWake.Source != "ceiling" || !strings.Contains(st.NextWake.Why, "cost") {
+		t.Fatalf("next wake: %+v", st.NextWake)
+	}
+	h.core.setIssues(issue("a", "critical", 0))
+	time.Sleep(100 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("woke past the cost ceiling: %d turns", h.turns())
+	}
+}
+
+func TestConversationRotatesPastTheContextLimit(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.MaxContextTokens = 50 })
+	h.set("tokens", "100 120") // the last request's context is 100 tokens: over the limit
+	h.set("next", `{"after":"3m"}`)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	if got := h.status().LastTurn.ContextTokens; got != 100 {
+		t.Fatalf("context tokens on the turn = %d", got)
+	}
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(2)
+	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
+		t.Fatalf("a conversation past the limit must not be resumed:\n%s", argv)
+	}
+	if in := h.file("stdin", 2); strings.Contains(in, "conversation was resumed") {
+		t.Fatalf("the wake prompt must not claim a resumed conversation:\n%s", in)
+	}
+}

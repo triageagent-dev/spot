@@ -76,6 +76,21 @@ spec:
             - --max-turns={{ .Values.agent.maxTurns }}
             - --turn-timeout={{ .Values.agent.turnTimeout }}
             - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}
+            {{- if .Values.agent.dailyCostCeilingUSD }}
+            - --daily-cost-ceiling-usd={{ .Values.agent.dailyCostCeilingUSD }}
+            {{- end }}
+            {{- if .Values.agent.maxContextTokens }}
+            - --max-context-tokens={{ int64 .Values.agent.maxContextTokens }}
+            {{- end }}
+            {{- if .Values.telemetry.enabled }}
+            - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
+            {{- if .Values.telemetry.tokenSecret.name }}
+            - --otel-token-file=/secrets/otel/{{ .Values.telemetry.tokenSecret.key }}
+            {{- end }}
+            {{- if .Values.telemetry.toolDetails }}
+            - --otel-tool-details
+            {{- end }}
+            {{- end }}
             - --kubectl-writes-per-hour={{ .Values.agent.kubectlWritesPerHour }}
             - --log-level={{ .Values.agent.logLevel }}
             {{- if .Values.agent.logContent }}
@@ -107,6 +122,11 @@ spec:
             - name: core-token
               mountPath: /secrets/core
               readOnly: true
+            {{- if and .Values.telemetry.enabled .Values.telemetry.tokenSecret.name }}
+            - name: otel-token
+              mountPath: /secrets/otel
+              readOnly: true
+            {{- end }}
             {{- if eq $auth "key" }}
             - name: anthropic-key
               mountPath: /secrets/anthropic
@@ -128,6 +148,12 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- if and .Values.telemetry.enabled .Values.telemetry.tokenSecret.name }}
+        - name: otel-token
+          secret:
+            secretName: {{ .Values.telemetry.tokenSecret.name }}
+            defaultMode: 0440
+        {{- end }}
         - name: core-token
           secret:
             secretName: {{ required "core.tokenSecret.name is required when spot.enabled is true" .Values.core.tokenSecret.name }}

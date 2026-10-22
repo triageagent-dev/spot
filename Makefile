@@ -82,10 +82,12 @@ chart-lint: ## helm lint and helm template: flag off, key mode, federation mode
 	helm lint $(CHART)
 	helm lint $(CHART) -f $(CHART)/ci/enabled-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/federation-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
-	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml; do \
+	helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml > $(CHART_TMP)/tria-spot-tel.yaml
+	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml; do \
 	  ! grep -qE '^[[:space:]]+env(From)?:' $$f || { echo "the pod must carry no env ($$f)"; exit 1; }; \
 	  ! grep -qE 'resources:.*secrets' $$f || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
 	done

@@ -64,3 +64,19 @@ func TestParseVeryLongLine(t *testing.T) {
 		t.Fatalf("err=%v %+v", err, s)
 	}
 }
+
+func TestLastContextIsTheLastRequestsInputSide(t *testing.T) {
+	s, err := Parse(strings.NewReader(sample), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// msg_2 is the last request: 5 input tokens, no cache.
+	if s.LastContext != 5 {
+		t.Fatalf("LastContext = %d, want 5", s.LastContext)
+	}
+	two := `{"type":"assistant","session_id":"s","message":{"id":"a","usage":{"input_tokens":10,"output_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000}}}` + "\n"
+	s, _ = Parse(strings.NewReader(two), nil)
+	if s.LastContext != 1110 {
+		t.Fatalf("LastContext = %d, want input + cache read + cache creation = 1110", s.LastContext)
+	}
+}

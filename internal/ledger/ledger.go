@@ -120,6 +120,11 @@ func (l *Ledger) CeilingReached(ceiling int64) bool {
 	return ceiling > 0 && l.Usage().Tokens >= ceiling
 }
 
+// CostCeilingReached reports whether ceiling dollars (> 0) are used up today.
+func (l *Ledger) CostCeilingReached(ceiling float64) bool {
+	return ceiling > 0 && l.Usage().CostUSD >= ceiling
+}
+
 // NextUTCMidnight is the first instant after now that is 00:00 UTC.
 func NextUTCMidnight(now time.Time) time.Time {
 	n := now.UTC()

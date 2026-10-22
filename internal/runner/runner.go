@@ -45,9 +45,40 @@ type Options struct {
 	// Grace is how long the CLI gets after SIGTERM before it is killed.
 	Grace  time.Duration
 	Logger *slog.Logger
+	// Telemetry, when set, turns on the CLI's OpenTelemetry traces. The
+	// sender's token is not here: the rendered settings carry a helper that
+	// reads it from a file.
+	Telemetry *Telemetry
 	// LogContent lets the raw CLI lines, which carry the model's words and tool
 	// output, reach the debug log.
 	LogContent bool
+}
+
+// Telemetry configures the CLI's OTLP trace export (https://code.claude.com/docs/en/monitoring-usage).
+type Telemetry struct {
+	Endpoint    string // OTLP/HTTP base URL, for example http://ego.<ns>.svc:4318
+	Service     string // service.name and gen_ai.agent.name
+	Tenant      string // ego.tenant
+	ToolDetails bool   // tool parameters on spans; off, names and timings only
+}
+
+// Env returns the CLI's telemetry environment. None of it is secret.
+func (t Telemetry) Env() []string {
+	env := []string{
+		"CLAUDE_CODE_ENABLE_TELEMETRY=1",
+		"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1", // traces are beta
+		"OTEL_TRACES_EXPORTER=otlp",
+		"OTEL_METRICS_EXPORTER=none",
+		"OTEL_LOGS_EXPORTER=none", // events carry prompts; traces are enough
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + t.Endpoint,
+		"OTEL_SERVICE_NAME=" + t.Service,
+		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=" + t.Tenant + ",gen_ai.agent.name=" + t.Service,
+	}
+	if t.ToolDetails {
+		env = append(env, "OTEL_LOG_TOOL_DETAILS=1")
+	}
+	return env
 }
 
 // Runner runs turns.
@@ -193,6 +224,9 @@ func (r *Runner) env(o Options) []string {
 	}
 	// The image carries the CLI, kubectl and jq as ko kodata. Put that
 	// directory first on the CLI's PATH so the agent's shell finds them.
+	if o.Telemetry != nil {
+		extra = append(extra, o.Telemetry.Env()...)
+	}
 	if kd := os.Getenv("KO_DATA_PATH"); kd != "" {
 		extra = append(extra, "PATH="+kd+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}

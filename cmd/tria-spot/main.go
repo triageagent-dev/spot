@@ -108,7 +108,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	paths, err := render.Render(render.Input{
 		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
-		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr,
+		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr, OtelTokenFile: cfg.OtelTokenFile,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 		}),
@@ -124,10 +124,15 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			allowed = append(allowed, r)
 		}
 	}
+	var tel *runner.Telemetry
+	if cfg.OtelEndpoint != "" {
+		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.Tenant, ToolDetails: cfg.OtelToolDetails}
+		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
+	}
 	rn := runner.New(runner.Options{
 		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
-		AllowedTools: allowed, Logger: log, LogContent: cfg.LogContent,
+		AllowedTools: allowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
 	})
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()

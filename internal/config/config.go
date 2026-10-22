@@ -36,10 +36,18 @@ type Config struct {
 	MaxTurns               int
 	TurnTimeout            time.Duration
 	DailyTokenCeil         int64
+	DailyCostCeilUSD       float64 // dollars per UTC day after which no wake starts; 0 = none
+	MaxContextTokens       int64   // start a fresh conversation after a turn whose context passed this; 0 = never
 	PollInterval           time.Duration
 	EdgeCooldown           time.Duration
 	LogLevel               string
 	LogContent             bool // allow message, issue and model text in debug logs
+
+	// Telemetry: the CLI's own OpenTelemetry traces go to an OTLP/HTTP
+	// endpoint (ego). The sender token is a file, never an environment value.
+	OtelEndpoint    string
+	OtelTokenFile   string
+	OtelToolDetails bool // add tool parameters (Bash commands, file paths) to spans
 
 	// PermissionMode is what the CLI is started in. FallbackPermMode is used
 	// instead when the CLI reports it did not start in PermissionMode.
@@ -89,9 +97,14 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxTurns, "max-turns", 40, "agentic turn cap per wake (CLI --max-turns)")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
+	fs.Float64Var(&c.DailyCostCeilUSD, "daily-cost-ceiling-usd", 0, "dollars (the CLI's own estimate) per UTC day after which no wake starts; 0 disables it")
+	fs.Int64Var(&c.MaxContextTokens, "max-context-tokens", 0, "start a fresh conversation after a turn whose context passed this many tokens; 0 never rotates")
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
+	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the CLI's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
+	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
+	fs.BoolVar(&c.OtelToolDetails, "otel-tool-details", false, "add tool parameters (Bash commands, file paths) to trace spans; off, spans carry names and timings only")
 	fs.BoolVar(&c.LogContent, "log-content", false, "let debug logs carry message, issue and model text; off, no log line carries any")
 	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")
 	fs.StringVar(&c.FallbackPermMode, "fallback-permission-mode", "dontAsk", "mode used when the CLI does not start in --permission-mode")
@@ -127,6 +140,15 @@ func (c *Config) Validate() error {
 		}
 	}
 	req(c.Tenant, "tenant")
+	if c.OtelEndpoint != "" && !strings.HasPrefix(c.OtelEndpoint, "http://") && !strings.HasPrefix(c.OtelEndpoint, "https://") {
+		errs = append(errs, errors.New("--otel-endpoint must be an http:// or https:// URL"))
+	}
+	if c.OtelEndpoint == "" && (c.OtelTokenFile != "" || c.OtelToolDetails) {
+		errs = append(errs, errors.New("--otel-token-file and --otel-tool-details need --otel-endpoint"))
+	}
+	if c.DailyCostCeilUSD < 0 || c.MaxContextTokens < 0 {
+		errs = append(errs, errors.New("--daily-cost-ceiling-usd and --max-context-tokens cannot be negative"))
+	}
 	req(c.CoreMCPURL, "core-mcp-url")
 	req(c.CoreTokenFile, "core-token-file")
 	switch c.AnthropicAuth {

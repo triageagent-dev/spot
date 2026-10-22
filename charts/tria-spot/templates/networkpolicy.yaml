@@ -52,6 +52,27 @@ spec:
         {{- range $np.core.ports }}
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
+    {{- if $.Values.telemetry.enabled }}
+    # The telemetry endpoint (ego): traces only.
+    - to:
+        {{- if or $np.telemetry.namespaceSelector $np.telemetry.podSelector }}
+        - namespaceSelector:
+            {{- toYaml $np.telemetry.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $np.telemetry.podSelector | nindent 12 }}
+        {{- end }}
+        {{- range $np.telemetry.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- if not (or $np.telemetry.namespaceSelector $np.telemetry.podSelector $np.telemetry.cidrs) }}
+        {{- fail "networkPolicy.telemetry needs a namespaceSelector/podSelector or cidrs when telemetry.enabled is true" }}
+        {{- end }}
+      ports:
+        {{- range $np.telemetry.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
     # The cluster API server (kubectl and the ServiceAccount token).
     - to:
         {{- range (required "networkPolicy.apiServer.cidrs is required when the NetworkPolicy is on" $np.apiServer.cidrs) }}

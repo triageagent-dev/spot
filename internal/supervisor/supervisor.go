@@ -96,6 +96,8 @@ type Turn struct {
 	Denials    int     `json:"permissionDenials,omitempty"`
 	Terminal   string  `json:"terminalReason,omitempty"`
 	ExitCode   int     `json:"exitCode,omitempty"`
+	// ContextTokens is the conversation size at the turn's last request.
+	ContextTokens int64 `json:"contextTokens,omitempty"`
 }
 
 // Next is the scheduled wake.
@@ -165,7 +167,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
 		}
 		if pend != nil {
-			if s.led.CeilingReached(s.cfg.DailyTokenCeil) {
+			if s.paused() {
 				s.pauseForCeiling()
 				pend = nil
 			} else {
@@ -190,14 +192,21 @@ func (s *Supervisor) Run(ctx context.Context) error {
 }
 
 // paused reports whether the daily ceiling holds the agent back.
-func (s *Supervisor) paused() bool { return s.led.CeilingReached(s.cfg.DailyTokenCeil) }
+func (s *Supervisor) paused() bool {
+	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD)
+}
 
 func (s *Supervisor) pauseForCeiling() {
 	until := ledger.NextUTCMidnight(s.now())
 	s.nextTick = until
-	s.scheduledWhy = "the daily token ceiling was reached; resumed after UTC midnight"
-	s.log.Warn("daily token ceiling reached; no wake until UTC midnight", "until", until.Format(time.RFC3339),
-		"used", s.led.Usage().Tokens, "ceiling", s.cfg.DailyTokenCeil)
+	kind := "token"
+	if !s.led.CeilingReached(s.cfg.DailyTokenCeil) {
+		kind = "cost"
+	}
+	s.scheduledWhy = "the daily " + kind + " ceiling was reached; resumed after UTC midnight"
+	u := s.led.Usage()
+	s.log.Warn("daily "+kind+" ceiling reached; no wake until UTC midnight", "until", until.Format(time.RFC3339),
+		"usedTokens", u.Tokens, "tokenCeiling", s.cfg.DailyTokenCeil, "costUsd", u.CostUSD, "costCeiling", s.cfg.DailyCostCeilUSD)
 	s.status.NextWake = &Next{At: until.Format(time.RFC3339), Why: s.scheduledWhy, Source: "ceiling"}
 	s.setState("paused-ceiling")
 }
@@ -444,6 +453,13 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Warn("the saved conversation cannot be resumed; the next turn starts a new one", "session", resume)
 		sess = ledger.Session{}
 	}
+	// A resumed conversation grows with every turn and each turn pays for all
+	// of it. Past the limit, the next wake starts a fresh conversation and
+	// carries on from the agent's own notes.
+	if !failed && s.cfg.MaxContextTokens > 0 && sum.LastContext > s.cfg.MaxContextTokens {
+		s.log.Info("conversation rotated: the next wake starts a fresh one", "contextTokens", sum.LastContext, "limit", s.cfg.MaxContextTokens)
+		sess = ledger.Session{}
+	}
 	if err := s.led.SaveSession(sess); err != nil {
 		s.log.Error("saving session", "err", err)
 	}
@@ -456,6 +472,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		Tokens: u.Billable(), NumTurns: sum.NumTurns, CostUSD: costDelta, Subtype: sum.Subtype,
 		IsError: failed, TimedOut: res.TimedOut, Denials: sum.PermissionDenials,
 		Terminal: sum.TerminalReason, ExitCode: res.ExitCode, AuthFailed: res.AuthFailed,
+		ContextTokens: sum.LastContext,
 	}
 	s.status.LastTurn = turn
 

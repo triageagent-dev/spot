@@ -43,6 +43,19 @@ anthropic:
     audience: https://api.anthropic.com
     tokenExpirationSeconds: 600  # the kubelet rotates the token at 80% of this; minimum 600
 
+# The CLI's own OpenTelemetry traces (beta in the CLI), sent to an OTLP/HTTP
+# endpoint such as ego. The sender's token is a Secret mounted as a file and
+# read by a rendered header helper; no variable carries it. Spans hold names,
+# timings and token counts; toolDetails adds tool parameters (Bash commands,
+# file paths). Prompts and tool output are never added.
+telemetry:
+  enabled: false
+  endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
+  tokenSecret:
+    name: ""
+    key: token
+  toolDetails: false
+
 # Supervisor settings (see the README for each flag).
 agent:
   model: ""                   # model alias or name; empty = the CLI default
@@ -54,7 +67,9 @@ agent:
   edgeCooldown: 1m
   maxTurns: 40
   turnTimeout: 20m
-  dailyTokenCeiling: 2000000  # tokens per UTC day; 0 = no ceiling
+  dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
+  dailyCostCeilingUSD: 0      # dollars per UTC day (the CLI's own estimate); 0 = no ceiling
+  maxContextTokens: 0         # start a fresh conversation after a turn whose context passed this; 0 = never
   kubectlWritesPerHour: 20    # PreToolUse hook cap; best effort, RBAC is the boundary
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
@@ -119,6 +134,12 @@ networkPolicy:
     podSelector: {}               # e.g. {matchLabels: {app.kubernetes.io/name: <core>}}
     cidrs: []
     ports: [443]
+  telemetry:
+    # Where the telemetry endpoint lives (required when telemetry.enabled).
+    namespaceSelector: {}
+    podSelector: {}
+    cidrs: []
+    ports: [4318]
   apiServer:
     cidrs: []                     # required when enabled: the API server's address(es)
     ports: [443, 6443]

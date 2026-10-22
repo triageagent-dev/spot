@@ -80,3 +80,16 @@ func TestSessionRoundTripAndStatusMode(t *testing.T) {
 		t.Fatalf("status mode %o", st.Mode().Perm())
 	}
 }
+
+func TestCostCeiling(t *testing.T) {
+	l := newL(t, time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC))
+	if l.CostCeilingReached(0) || l.CostCeilingReached(5) {
+		t.Fatal("nothing spent yet, and 0 means no ceiling")
+	}
+	if _, err := l.AddUsage(100, 0, 3.5); err != nil {
+		t.Fatal(err)
+	}
+	if l.CostCeilingReached(5) || !l.CostCeilingReached(3.5) || l.CostCeilingReached(0) {
+		t.Fatalf("usage %+v", l.Usage())
+	}
+}

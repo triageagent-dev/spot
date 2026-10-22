@@ -34,6 +34,9 @@ type Input struct {
 	HookBin         string // absolute path of the tria-spot binary
 	KubectlWritesHr int
 	Instruction     string // the rendered system prompt
+	// OtelTokenFile, when set, makes the CLI send its traces with a bearer
+	// token read from this file by a rendered helper (otelHeadersHelper).
+	OtelTokenFile string
 }
 
 // Federation is the non-secret part of Workload Identity Federation: the ids
@@ -51,6 +54,7 @@ type Paths struct {
 	MCPConfig   string
 	Settings    string
 	KeyHelper   string // key mode only
+	OtelHelper  string // when OtelTokenFile is set
 	Instruction string
 	// AnthropicConfigDir and Profile are set in federation mode: the CLI is
 	// started with ANTHROPIC_CONFIG_DIR and ANTHROPIC_PROFILE pointing here.
@@ -111,6 +115,13 @@ func Render(in Input) (Paths, error) {
 		}
 	}
 
+	if in.OtelTokenFile != "" {
+		p.OtelHelper = filepath.Join(in.RunDir, "otel-headers.sh")
+		helper := "#!/bin/sh\n# Prints the OTLP sender's header so the token is never an environment variable or an argument.\nprintf '{\"Authorization\":\"Bearer %s\"}' \"$(tr -d '\\r\\n' < " + shQuote(in.OtelTokenFile) + ")\"\n"
+		if err := writeFile(p.OtelHelper, []byte(helper), 0o500); err != nil {
+			return Paths{}, err
+		}
+	}
 	if err := writeJSON(p.Settings, Settings(in, p.KeyHelper), 0o400); err != nil {
 		return Paths{}, err
 	}
@@ -144,6 +155,10 @@ func Settings(in Input, helperPath string) map[string]any {
 		// The key's spend limit and the ServiceAccount's RBAC are the boundary.
 	}
 	deny = append(deny, "Read("+absRule(in.CoreTokenFile)+")")
+	if in.OtelTokenFile != "" {
+		deny = append(deny, "Read("+absRule(in.OtelTokenFile)+")")
+		st["otelHeadersHelper"] = filepath.Join(in.RunDir, "otel-headers.sh")
+	}
 	if in.Federation != nil {
 		// No apiKeyHelper: it outranks federation and would shadow it. The
 		// profile and the cached access token live under the run dir (already

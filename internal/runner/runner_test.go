@@ -142,3 +142,31 @@ func TestEnvPutsKoDataFirstOnPath(t *testing.T) {
 		t.Fatalf("PATH = %q", path)
 	}
 }
+
+func TestTelemetryEnvCarriesNoSecret(t *testing.T) {
+	o := opts()
+	o.Telemetry = &Telemetry{Endpoint: "http://ego.example.svc:4318", Service: "example-spot", Tenant: "tenant-a"}
+	env := strings.Join(New(o).Env(), "\n")
+	for _, want := range []string{
+		"CLAUDE_CODE_ENABLE_TELEMETRY=1", "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1", "OTEL_TRACES_EXPORTER=otlp",
+		"OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://ego.example.svc:4318", "OTEL_SERVICE_NAME=example-spot",
+		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=tenant-a,gen_ai.agent.name=example-spot",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	for _, banned := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_TOOL_CONTENT"} {
+		if strings.Contains(env, banned) {
+			t.Errorf("%s must not be set by default", banned)
+		}
+	}
+	o.Telemetry.ToolDetails = true
+	if !strings.Contains(strings.Join(New(o).Env(), "\n"), "OTEL_LOG_TOOL_DETAILS=1") {
+		t.Error("tool details on request")
+	}
+	if strings.Contains(strings.Join(New(opts()).Env(), "\n"), "OTEL_") {
+		t.Error("telemetry off: no OTEL variable")
+	}
+}

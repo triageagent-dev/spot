@@ -142,3 +142,30 @@ func TestNoFederationSecretFlags(t *testing.T) {
 		t.Error("a flag carrying the JWT must not exist")
 	}
 }
+
+func TestTelemetryAndBudgetFlags(t *testing.T) {
+	c, err := Parse(append(append([]string{}, required...),
+		"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/secrets/otel/token", "--otel-tool-details",
+		"--daily-cost-ceiling-usd", "12.5", "--max-context-tokens", "70000"), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OtelEndpoint != "http://ego.example.svc:4318" || c.OtelTokenFile != "/secrets/otel/token" || !c.OtelToolDetails ||
+		c.DailyCostCeilUSD != 12.5 || c.MaxContextTokens != 70000 {
+		t.Fatalf("%+v", c)
+	}
+	for name, extra := range map[string][]string{
+		"token file without an endpoint":   {"--otel-token-file", "/t"},
+		"tool details without an endpoint": {"--otel-tool-details"},
+		"endpoint without a scheme":        {"--otel-endpoint", "ego:4318"},
+		"negative cost ceiling":            {"--daily-cost-ceiling-usd", "-1"},
+		"negative context limit":           {"--max-context-tokens", "-5"},
+	} {
+		if _, err := Parse(append(append([]string{}, required...), extra...), io.Discard); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	if c, _ := Parse(required, io.Discard); c.OtelEndpoint != "" || c.DailyCostCeilUSD != 0 || c.MaxContextTokens != 0 {
+		t.Fatalf("telemetry and the new limits must default to off: %+v", c)
+	}
+}

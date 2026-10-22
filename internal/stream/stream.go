@@ -62,6 +62,11 @@ type Summary struct {
 	CostUSD           float64 // total_cost_usd: cumulative over a resumed conversation
 	ResultUsage       Usage
 
+	// LastContext is the size of the conversation at the last request: its
+	// input, cache-read and cache-creation tokens. It is what the next turn
+	// resumes with.
+	LastContext int64
+
 	// AssistantUsage sums the usage of each distinct assistant message. It is
 	// the fallback when the process dies before it writes a result.
 	AssistantUsage Usage
@@ -152,6 +157,7 @@ func (s *Summary) apply(l line, perMsg map[string]Usage) {
 			}
 			prev := perMsg[id]
 			cur := *l.Message.Usage
+			s.LastContext = cur.InputTokens + cur.CacheReadTokens + cur.CacheCreationTokens
 			// Streaming repeats a message with growing usage: keep the largest.
 			if cur.OutputTokens >= prev.OutputTokens {
 				perMsg[id] = cur

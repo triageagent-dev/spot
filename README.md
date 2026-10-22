@@ -265,6 +265,41 @@ read-only root filesystem; every write goes to `/state`, `/run/tria-spot` or
 Seen: ko builds it (`make image`), the kodata files land in the image as mode
 `0555`, and the entrypoint is `/ko-app/tria-spot`.
 
+## Traces
+
+With `telemetry.enabled` (flag `--otel-endpoint`) the CLI exports its own
+OpenTelemetry traces (beta in the CLI: `CLAUDE_CODE_ENABLE_TELEMETRY` and
+`CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`, protocol http/protobuf). The supervisor
+sets these in the CLI's environment, so the pod still carries no environment
+variable. Resource attributes are `ego.tenant=<tenant>` and
+`gen_ai.agent.name=<spot name>`; `service.name` is the spot name. Spans:
+`claude_code.interaction` per wake, with `llm_request` (model, input, output,
+cache-read and cache-creation tokens, stop reason, errors) and `tool` spans
+under it. The sender's bearer token is a Secret mounted as a file
+(`telemetry.tokenSecret`); a rendered helper script prints the header
+(`otelHeadersHelper`), so no variable or argument carries it, and the agent's
+Read rules deny the file. Prompts, responses and tool output are not added;
+`--otel-tool-details` adds tool parameters such as Bash commands and file
+paths. Logs and metrics exporters are off.
+
+Claude Code does not set `gen_ai.usage.*` on its spans (it exports
+`input_tokens` without the cached ones), so the receiver has to map them; ego
+does. The traces carry no spend control: that is the workspace spend limit, the
+supervisor's `--daily-token-ceiling` and `--daily-cost-ceiling-usd`, and
+`--max-context-tokens`.
+
+## Spend
+
+- `--daily-token-ceiling`: input + output + cache-creation tokens per UTC day.
+  Cache reads are not counted, so it under-reports a long conversation.
+- `--daily-cost-ceiling-usd`: the CLI's own dollar estimate per UTC day, which
+  includes cache reads. Either ceiling pauses all wakes until UTC midnight.
+- `--max-context-tokens`: a resumed conversation grows with every turn and each
+  turn pays for all of it (a cold cache re-creates the whole context). When a
+  turn ends with a context larger than this, the next wake starts a fresh
+  conversation and the agent carries on from its notes. `status.json` shows
+  each turn's `contextTokens`.
+
 ## Logs
 
 Logs carry what happened, never what was said. At every level the supervisor

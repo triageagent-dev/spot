@@ -259,3 +259,28 @@ func TestKeyModeStillRendersTheHelper(t *testing.T) {
 		t.Fatal("key mode must not create a federation profile")
 	}
 }
+
+func TestOtelHeaderHelperReadsTheTokenFromAFile(t *testing.T) {
+	in, d := setup(t)
+	if p, err := Render(in); err != nil || p.OtelHelper != "" {
+		t.Fatalf("no telemetry token, no helper: %+v %v", p, err)
+	}
+	otel := filepath.Join(d, "otel-token")
+	must(t, os.WriteFile(otel, []byte("egs_example-sender-token\n"), 0o600))
+	in.OtelTokenFile = otel
+	p, err := Render(in)
+	must(t, err)
+	script, _ := os.ReadFile(p.OtelHelper)
+	if !strings.Contains(string(script), otel) || strings.Contains(string(script), "egs_example") {
+		t.Fatalf("the helper must read the file and hold no token:\n%s", script)
+	}
+	sb, _ := os.ReadFile(p.Settings)
+	var st map[string]any
+	must(t, json.Unmarshal(sb, &st))
+	if st["otelHeadersHelper"] != p.OtelHelper {
+		t.Fatalf("otelHeadersHelper = %v", st["otelHeadersHelper"])
+	}
+	if !strings.Contains(string(sb), "Read("+absRule(otel)+")") || strings.Contains(string(sb), "egs_example") {
+		t.Fatalf("settings must deny the token file and not hold it: %s", sb)
+	}
+}
