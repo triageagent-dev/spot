@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -38,5 +40,24 @@ func TestHookWithBadFlagsStillAllows(t *testing.T) {
 	code := run([]string{"hook", "pretool", "--no-such-flag"}, strings.NewReader("{}"), &out, &errOut)
 	if code != 0 || out.Len() != 0 {
 		t.Fatalf("a broken hook invocation must not block tools: %d %q", code, out.String())
+	}
+}
+
+func TestResolveClaudeBin(t *testing.T) {
+	kd := t.TempDir()
+	if got := resolveClaudeBin("claude", kd); got != "claude" {
+		t.Fatalf("no kodata copy: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(kd, "claude"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveClaudeBin("claude", kd); got != filepath.Join(kd, "claude") {
+		t.Fatalf("kodata copy not used: %q", got)
+	}
+	if got := resolveClaudeBin("/opt/claude", kd); got != "/opt/claude" {
+		t.Fatalf("explicit --claude-bin overridden: %q", got)
+	}
+	if got := resolveClaudeBin("claude", ""); got != "claude" {
+		t.Fatalf("without KO_DATA_PATH: %q", got)
 	}
 }

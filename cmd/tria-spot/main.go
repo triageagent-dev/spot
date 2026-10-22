@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -124,7 +125,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		}
 	}
 	rn := runner.New(runner.Options{
-		Bin: cfg.ClaudeBin, Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
+		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
 		AllowedTools: allowed, Logger: log,
 	})
@@ -139,6 +140,24 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 	log.Info("stopped")
 	return 0
+}
+
+// resolveClaudeBin returns the CLI to run. In the ko image the CLI lives in
+// kodata, so a default "claude" becomes the kodata copy when it exists; any
+// other value (an explicit --claude-bin) is used as given.
+func resolveClaudeBin(bin, koData string) string {
+	if bin != "claude" || koData == "" {
+		return bin
+	}
+	if p := filepath.Join(koData, "claude"); fileExists(p) {
+		return p
+	}
+	return bin
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }
 
 func level(s string) slog.Level {

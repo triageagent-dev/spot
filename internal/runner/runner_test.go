@@ -128,3 +128,17 @@ func TestKeyModeEnvCarriesNoAnthropicVariable(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvPutsKoDataFirstOnPath(t *testing.T) {
+	t.Setenv("KO_DATA_PATH", "/var/run/ko")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	var path string
+	for _, kv := range New(opts()).Env() {
+		if strings.HasPrefix(kv, "PATH=") {
+			path = kv // the last one wins in exec
+		}
+	}
+	if path != "PATH=/var/run/ko:/usr/bin:/bin" {
+		t.Fatalf("PATH = %q", path)
+	}
+}

@@ -12,7 +12,7 @@ spot:
   name: ""
 
 image:
-  repository: ghcr.io/triageagent-dev/tria-spot
+  repository: ghcr.io/triageagent-dev/spot
   tag: ""            # defaults to the chart appVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []

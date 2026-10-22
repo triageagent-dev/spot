@@ -245,22 +245,25 @@ answer.
 
 ## Image
 
-`make image` builds the Dockerfile (multi-stage: the Go binary; then Node LTS
-slim with the Claude Code CLI, `kubectl` and `jq`; non-root uid 10001; a
-read-only root filesystem works because every write goes to `/state`,
-`/run/tria-spot` or `/tmp`). It does not push. Versions are ARGs:
+The image is built with ko only; there is no Dockerfile and no Docker. `make
+kodata` downloads the Claude Code CLI, `kubectl` and `jq` for linux/amd64 into
+`cmd/tria-spot/kodata`, each checked against a pinned digest, and ko adds them
+to the image under `/var/run/ko`. The supervisor puts that directory first on
+the CLI's `PATH` (from `KO_DATA_PATH`) and runs the kodata copy of the CLI.
+`make image` writes an OCI layout to `bin/image` and pushes nothing; `make
+push IMAGE=<registry>/<repo>` pushes. The pod runs as uid 10001 with a
+read-only root filesystem; every write goes to `/state`, `/run/tria-spot` or
+`/tmp`.
 
 | Component | Version | Where it came from |
 | --- | --- | --- |
-| Claude Code CLI | `2.1.304` | `npm view @anthropic-ai/claude-code dist-tags` on 2026-10-21: `stable` = 2.1.304, `latest` = 2.1.305. The pinned one is `stable`. The build checks `npm view ...@2.1.304 dist.integrity` equals the `sha512-oAD2...WWQ==` value recorded in the Dockerfile and fails otherwise. |
-| kubectl | `v1.37.1` | `https://dl.k8s.io/release/stable.txt` on 2026-10-21; the amd64 and arm64 sha256 files from `dl.k8s.io` are in the Dockerfile and checked with `sha256sum -c`. |
-| Node | `24.22.0` (bookworm-slim) | newest LTS (Krypton) in `https://nodejs.org/dist/index.json`; the tag exists on Docker Hub (`library/node`). |
-| Go | `1.27.3` (bookworm) | the tag exists on Docker Hub (`library/golang`). The module says `go 1.27`. |
+| Claude Code CLI | `2.1.304` | The Claude Code package ships a native binary per platform. `npm view @anthropic-ai/claude-code dist-tags` on 2026-10-21: `stable` = 2.1.304. `make kodata` runs `npm pack @anthropic-ai/claude-code-linux-x64@2.1.304`, computes the tarball's sha512 and fails unless it equals the value in the Makefile (the registry's `dist.integrity` for that package). No Node is needed at run time. |
+| kubectl | `v1.37.1` | `https://dl.k8s.io/release/stable.txt` on 2026-10-21; the amd64 sha256 from `dl.k8s.io` is in the Makefile and checked with `shasum -a 256 -c`. |
+| jq | `1.7.1` | the `jq-linux-amd64` asset of the jqlang release; the sha256 is from the release's `sha256sum.txt` and is checked the same way. |
+| Base image | `buildpack-deps:bookworm-curl` | pinned by digest in `.ko.yaml`: it has bash, coreutils, curl and CA certificates, which the CLI's shell tool and the agent's commands need. linux/amd64 only. |
 
-Not done: no `docker build` was run, so the Dockerfile is untested. The
-Claude Code package installs a native binary through optional per-platform
-dependencies; `npm install -g` is expected to pull the linux one, but that
-was not exercised.
+Seen: ko builds it (`make image`), the kodata files land in the image as mode
+`0555`, and the entrypoint is `/ko-app/tria-spot`.
 
 ## Chart
 
@@ -393,5 +396,5 @@ Not verified, and why:
   comments made during a turn are absorbed by the post-turn baseline.
 - Hop counts and caps are enforced by the core (phase 3); the prompt only tells
   the agent to pass and respect them.
-- The Dockerfile build, `helm install`, kubeconform, and `golangci-lint` (not
+- Running the image, `helm install`, kubeconform, and `golangci-lint` (not
   installed here; `make lint` runs it when present).

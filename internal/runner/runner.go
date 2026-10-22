@@ -188,6 +188,11 @@ func (r *Runner) env(o Options) []string {
 		"DISABLE_ERROR_REPORTING=1",
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
 	}
+	// The image carries the CLI, kubectl and jq as ko kodata. Put that
+	// directory first on the CLI's PATH so the agent's shell finds them.
+	if kd := os.Getenv("KO_DATA_PATH"); kd != "" {
+		extra = append(extra, "PATH="+kd+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	// Federation: the profile rendered under the run dir. Only these two
 	// ANTHROPIC_* variables reach the CLI; the ids and the token path are in the
 	// profile file, not the environment.

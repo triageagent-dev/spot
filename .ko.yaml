@@ -1,0 +1,19 @@
+# ko build configuration. The image is the Go supervisor on a base that has
+# bash, coreutils, curl and CA certificates; the Claude Code CLI, kubectl and
+# jq travel as kodata (cmd/tria-spot/kodata, fetched and verified by
+# `make kodata`) and are found through KO_DATA_PATH. No Docker is involved.
+defaultBaseImage: docker.io/library/buildpack-deps@sha256:5f8a65a7e3b419450aebd73c24e3ce8b25810354eccd7ff6f673b0c387479131
+defaultPlatforms:
+  - linux/amd64
+builds:
+- id: tria-spot
+  main: ./cmd/tria-spot
+  env:
+  - CGO_ENABLED=0
+  flags:
+  - -trimpath
+  ldflags:
+  - -s -w
+  - -X main.version={{.Env.VERSION}}
+  - -X main.gitCommit={{.Env.GIT_COMMIT}}
+  - -X main.buildDate={{.Env.BUILD_DATE}}
