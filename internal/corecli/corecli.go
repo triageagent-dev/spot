@@ -44,6 +44,10 @@ type RoomMessage struct {
 	TS     int64  // milliseconds; the core's read_workspace_room cursor
 	Tria   bool   // Tria wrote it
 	Spot   string // a teammate agent wrote it; its name
+	// File is the kind of file the message carries ("image/png"), empty when
+	// it carries none; read_workspace_file shows it by the message id.
+	File     string
+	FileName string
 }
 
 // Client talks to one core.
@@ -228,6 +232,19 @@ func (c *Client) RoomMessages(ctx context.Context, room, since string) ([]RoomMe
 	return ParseRoom(text, since)
 }
 
+// ErrNoTypingTool means the core predates set_workspace_typing.
+var ErrNoTypingTool = errors.New("the core offers no set_workspace_typing tool")
+
+// Typing shows or clears the spot's "typing…" indicator in a room
+// (set_workspace_typing). The core clears it by itself after about 30 seconds.
+func (c *Client) Typing(ctx context.Context, room string, on bool) error {
+	if !c.HasTool(ctx, "set_workspace_typing") {
+		return ErrNoTypingTool
+	}
+	_, err := c.call(ctx, "set_workspace_typing", map[string]any{"tenant": c.tenant, "room": room, "on": on})
+	return err
+}
+
 // ParseRoom decodes a read_workspace_room reply. Exposed for tests.
 func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 	var raw []map[string]any
@@ -261,6 +278,12 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 		}
 		if t, ok := m["tria"].(bool); ok {
 			rm.Tria = t
+		}
+		if f, ok := m["file"].(map[string]any); ok {
+			rm.File, rm.FileName = str(f, "mime"), str(f, "name")
+			if rm.File == "" {
+				rm.File = "file"
+			}
 		}
 		// ts is a JSON number in milliseconds; fmt.Sprint of a float64 would
 		// give scientific notation and lose the cursor.

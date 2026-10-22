@@ -28,6 +28,7 @@ type Core interface {
 	ListOpenIssues(ctx context.Context) ([]corecli.Issue, error)
 	Heartbeat(ctx context.Context, id, title, content string, staleAfter time.Duration) error
 	RoomMessages(ctx context.Context, room, since string) ([]corecli.RoomMessage, string, error)
+	Typing(ctx context.Context, room string, on bool) error
 }
 
 // Turner runs one CLI turn.
@@ -43,6 +44,8 @@ type Supervisor struct {
 	turner Turner
 	log    *slog.Logger
 	now    func() time.Time
+
+	typingEvery time.Duration // zero = typingEvery; tests shorten it
 
 	tracker  edges.Tracker
 	held     []edges.Edge
@@ -149,6 +152,7 @@ type pending struct {
 	facts       []string
 	scheduledBy string
 	note        string
+	room        string // where the "typing…" indicator shows; empty = the agents room
 }
 
 const maxHeld = 20
@@ -253,6 +257,13 @@ func (s *Supervisor) fromHeld() *pending {
 		if e.Human {
 			p.reason = prompt.Human
 		}
+		// A person waits in the team room; machines talk in the agents room.
+		switch {
+		case e.Human:
+			p.room = "team"
+		case e.Room != "" && p.room == "":
+			p.room = e.Room
+		}
 	}
 	s.held = nil
 	return p
@@ -323,8 +334,13 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) []edges.Edge {
 		// A person is talking to the spot; Tria and other agents are news but
 		// not a human asking.
 		human := !m.Tria && m.Spot == ""
-		out = append(out, edges.Edge{Kind: edges.Message, Human: human,
-			Fact: fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %q", room, orUnknown(who), clip(m.Text, 400))})
+		fact := fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %q", room, orUnknown(who), clip(m.Text, 400))
+		if m.File != "" {
+			// The file itself is not fetched here: the agent looks at it with
+			// read_workspace_file if it matters.
+			fact += fmt.Sprintf(" [attached file, %s: read_workspace_file with message_id %q]", m.File, m.ID)
+		}
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human, Room: room, Fact: fact})
 	}
 	return out
 }
@@ -419,7 +435,9 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.setState("running")
 	s.log.Info("turn start", "reason", p.reason, "resume", resume != "", "facts", len(p.facts))
 
+	stopTyping := s.showWorking(ctx, p.room)
 	res := s.turner.Run(ctx, text, resume)
+	stopTyping()
 	s.lastTurnEnd = s.now()
 
 	// Accounting first: tokens are spent whether or not the turn succeeded.
@@ -518,6 +536,63 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Warn("heartbeat not refreshed: the turn failed, so reflection stays the floor")
 	}
 	s.setState("idle")
+}
+
+// typingEvery is how often the indicator is renewed; the core clears it after
+// about 30 seconds without one.
+const typingEvery = 20 * time.Second
+
+// showWorking shows the spot's "typing…" indicator in room (the agents room
+// when empty) while a turn runs, so people can see it is thinking, and
+// returns the function that clears it. It is model-free and best effort: a
+// core without the tool, or a failed call, only costs the indicator.
+func (s *Supervisor) showWorking(ctx context.Context, room string) func() {
+	if room == "" {
+		room = "agents"
+	}
+	every := s.typingEvery
+	if every <= 0 {
+		every = typingEvery
+	}
+	set := func(c context.Context, on bool) bool {
+		err := s.core.Typing(c, room, on)
+		switch {
+		case err == nil:
+			return true
+		case errors.Is(err, corecli.ErrNoTypingTool):
+			s.log.Debug("core offers no set_workspace_typing; no typing indicator")
+		case c.Err() == nil:
+			s.log.Debug("typing indicator failed", "room", room, "err", err)
+		}
+		return false
+	}
+	if !set(ctx, true) {
+		return func() {}
+	}
+	done, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				set(ctx, true)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+		// The turn's context may be gone (shutdown); clearing still matters.
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		set(c, false)
+	}
 }
 
 func (s *Supervisor) backoff() time.Duration {

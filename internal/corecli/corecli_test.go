@@ -196,3 +196,10 @@ func TestParseRoomCoreShape(t *testing.T) {
 		t.Fatalf("empty read moved the cursor to %q", next)
 	}
 }
+
+func TestParseRoomShowsAnAttachment(t *testing.T) {
+	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.den:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.den:s","body":"hi","ts":6}]}`, "")
+	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {
+		t.Fatalf("%+v %v", m, err)
+	}
+}

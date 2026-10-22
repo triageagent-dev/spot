@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -46,6 +47,24 @@ type fakeCore struct {
 	beatErr    error
 	roomMsgs   map[string][]corecli.RoomMessage
 	roomAbsent bool
+	typing     []string // "room|on" per call
+	typingErr  error
+}
+
+func (f *fakeCore) Typing(_ context.Context, room string, on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.typingErr != nil {
+		return f.typingErr
+	}
+	f.typing = append(f.typing, room+"|"+strconv.FormatBool(on))
+	return nil
+}
+
+func (f *fakeCore) typingLog() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.typing, ",")
 }
 
 func (f *fakeCore) ListOpenIssues(context.Context) ([]corecli.Issue, error) {
@@ -93,6 +112,8 @@ type harness struct {
 	done   chan error
 	sup    *Supervisor
 	logs   *safeBuf
+	// typingEvery, when set, is the renewal period of the typing indicator.
+	typingEvery time.Duration
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -152,6 +173,7 @@ func (h *harness) start() {
 		LogContent: h.cfg.LogContent})
 	h.sup = New(h.cfg, led, h.core, rn, log)
 	h.sup.SetClock(h.clock.Now)
+	h.sup.typingEvery = h.typingEvery
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan error, 1)
@@ -843,5 +865,80 @@ func TestConversationRotatesPastTheContextLimit(t *testing.T) {
 	}
 	if in := h.file("stdin", 2); strings.Contains(in, "conversation was resumed") {
 		t.Fatalf("the wake prompt must not claim a resumed conversation:\n%s", in)
+	}
+}
+
+func TestTypingShowsWhileATurnRunsAndClearsAfter(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	// A turn nobody asked for shows in the agents room, not where people are.
+	if got := h.core.typingLog(); got != "agents|true,agents|false" {
+		t.Fatalf("startup turn typing = %q", got)
+	}
+}
+
+func TestTypingForAPersonShowsInTheTeamRoom(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	time.Sleep(60 * time.Millisecond) // the first read of a room only sets its cursor
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{Sender: "alice", Text: "hello"}}
+	h.core.typing = nil
+	h.core.mu.Unlock()
+	h.waitIdle(2)
+	if got := h.core.typingLog(); got != "team|true,team|false" {
+		t.Fatalf("typing for a person = %q", got)
+	}
+}
+
+func TestTypingIsRenewedDuringALongTurnAndClearedOnShutdown(t *testing.T) {
+	h := newHarness(t, nil)
+	h.typingEvery = 20 * time.Millisecond
+	h.set("mode", "sleep")
+	h.start()
+	h.waitFor("the turn to start", func() bool { _, err := os.Stat(filepath.Join(h.fake, "sleeping.1")); return err == nil })
+	h.waitFor("a renewal", func() bool { return strings.Count(h.core.typingLog(), "agents|true") >= 3 })
+	h.stop()
+	if got := h.core.typingLog(); !strings.HasSuffix(got, "agents|false") {
+		t.Fatalf("the indicator was left on after shutdown: %q", got)
+	}
+}
+
+func TestTypingFailureOrAnOlderCoreCostsOnlyTheIndicator(t *testing.T) {
+	for name, err := range map[string]error{"older core": corecli.ErrNoTypingTool, "failing call": errors.New("boom")} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.core.typingErr = err
+			h.set("next", `{"after":"2h"}`)
+			h.start()
+			defer h.stop()
+			h.waitIdle(1)
+			if st := h.status(); st.LastTurn == nil || st.LastTurn.IsError {
+				t.Fatalf("the turn was affected: %+v", st.LastTurn)
+			}
+		})
+	}
+}
+
+func TestAttachmentIsNamedInTheWakeSoTheAgentLooksAtIt(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	time.Sleep(60 * time.Millisecond)
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{ID: "$img", Sender: "alice", Text: "image.png", File: "image/png", FileName: "image.png"}}
+	h.core.mu.Unlock()
+	h.waitIdle(2)
+	in := h.file("stdin", 2)
+	if !strings.Contains(in, "read_workspace_file") || !strings.Contains(in, `"$img"`) || !strings.Contains(in, "image/png") {
+		t.Fatalf("the wake does not point at the file:\n%s", in)
 	}
 }

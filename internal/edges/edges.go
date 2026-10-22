@@ -27,6 +27,7 @@ type Edge struct {
 	IssueID string
 	Fact    string // one line the prompt shows the agent
 	Human   bool   // a person is talking to the spot (comment or room message)
+	Room    string // for a room message, the room it came from
 }
 
 type seen struct {
