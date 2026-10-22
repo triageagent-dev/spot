@@ -138,3 +138,124 @@ func TestShQuote(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func fedInput(t *testing.T) Input {
+	in, d := setup(t)
+	in.AnthropicKeyFile = ""
+	in.Federation = &Federation{
+		IdentityTokenFile: filepath.Join(d, "identity-token"), RuleID: "fdrl_example",
+		OrganizationID: "00000000-0000-0000-0000-000000000000", ServiceAccountID: "svac_example", WorkspaceID: "wrkspc_example",
+	}
+	return in
+}
+
+func TestFederationRenderHasNoKeyHelperAndNoKeyReference(t *testing.T) {
+	in := fedInput(t)
+	// A stale helper from key mode must not survive.
+	must(t, os.MkdirAll(in.RunDir, 0o700))
+	must(t, os.WriteFile(filepath.Join(in.RunDir, "api-key-helper.sh"), []byte("#!/bin/sh\n"), 0o500))
+	p, err := Render(in)
+	must(t, err)
+	if p.KeyHelper != "" {
+		t.Fatalf("KeyHelper = %q", p.KeyHelper)
+	}
+	if _, err := os.Stat(filepath.Join(in.RunDir, "api-key-helper.sh")); !os.IsNotExist(err) {
+		t.Fatal("api-key-helper.sh must not exist in federation mode")
+	}
+	sb, _ := os.ReadFile(p.Settings)
+	if strings.Contains(string(sb), "apiKeyHelper") || strings.Contains(string(sb), "api-key-helper") {
+		t.Fatalf("federation settings must carry no apiKeyHelper (it outranks federation): %s", sb)
+	}
+	var st struct {
+		Permissions struct{ Deny []string } `json:"permissions"`
+	}
+	must(t, json.Unmarshal(sb, &st))
+	deny := strings.Join(st.Permissions.Deny, "\n")
+	for _, want := range []string{"Read(//", in.Federation.IdentityTokenFile[1:], in.CoreTokenFile[1:], strings.TrimPrefix(in.RunDir, "/") + "/**"} {
+		if !strings.Contains(deny, want) {
+			t.Errorf("deny rules lack %q:\n%s", want, deny)
+		}
+	}
+	for _, f := range []string{p.MCPConfig, p.Settings, p.Instruction} {
+		b, _ := os.ReadFile(f)
+		if strings.Contains(string(b), "sk-ant") {
+			t.Errorf("%s mentions a key", f)
+		}
+	}
+}
+
+func TestFederationProfile(t *testing.T) {
+	in := fedInput(t)
+	p, err := Render(in)
+	must(t, err)
+	if p.Profile != ProfileName || p.AnthropicConfigDir != filepath.Join(in.RunDir, "anthropic") {
+		t.Fatalf("paths: %+v", p)
+	}
+	// On the memory-backed run dir, with the layout the SDK expects.
+	prof := filepath.Join(p.AnthropicConfigDir, "configs", ProfileName+".json")
+	st, err := os.Stat(prof)
+	must(t, err)
+	if st.Mode().Perm() != 0o400 {
+		t.Errorf("profile mode %o", st.Mode().Perm())
+	}
+	for _, d := range []string{p.AnthropicConfigDir, filepath.Join(p.AnthropicConfigDir, "configs"), filepath.Join(p.AnthropicConfigDir, "credentials")} {
+		st, err := os.Stat(d)
+		must(t, err)
+		if st.Mode().Perm() != 0o700 {
+			t.Errorf("%s mode %o", d, st.Mode().Perm())
+		}
+	}
+	var got struct {
+		Version        string `json:"version"`
+		Authentication struct {
+			Type, FederationRuleID, ServiceAccountID string
+			IdentityToken                            struct{ Source, Path string } `json:"identity_token"`
+		} `json:"authentication"`
+		OrganizationID string `json:"organization_id"`
+		WorkspaceID    string `json:"workspace_id"`
+		BaseURL        string `json:"base_url"`
+	}
+	b, _ := os.ReadFile(prof)
+	must(t, json.Unmarshal(b, &got))
+	// The authentication block is checked by its WIF-reference key names.
+	var raw map[string]any
+	must(t, json.Unmarshal(b, &raw))
+	auth := raw["authentication"].(map[string]any)
+	tok := auth["identity_token"].(map[string]any)
+	if got.Version != "1.0" || auth["type"] != "oidc_federation" || auth["federation_rule_id"] != "fdrl_example" ||
+		auth["service_account_id"] != "svac_example" || tok["source"] != "file" || tok["path"] != in.Federation.IdentityTokenFile ||
+		got.OrganizationID != in.Federation.OrganizationID || got.WorkspaceID != "wrkspc_example" || got.BaseURL != "https://api.anthropic.com" {
+		t.Fatalf("profile: %s", b)
+	}
+
+	// Workspace is optional.
+	in2 := fedInput(t)
+	in2.Federation.WorkspaceID = ""
+	p2, err := Render(in2)
+	must(t, err)
+	b2, _ := os.ReadFile(filepath.Join(p2.AnthropicConfigDir, "configs", ProfileName+".json"))
+	if strings.Contains(string(b2), "workspace_id") {
+		t.Fatalf("empty workspace must be omitted: %s", b2)
+	}
+}
+
+func TestFederationRejectsAKeyFile(t *testing.T) {
+	in := fedInput(t)
+	in.AnthropicKeyFile = in.CoreTokenFile
+	if _, err := Render(in); err == nil {
+		t.Fatal("a key file next to federation would shadow it")
+	}
+}
+
+func TestKeyModeStillRendersTheHelper(t *testing.T) {
+	in, _ := setup(t)
+	p, err := Render(in)
+	must(t, err)
+	sb, _ := os.ReadFile(p.Settings)
+	if !strings.Contains(string(sb), "apiKeyHelper") || p.AnthropicConfigDir != "" || p.Profile != "" {
+		t.Fatalf("key mode: %+v %s", p, sb)
+	}
+	if _, err := os.Stat(filepath.Join(in.RunDir, "anthropic")); !os.IsNotExist(err) {
+		t.Fatal("key mode must not create a federation profile")
+	}
+}

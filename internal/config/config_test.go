@@ -65,3 +65,80 @@ func TestNoCredentialFlags(t *testing.T) {
 		}
 	}
 }
+
+var federation = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
+	"--core-token-file", "/s/token", "--anthropic-auth", "federation",
+	"--anthropic-identity-token-file", "/var/run/secrets/anthropic.com/token",
+	"--anthropic-federation-rule-id", "fdrl_example", "--anthropic-org-id", "00000000-0000-0000-0000-000000000000",
+	"--anthropic-service-account-id", "svac_example"}
+
+func with(base []string, extra ...string) []string {
+	return append(append([]string{}, base...), extra...)
+}
+
+func TestAuthDefaultsToKey(t *testing.T) {
+	c, err := Parse(required, io.Discard)
+	if err != nil || c.AnthropicAuth != AuthKey {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestFederationModeAccepted(t *testing.T) {
+	c, err := Parse(federation, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AnthropicAuth != AuthFederation || c.AnthropicKeyFile != "" || c.FederationRuleID != "fdrl_example" ||
+		c.AnthropicServiceAcctID != "svac_example" || c.IdentityTokenFile == "" || c.AnthropicWorkspaceID != "" {
+		t.Fatalf("%+v", c)
+	}
+	c, err = Parse(with(federation, "--anthropic-workspace-id", "wrkspc_example"), io.Discard)
+	if err != nil || c.AnthropicWorkspaceID != "wrkspc_example" {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestFederationValidation(t *testing.T) {
+	bad := map[string][]string{
+		"key file with federation":    with(federation, "--anthropic-key-file", "/s/key"),
+		"unknown mode":                with(required, "--anthropic-auth", "oauth"),
+		"id with a space":             with(federation, "--anthropic-workspace-id", "a b"),
+		"federation flag in key mode": with(required, "--anthropic-federation-rule-id", "fdrl_x"),
+		"token file in key mode":      with(required, "--anthropic-identity-token-file", "/t"),
+	}
+	for name, args := range bad {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	// Each required federation flag is required.
+	for _, f := range []string{"--anthropic-identity-token-file", "--anthropic-federation-rule-id", "--anthropic-org-id", "--anthropic-service-account-id"} {
+		var args []string
+		for i := 0; i < len(federation); i++ {
+			if federation[i] == f {
+				i++
+				continue
+			}
+			args = append(args, federation[i])
+		}
+		_, err := Parse(args, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), f+" is required") {
+			t.Errorf("without %s: %v", f, err)
+		}
+	}
+	// Key mode no longer needs federation flags, and still needs the key file.
+	if _, err := Parse(federation[:6], io.Discard); err == nil {
+		t.Error("tenant/core flags alone are not a complete config")
+	}
+	noKey := []string{"--tenant", "example", "--core-mcp-url", "u", "--core-token-file", "t"}
+	if _, err := Parse(noKey, io.Discard); err == nil || !strings.Contains(err.Error(), "--anthropic-key-file is required") {
+		t.Errorf("key mode without a key file: %v", err)
+	}
+}
+
+func TestNoFederationSecretFlags(t *testing.T) {
+	// The identity token is a file path; no flag takes the JWT itself.
+	if _, err := Parse(with(federation, "--anthropic-identity-token", "eyJ..."), io.Discard); err == nil {
+		t.Error("a flag carrying the JWT must not exist")
+	}
+}

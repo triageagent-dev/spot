@@ -7,7 +7,8 @@
 // -p, --output-format stream-json, --verbose, --permission-mode,
 // --permission-prompts, --allowedTools, --disallowedTools, --mcp-config,
 // --strict-mcp-config, --settings, --append-system-prompt-file, --max-turns,
-// --model, --resume.
+// --model, --resume. It never passes --bare: bare mode ignores profiles and
+// federation variables (https://code.claude.com/docs/en/authentication).
 package runner
 
 import (
@@ -140,8 +141,9 @@ func BuildArgs(o Options, resume string) []string {
 	return a
 }
 
-// ScrubEnv drops from env every variable that looks like a credential, so the
-// agent's shell never inherits one by accident, then appends extra.
+// ScrubEnv drops from env every variable that looks like a credential or that
+// selects a credential source, so the agent's shell never inherits one by
+// accident and nothing shadows the configured auth mode, then appends extra.
 func ScrubEnv(env []string, extra ...string) []string {
 	var out []string
 	for _, kv := range env {
@@ -156,7 +158,11 @@ func ScrubEnv(env []string, extra ...string) []string {
 
 func secretish(name string) bool {
 	u := strings.ToUpper(name)
-	if strings.HasPrefix(u, "ANTHROPIC_") || strings.HasPrefix(u, "CLAUDE_CODE_OAUTH") {
+	// ANTHROPIC_* covers the key, the bearer token, the profile and every
+	// federation variable; CLAUDE_CODE_USE_* would pick a cloud provider, which
+	// outranks everything. Federation's own variables are set by env(), after
+	// this scrub, from the rendered profile.
+	if strings.HasPrefix(u, "ANTHROPIC_") || strings.HasPrefix(u, "CLAUDE_CODE_OAUTH") || strings.HasPrefix(u, "CLAUDE_CODE_USE_") {
 		return true
 	}
 	for _, s := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"} {
@@ -181,6 +187,12 @@ func (r *Runner) env(o Options) []string {
 		"DISABLE_AUTOUPDATER=1",
 		"DISABLE_ERROR_REPORTING=1",
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
+	}
+	// Federation: the profile rendered under the run dir. Only these two
+	// ANTHROPIC_* variables reach the CLI; the ids and the token path are in the
+	// profile file, not the environment.
+	if o.Paths.AnthropicConfigDir != "" {
+		extra = append(extra, "ANTHROPIC_CONFIG_DIR="+o.Paths.AnthropicConfigDir, "ANTHROPIC_PROFILE="+o.Paths.Profile)
 	}
 	return ScrubEnv(os.Environ(), append(extra, o.Env...)...)
 }

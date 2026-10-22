@@ -92,9 +92,21 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			return 1
 		}
 	}
+	var fed *render.Federation
+	if cfg.AnthropicAuth == config.AuthFederation {
+		fed = &render.Federation{IdentityTokenFile: cfg.IdentityTokenFile, RuleID: cfg.FederationRuleID,
+			OrganizationID: cfg.AnthropicOrgID, ServiceAccountID: cfg.AnthropicServiceAcctID, WorkspaceID: cfg.AnthropicWorkspaceID}
+	}
+	if fed != nil {
+		// The kubelet projects the token; absent here only means it is not mounted yet.
+		if _, err := os.Stat(fed.IdentityTokenFile); err != nil {
+			log.Warn("identity token file is not readable yet; the first exchange will fail until it is", "err", err)
+		}
+		log.Info("anthropic auth: workload identity federation", "rule", fed.RuleID, "serviceAccount", fed.ServiceAccountID)
+	}
 	paths, err := render.Render(render.Input{
 		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
-		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile,
+		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
 		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,

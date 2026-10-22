@@ -7,6 +7,7 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,24 +18,43 @@ import (
 // mcp__core__<tool>.
 const ServerName = "core"
 
+// ProfileName is the name of the federation profile Render writes.
+const ProfileName = "spot"
+
 // Input is what Render needs.
 type Input struct {
 	RunDir           string
 	StateDir         string
 	CoreMCPURL       string
 	CoreTokenFile    string
-	AnthropicKeyFile string
-	HookBin          string // absolute path of the tria-spot binary
-	KubectlWritesHr  int
-	Instruction      string // the rendered system prompt
+	AnthropicKeyFile string // key mode
+	// Federation mode: set Federation and leave AnthropicKeyFile empty.
+	Federation      *Federation
+	HookBin         string // absolute path of the tria-spot binary
+	KubectlWritesHr int
+	Instruction     string // the rendered system prompt
+}
+
+// Federation is the non-secret part of Workload Identity Federation: the ids
+// and the path of the projected identity token.
+type Federation struct {
+	IdentityTokenFile string
+	RuleID            string
+	OrganizationID    string
+	ServiceAccountID  string
+	WorkspaceID       string // optional
 }
 
 // Paths are the files Render wrote.
 type Paths struct {
 	MCPConfig   string
 	Settings    string
-	KeyHelper   string
+	KeyHelper   string // key mode only
 	Instruction string
+	// AnthropicConfigDir and Profile are set in federation mode: the CLI is
+	// started with ANTHROPIC_CONFIG_DIR and ANTHROPIC_PROFILE pointing here.
+	AnthropicConfigDir string
+	Profile            string
 }
 
 // Render writes the files with mode 0400 (the helper 0500) in a 0700 run
@@ -44,8 +64,12 @@ func Render(in Input) (Paths, error) {
 	if err != nil {
 		return Paths{}, fmt.Errorf("core token: %w", err)
 	}
-	if _, err := readSecretFile(in.AnthropicKeyFile); err != nil {
-		return Paths{}, fmt.Errorf("anthropic key: %w", err)
+	if in.Federation == nil {
+		if _, err := readSecretFile(in.AnthropicKeyFile); err != nil {
+			return Paths{}, fmt.Errorf("anthropic key: %w", err)
+		}
+	} else if in.AnthropicKeyFile != "" {
+		return Paths{}, errors.New("federation mode takes no API key file: it would shadow federation")
 	}
 	if err := os.MkdirAll(in.RunDir, 0o700); err != nil {
 		return Paths{}, err
@@ -56,8 +80,11 @@ func Render(in Input) (Paths, error) {
 	p := Paths{
 		MCPConfig:   filepath.Join(in.RunDir, "mcp.json"),
 		Settings:    filepath.Join(in.RunDir, "settings.json"),
-		KeyHelper:   filepath.Join(in.RunDir, "api-key-helper.sh"),
 		Instruction: filepath.Join(in.RunDir, "instruction.md"),
+	}
+
+	if in.Federation == nil {
+		p.KeyHelper = filepath.Join(in.RunDir, "api-key-helper.sh")
 	}
 
 	mcp := map[string]any{"mcpServers": map[string]any{ServerName: map[string]any{
@@ -69,9 +96,16 @@ func Render(in Input) (Paths, error) {
 		return Paths{}, err
 	}
 
-	helper := "#!/bin/sh\n# Prints the Anthropic key so it is never an environment variable or an argument.\nexec tr -d '\\r\\n' < " + shQuote(in.AnthropicKeyFile) + "\n"
-	if err := writeFile(p.KeyHelper, []byte(helper), 0o500); err != nil {
-		return Paths{}, err
+	if in.Federation != nil {
+		_ = os.Remove(filepath.Join(in.RunDir, "api-key-helper.sh")) // never leave a helper that would shadow federation
+		if err := renderProfile(in, &p); err != nil {
+			return Paths{}, err
+		}
+	} else {
+		helper := "#!/bin/sh\n# Prints the Anthropic key so it is never an environment variable or an argument.\nexec tr -d '\\r\\n' < " + shQuote(in.AnthropicKeyFile) + "\n"
+		if err := writeFile(p.KeyHelper, []byte(helper), 0o500); err != nil {
+			return Paths{}, err
+		}
 	}
 
 	if err := writeJSON(p.Settings, Settings(in, p.KeyHelper), 0o400); err != nil {
@@ -95,8 +129,8 @@ func Settings(in Input, helperPath string) map[string]any {
 		},
 		"timeout": 20,
 	}
-	return map[string]any{
-		"apiKeyHelper": helperPath,
+	deny := []string{"Read(" + absRule(in.RunDir) + "/**)"}
+	st := map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []any{map[string]any{
 				"matcher": "Bash",
@@ -105,14 +139,59 @@ func Settings(in Input, helperPath string) map[string]any {
 		},
 		// Best effort only: the shell runs as the same user and can cat these.
 		// The key's spend limit and the ServiceAccount's RBAC are the boundary.
-		"permissions": map[string]any{
-			"deny": []string{
-				"Read(" + absRule(in.RunDir) + "/**)",
-				"Read(" + absRule(in.CoreTokenFile) + ")",
-				"Read(" + absRule(in.AnthropicKeyFile) + ")",
-			},
-		},
 	}
+	deny = append(deny, "Read("+absRule(in.CoreTokenFile)+")")
+	if in.Federation != nil {
+		// No apiKeyHelper: it outranks federation and would shadow it. The
+		// profile and the cached access token live under the run dir (already
+		// denied); the identity token file is denied explicitly.
+		deny = append(deny, "Read("+absRule(in.Federation.IdentityTokenFile)+")")
+	} else {
+		st["apiKeyHelper"] = helperPath
+		deny = append(deny, "Read("+absRule(in.AnthropicKeyFile)+")")
+	}
+	st["permissions"] = map[string]any{"deny": deny}
+	return st
+}
+
+// profileFile is the federation profile, https://platform.claude.com/docs/en/
+// manage-claude/wif-reference#profile-configuration-file. It holds no secret.
+func profileFile(f *Federation) map[string]any {
+	prof := map[string]any{
+		"version": "1.0",
+		"authentication": map[string]any{
+			"type":               "oidc_federation",
+			"federation_rule_id": f.RuleID,
+			"service_account_id": f.ServiceAccountID,
+			"identity_token":     map[string]any{"source": "file", "path": f.IdentityTokenFile},
+		},
+		"organization_id": f.OrganizationID,
+		"base_url":        "https://api.anthropic.com",
+	}
+	if f.WorkspaceID != "" {
+		prof["workspace_id"] = f.WorkspaceID
+	}
+	return prof
+}
+
+// renderProfile writes <run>/anthropic/configs/<ProfileName>.json and makes
+// the credentials directory the SDK caches the access token in. Both are on
+// the memory-backed run dir, never on the state volume.
+func renderProfile(in Input, p *Paths) error {
+	dir := filepath.Join(in.RunDir, "anthropic")
+	for _, d := range []string{dir, filepath.Join(dir, "configs"), filepath.Join(dir, "credentials")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return err
+		}
+	}
+	if err := writeJSON(filepath.Join(dir, "configs", ProfileName+".json"), profileFile(in.Federation), 0o400); err != nil {
+		return err
+	}
+	p.AnthropicConfigDir, p.Profile = dir, ProfileName
+	return nil
 }
 
 // absRule writes an absolute path in Claude Code's permission rule syntax,

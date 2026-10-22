@@ -18,18 +18,27 @@ type Config struct {
 	CoreMCPURL       string
 	CoreTokenFile    string
 	AnthropicKeyFile string
-	StateDir         string
-	RunDir           string
-	ClaudeBin        string
-	Model            string
-	MinWake          time.Duration
-	MaxWake          time.Duration
-	MaxTurns         int
-	TurnTimeout      time.Duration
-	DailyTokenCeil   int64
-	PollInterval     time.Duration
-	EdgeCooldown     time.Duration
-	LogLevel         string
+	// AnthropicAuth is "key" (a static API key read through apiKeyHelper) or
+	// "federation" (Workload Identity Federation: a projected identity token is
+	// exchanged for a short-lived access token). The ids are not secrets.
+	AnthropicAuth          string
+	IdentityTokenFile      string
+	FederationRuleID       string
+	AnthropicOrgID         string
+	AnthropicServiceAcctID string
+	AnthropicWorkspaceID   string
+	StateDir               string
+	RunDir                 string
+	ClaudeBin              string
+	Model                  string
+	MinWake                time.Duration
+	MaxWake                time.Duration
+	MaxTurns               int
+	TurnTimeout            time.Duration
+	DailyTokenCeil         int64
+	PollInterval           time.Duration
+	EdgeCooldown           time.Duration
+	LogLevel               string
 
 	// PermissionMode is what the CLI is started in. FallbackPermMode is used
 	// instead when the CLI reports it did not start in PermissionMode.
@@ -42,6 +51,12 @@ type Config struct {
 }
 
 // Defaults.
+// Anthropic auth modes.
+const (
+	AuthKey        = "key"
+	AuthFederation = "federation"
+)
+
 const (
 	DefaultStateDir = "/state"
 	DefaultRunDir   = "/run/tria-spot"
@@ -57,7 +72,13 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.Name, "name", "", "spot name; default <tenant>-spot")
 	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
-	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required)")
+	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --anthropic-auth=key, rejected otherwise)")
+	fs.StringVar(&c.AnthropicAuth, "anthropic-auth", AuthKey, "how the CLI authenticates to the Anthropic API: key or federation")
+	fs.StringVar(&c.IdentityTokenFile, "anthropic-identity-token-file", "", "federation: file holding the projected identity token (JWT), re-read on every exchange")
+	fs.StringVar(&c.FederationRuleID, "anthropic-federation-rule-id", "", "federation: the federation rule id (fdrl_...)")
+	fs.StringVar(&c.AnthropicOrgID, "anthropic-org-id", "", "federation: the Anthropic organization id")
+	fs.StringVar(&c.AnthropicServiceAcctID, "anthropic-service-account-id", "", "federation: the Anthropic service account id (svac_...)")
+	fs.StringVar(&c.AnthropicWorkspaceID, "anthropic-workspace-id", "", "federation: workspace id (wrkspc_...); optional when the rule spans one workspace")
 	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "persistent directory: notes, session, schedule, usage")
 	fs.StringVar(&c.RunDir, "run-dir", DefaultRunDir, "memory-backed directory for rendered config")
 	fs.StringVar(&c.ClaudeBin, "claude-bin", "claude", "Claude Code CLI binary")
@@ -106,7 +127,37 @@ func (c *Config) Validate() error {
 	req(c.Tenant, "tenant")
 	req(c.CoreMCPURL, "core-mcp-url")
 	req(c.CoreTokenFile, "core-token-file")
-	req(c.AnthropicKeyFile, "anthropic-key-file")
+	switch c.AnthropicAuth {
+	case AuthKey:
+		req(c.AnthropicKeyFile, "anthropic-key-file")
+		for flagName, v := range map[string]string{
+			"anthropic-identity-token-file": c.IdentityTokenFile, "anthropic-federation-rule-id": c.FederationRuleID,
+			"anthropic-org-id": c.AnthropicOrgID, "anthropic-service-account-id": c.AnthropicServiceAcctID,
+			"anthropic-workspace-id": c.AnthropicWorkspaceID,
+		} {
+			if v != "" {
+				errs = append(errs, fmt.Errorf("--%s only applies with --anthropic-auth=federation", flagName))
+			}
+		}
+	case AuthFederation:
+		if c.AnthropicKeyFile != "" {
+			errs = append(errs, errors.New("--anthropic-key-file must not be given with --anthropic-auth=federation: the key would shadow federation"))
+		}
+		req(c.IdentityTokenFile, "anthropic-identity-token-file")
+		req(c.FederationRuleID, "anthropic-federation-rule-id")
+		req(c.AnthropicOrgID, "anthropic-org-id")
+		req(c.AnthropicServiceAcctID, "anthropic-service-account-id")
+		for flagName, v := range map[string]string{
+			"anthropic-federation-rule-id": c.FederationRuleID, "anthropic-org-id": c.AnthropicOrgID,
+			"anthropic-service-account-id": c.AnthropicServiceAcctID, "anthropic-workspace-id": c.AnthropicWorkspaceID,
+		} {
+			if strings.ContainsAny(v, " \t\n/\\") {
+				errs = append(errs, fmt.Errorf("--%s must not contain spaces or slashes", flagName))
+			}
+		}
+	default:
+		errs = append(errs, fmt.Errorf("--anthropic-auth %q is not one of key, federation", c.AnthropicAuth))
+	}
 	req(c.StateDir, "state-dir")
 	req(c.RunDir, "run-dir")
 	if c.MinWake <= 0 {

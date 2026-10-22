@@ -56,12 +56,75 @@ func TestAllowedToolsAreScoped(t *testing.T) {
 	}
 }
 
+func TestNeverBare(t *testing.T) {
+	// --bare ignores profiles and federation variables.
+	for _, resume := range []string{"", "id"} {
+		for _, a := range BuildArgs(opts(), resume) {
+			if a == "--bare" {
+				t.Fatal("--bare must never be passed")
+			}
+		}
+	}
+}
+
 func TestScrubEnv(t *testing.T) {
 	in := []string{"PATH=/bin", "ANTHROPIC_API_KEY=x", "ANTHROPIC_BASE_URL=y", "MY_TOKEN=t", "db_password=p",
-		"AWS_SECRET_ACCESS_KEY=s", "KUBERNETES_SERVICE_HOST=h", "CLAUDE_CODE_OAUTH_TOKEN=o", "LANG=C"}
+		"AWS_SECRET_ACCESS_KEY=s", "KUBERNETES_SERVICE_HOST=h", "CLAUDE_CODE_OAUTH_TOKEN=o", "LANG=C",
+		"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1"}
 	out := ScrubEnv(in, "HOME=/state/home")
 	got := strings.Join(out, " ")
 	if got != "PATH=/bin KUBERNETES_SERVICE_HOST=h LANG=C HOME=/state/home" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func envMap(env []string) map[string]string {
+	m := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		m[k] = v
+	}
+	return m
+}
+
+func TestFederationEnvAllowsOnlyConfigDirAndProfile(t *testing.T) {
+	for k, v := range map[string]string{
+		"ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t", "CLAUDE_CODE_OAUTH_TOKEN": "o",
+		"ANTHROPIC_PROFILE": "other", "ANTHROPIC_CONFIG_DIR": "/elsewhere",
+		"ANTHROPIC_FEDERATION_RULE_ID": "x", "ANTHROPIC_IDENTITY_TOKEN": "jwt", "ANTHROPIC_IDENTITY_TOKEN_FILE": "/f",
+		"ANTHROPIC_ORGANIZATION_ID": "o", "ANTHROPIC_SERVICE_ACCOUNT_ID": "s", "ANTHROPIC_WORKSPACE_ID": "w",
+		"CLAUDE_CODE_USE_BEDROCK": "1",
+	} {
+		t.Setenv(k, v)
+	}
+	o := opts()
+	o.Paths.AnthropicConfigDir, o.Paths.Profile = "/run/tria-spot/anthropic", "spot"
+	env := envMap(New(o).Env())
+	var anthropic []string
+	for k := range env {
+		if strings.HasPrefix(k, "ANTHROPIC_") {
+			anthropic = append(anthropic, k)
+		}
+	}
+	if len(anthropic) != 2 || env["ANTHROPIC_CONFIG_DIR"] != "/run/tria-spot/anthropic" || env["ANTHROPIC_PROFILE"] != "spot" {
+		t.Fatalf("federation env: %v", anthropic)
+	}
+	for _, k := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("%s leaked", k)
+		}
+	}
+	if env["CLAUDE_CONFIG_DIR"] != "/state/claude" {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q", env["CLAUDE_CONFIG_DIR"])
+	}
+}
+
+func TestKeyModeEnvCarriesNoAnthropicVariable(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	t.Setenv("ANTHROPIC_PROFILE", "p")
+	for k := range envMap(New(opts()).Env()) {
+		if strings.HasPrefix(k, "ANTHROPIC_") {
+			t.Errorf("%s reached the CLI in key mode", k)
+		}
 	}
 }

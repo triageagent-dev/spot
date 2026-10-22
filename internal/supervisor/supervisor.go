@@ -418,7 +418,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if failed {
 		s.failures++
 		s.status.Failures = s.failures
-		s.status.LastError = failureText(res)
+		s.status.LastError = failureText(res, s.cfg.AnthropicAuth)
 		s.log.Error("turn failed", "err", s.status.LastError, "failures", s.failures, "timedOut", res.TimedOut,
 			"tokens", u.Billable())
 	} else {
@@ -471,7 +471,29 @@ func (s *Supervisor) sessionLost(res runner.Result) bool {
 	return s.failures+1 >= 3 && !res.Summary.GotResult
 }
 
-func failureText(res runner.Result) string {
+// federationHint is what to read when federation auth fails. The API answers
+// every denied exchange with the same opaque 401; the reason is only in the
+// Claude Console's authentication history.
+const federationHint = "check the authentication history in the Claude Console (jti_reused / match_*)"
+
+func looksLikeAuthFailure(res runner.Result) bool {
+	if res.AuthFailed || res.Summary.APIErrorStatus == 401 {
+		return true
+	}
+	text := strings.ToLower(res.Summary.ResultText + " " + strings.Join(res.Summary.Errors, " ") + " " + res.Stderr)
+	for _, w := range []string{"authentication failed", "authentication_error", "workloadidentity", "jti_reused", "oauth/token", "token exchange failed with status 401", "token exchange failed with status 403"} {
+		if strings.Contains(text, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// failureText describes why a turn failed. mode is the Anthropic auth mode.
+func failureText(res runner.Result, mode string) string {
+	if mode == config.AuthFederation && looksLikeAuthFailure(res) {
+		return "Anthropic authentication failed in federation mode; " + federationHint
+	}
 	switch {
 	case res.AuthFailed:
 		return "the Anthropic API rejected the key (401); check the key Secret"

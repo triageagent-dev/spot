@@ -18,6 +18,7 @@ import (
 	"github.com/triageagent-dev/tria-spot/internal/ledger"
 	"github.com/triageagent-dev/tria-spot/internal/render"
 	"github.com/triageagent-dev/tria-spot/internal/runner"
+	"github.com/triageagent-dev/tria-spot/internal/stream"
 )
 
 type fakeClock struct {
@@ -110,7 +111,7 @@ func newHarness(t *testing.T, mut func(*config.Config)) *harness {
 		CoreTokenFile: tok, AnthropicKeyFile: key, StateDir: h.state, RunDir: h.run, ClaudeBin: bin,
 		MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour, MaxTurns: 7, TurnTimeout: 20 * time.Second,
 		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0, PermissionMode: "auto", FallbackPermMode: "dontAsk",
-		HeartbeatID: "system2-heartbeat-example", KubectlWritesHr: 5, HookBin: "/bin/tria-spot", LogLevel: "debug",
+		AnthropicAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", KubectlWritesHr: 5, HookBin: "/bin/tria-spot", LogLevel: "debug",
 	}
 	if mut != nil {
 		mut(&h.cfg)
@@ -129,9 +130,15 @@ func must(t *testing.T, err error) {
 // when called again) and runs it.
 func (h *harness) start() {
 	h.t.Helper()
-	paths, err := render.Render(render.Input{RunDir: h.run, StateDir: h.state, CoreMCPURL: h.cfg.CoreMCPURL,
+	in := render.Input{RunDir: h.run, StateDir: h.state, CoreMCPURL: h.cfg.CoreMCPURL,
 		CoreTokenFile: h.cfg.CoreTokenFile, AnthropicKeyFile: h.cfg.AnthropicKeyFile, HookBin: h.cfg.HookBin,
-		KubectlWritesHr: h.cfg.KubectlWritesHr, Instruction: "system prompt"})
+		KubectlWritesHr: h.cfg.KubectlWritesHr, Instruction: "system prompt"}
+	if h.cfg.AnthropicAuth == config.AuthFederation {
+		in.AnthropicKeyFile = ""
+		in.Federation = &render.Federation{IdentityTokenFile: h.cfg.IdentityTokenFile, RuleID: "fdrl_example",
+			OrganizationID: "org", ServiceAccountID: "svac_example"}
+	}
+	paths, err := render.Render(in)
 	must(h.t, err)
 	led, err := ledger.New(h.state)
 	must(h.t, err)
@@ -648,5 +655,79 @@ func TestRepeated401StopsTheTurnEarly(t *testing.T) {
 	}
 	if h.core.beatCount() != 0 {
 		t.Fatal("no heartbeat while the key is rejected")
+	}
+}
+
+func TestFederationAuthFailureSaysWhereToLook(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) {
+		c.AnthropicAuth = config.AuthFederation
+		c.IdentityTokenFile = "/var/run/secrets/anthropic.com/token"
+	})
+	h.set("mode", "authfail")
+	h.start()
+	defer h.stop()
+	h.waitFor("an auth failure", func() bool {
+		st := h.status()
+		return st.LastTurn != nil && st.LastTurn.AuthFailed && st.State == "idle"
+	})
+	msg := h.status().LastError
+	if !strings.Contains(msg, "federation") || !strings.Contains(msg, "authentication history in the Claude Console (jti_reused / match_*)") {
+		t.Fatalf("last error: %q", msg)
+	}
+	if strings.Contains(msg, "key Secret") {
+		t.Fatalf("a federation failure must not blame the key Secret: %q", msg)
+	}
+	// The CLI saw the profile and none of the key-mode credentials.
+	env := h.file("env", 1)
+	for _, want := range []string{"ANTHROPIC_PROFILE=spot", "ANTHROPIC_CONFIG_DIR=" + h.run + "/anthropic"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("child env lacks %q", want)
+		}
+	}
+	if strings.Contains(env, "ANTHROPIC_API_KEY") || strings.Contains(env, "ANTHROPIC_IDENTITY_TOKEN") {
+		t.Errorf("child env carries a shadowing credential")
+	}
+	if _, err := os.Stat(filepath.Join(h.run, "api-key-helper.sh")); !os.IsNotExist(err) {
+		t.Error("federation mode must not render the key helper")
+	}
+}
+
+func TestKeyModeAuthFailureBlamesTheKey(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("mode", "authfail")
+	h.start()
+	defer h.stop()
+	h.waitFor("an auth failure", func() bool {
+		st := h.status()
+		return st.LastTurn != nil && st.LastTurn.AuthFailed && st.State == "idle"
+	})
+	if msg := h.status().LastError; !strings.Contains(msg, "key Secret") || strings.Contains(msg, "federation") {
+		t.Fatalf("last error: %q", msg)
+	}
+}
+
+func TestFailureTextFederationCatchesOpaqueAuthErrors(t *testing.T) {
+	res := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "WorkloadIdentityError: Authentication failed"}
+	if msg := failureText(res, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
+		t.Errorf("federation: %q", msg)
+	}
+	if msg := failureText(res, config.AuthKey); strings.Contains(msg, "jti_reused") {
+		t.Errorf("key mode must not give the federation hint: %q", msg)
+	}
+	// The shape the real CLI printed for a rejected exchange (a 400 there); a
+	// 401 reads the same with "Authentication failed" as the message.
+	exch := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
+		ResultText: `API Error: Token exchange failed with status 401 (request-id req_x): {"error":{"message":"Authentication failed","type":"authentication_error"}}`}}
+	if msg := failureText(exch, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
+		t.Errorf("exchange 401: %q", msg)
+	}
+	bad400 := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
+		ResultText: `API Error: Token exchange failed with status 400 (request-id req_x): {"error":{"message":"federation_rule_id is not a well-formed fdrl_ tagged ID"}}`}}
+	if msg := failureText(bad400, config.AuthFederation); !strings.Contains(msg, "not a well-formed") || strings.Contains(msg, "jti_reused") {
+		t.Errorf("a 400 names its own cause: %q", msg)
+	}
+	other := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "disk full"}
+	if msg := failureText(other, config.AuthFederation); strings.Contains(msg, "federation") {
+		t.Errorf("an unrelated failure got the federation hint: %q", msg)
 	}
 }
