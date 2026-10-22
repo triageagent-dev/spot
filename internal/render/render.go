@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,9 @@ func Render(in Input) (Paths, error) {
 	if err := os.MkdirAll(in.RunDir, 0o700); err != nil {
 		return Paths{}, err
 	}
-	if err := os.Chmod(in.RunDir, 0o700); err != nil {
+	// A mounted emptyDir belongs to root with the pod's fsGroup, so the
+	// supervisor cannot chmod its root. Every file below carries its own mode.
+	if err := os.Chmod(in.RunDir, 0o700); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return Paths{}, err
 	}
 	p := Paths{
