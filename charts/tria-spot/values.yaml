@@ -83,6 +83,7 @@ telemetry:
 # Supervisor settings (see the README for each flag).
 agent:
   model: ""                   # model alias or name; empty = the CLI default
+  coreTools: curated          # curated: the tools the loop names, destructive ones (resolve_issue, forget_issue, ...) refused; all: every core tool, bounded by core.verbs
   permissionMode: auto        # auto | dontAsk | acceptEdits
   fallbackPermissionMode: dontAsk
   minWake: 2m

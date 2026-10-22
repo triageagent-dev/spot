@@ -58,6 +58,9 @@ type Config struct {
 	// EgoMCPURL is ego's MCP endpoint; the spot reads its sessions, usage and
 	// findings there with the same sender token (--otel-token-file).
 	EgoMCPURL string
+	// CoreTools is "curated" (the tools the loop names, the destructive ones
+	// refused) or "all" (every core tool, bounded by the ServiceAccount's Role).
+	CoreTools string
 
 	// PermissionMode is what the CLI is started in. FallbackPermMode is used
 	// instead when the CLI reports it did not start in PermissionMode.
@@ -117,6 +120,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the CLI's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
+	fs.StringVar(&c.CoreTools, "core-tools", "curated", "curated: the core tools the loop names, destructive ones refused; all: every core tool Tria has, bounded by the core Role")
 	fs.StringVar(&c.EgoMCPURL, "ego-mcp-url", "", "ego's MCP endpoint (for example http://ego.<ns>.svc:8001/mcp), read with the --otel-token-file token; empty = no ego tools")
 	fs.StringVar(&c.OtelTenant, "otel-tenant", "tria-spot", "the ego.tenant the CLI's traces carry, so every spot lands under one tenant in ego")
 	fs.BoolVar(&c.OtelToolDetails, "otel-tool-details", false, "add tool parameters (Bash commands, file paths) to trace spans; off, spans carry names and timings only")
@@ -158,6 +162,9 @@ func (c *Config) Validate() error {
 	req(c.Tenant, "tenant")
 	if c.OtelEndpoint != "" && !strings.HasPrefix(c.OtelEndpoint, "http://") && !strings.HasPrefix(c.OtelEndpoint, "https://") {
 		errs = append(errs, errors.New("--otel-endpoint must be an http:// or https:// URL"))
+	}
+	if c.CoreTools != "curated" && c.CoreTools != "all" {
+		errs = append(errs, errors.New("--core-tools is curated or all"))
 	}
 	if c.EgoMCPURL != "" && c.OtelTokenFile == "" {
 		errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))

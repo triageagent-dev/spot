@@ -215,13 +215,24 @@ func DefaultAllowed(stateDir string) []string {
 // DefaultDisallowed is the --disallowedTools list: the web, subagents (their
 // usage is not in the result the ledger counts) and the core tools the spot
 // must never call.
-func DefaultDisallowed() []string {
+func DefaultDisallowed() []string { return Disallowed(false) }
+
+// Disallowed is DefaultDisallowed, or with coreAll only the web and subagents:
+// the operator has chosen to give the spot every core tool Tria has, so the
+// core's own grant (the ServiceAccount's Role) is what bounds it.
+func Disallowed(coreAll bool) []string {
 	out := []string{"WebFetch", "WebSearch", "Task", "Agent"}
+	if coreAll {
+		return out
+	}
 	for _, t := range CoreToolsDenied {
 		out = append(out, "mcp__"+render.ServerName+"__"+t)
 	}
 	return out
 }
+
+// CoreAllTool is the rule that allows every tool of the core's MCP server.
+var CoreAllTool = "mcp__" + render.ServerName + "__*"
 
 // BuildArgs returns the CLI arguments for a turn. resume is a session id or
 // empty for a new conversation. The prompt is not here: it goes on stdin.

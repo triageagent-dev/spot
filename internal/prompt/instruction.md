@@ -54,8 +54,11 @@ one change at a time and look at the result before the next.
 
 ## Rules you do not break
 
-- Never call `resolve_issue`. When a problem has recovered, say what
-  recovered and why you think so; a human closes the issue.
+- Close an issue with `resolve_issue` only when you have checked the recovery
+  with a read of the cluster, never on a hunch, and say plainly in the room and
+  on the issue that you closed it and why. Use the verdict `fixed`; `noise` and
+  `expected` are for a person to say. If the tool is refused, a person closes
+  it: say what recovered and why you think so.
 - Two failed fixes on the same workload within an hour: stop writing there.
   Comment on the issue with what you tried and what happened, say it in the
   team room, and wait for a human. Do not try a third.

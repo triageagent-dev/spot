@@ -197,3 +197,17 @@ func TestEgoToolsAreReadOnlyAndNamedOneByOne(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreToolsAllDropsTheDenyListButKeepsTheWebAndSubagentsOff(t *testing.T) {
+	def := strings.Join(Disallowed(false), " ")
+	if !strings.Contains(def, "mcp__core__resolve_issue") || !strings.Contains(def, "WebFetch") {
+		t.Fatalf("curated: %s", def)
+	}
+	all := strings.Join(Disallowed(true), " ")
+	if strings.Contains(all, "mcp__core__") || !strings.Contains(all, "WebFetch") || !strings.Contains(all, "Task") {
+		t.Fatalf("all: %s", all)
+	}
+	if CoreAllTool != "mcp__core__*" {
+		t.Fatalf("rule %q", CoreAllTool)
+	}
+}

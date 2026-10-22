@@ -212,3 +212,15 @@ func TestEgoMCPNeedsTheSenderToken(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreToolsIsCuratedOrAll(t *testing.T) {
+	if c, err := Parse(required, io.Discard); err != nil || c.CoreTools != "curated" {
+		t.Fatalf("default %q %v", c.CoreTools, err)
+	}
+	if c, err := Parse(append(append([]string{}, required...), "--core-tools", "all"), io.Discard); err != nil || c.CoreTools != "all" {
+		t.Fatalf("all: %q %v", c.CoreTools, err)
+	}
+	if _, err := Parse(append(append([]string{}, required...), "--core-tools", "most"), io.Discard); err == nil {
+		t.Fatal("an unknown value must fail")
+	}
+}

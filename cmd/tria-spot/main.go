@@ -123,7 +123,11 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	if cfg.EgoMCPURL != "" {
 		allowed = append(allowed, runner.EgoAllowed()...)
 	}
-	disallowed := appendRules(runner.DefaultDisallowed(), cfg.ExtraDisallowed)
+	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)
+	if cfg.CoreTools == "all" {
+		allowed = append(allowed, runner.CoreAllTool)
+		log.Info("core tools: all of them; the core's Role is the bound")
+	}
 	var tel *runner.Telemetry
 	if cfg.OtelEndpoint != "" {
 		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, ToolDetails: cfg.OtelToolDetails}

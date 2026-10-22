@@ -14,7 +14,7 @@ func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
 	for _, want := range []string{
 		"example-spot", "`example`", "/state/next.json", "/state/notes/", "2m0s", "2h0m0s",
 		"get_triage_instructions", "get_tenant_situation", "search_memory", "search_corpus",
-		"verify_hypothesis", "comment_on_issue", "Never call `resolve_issue`",
+		"verify_hypothesis", "comment_on_issue", "Close an issue with `resolve_issue` only",
 		"Two failed fixes", "say_in_workspace", "read_workspace_file", "Answer first", "mcp__ego__*", `room: "team"`, `room: "agents"`, "hop", "ServiceAccount",
 	} {
 		if !strings.Contains(s, want) {

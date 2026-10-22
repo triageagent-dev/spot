@@ -75,6 +75,7 @@ spec:
             - --max-wake={{ .Values.agent.maxWake }}
             - --poll-interval={{ .Values.agent.pollInterval }}
             - --edge-cooldown={{ .Values.agent.edgeCooldown }}
+            - --core-tools={{ .Values.agent.coreTools }}
             - --chat-batch={{ .Values.agent.chatBatch }}
             - --max-edge-wakes-per-hour={{ int .Values.agent.maxEdgeWakesPerHour }}
             - --max-turns={{ .Values.agent.maxTurns }}
