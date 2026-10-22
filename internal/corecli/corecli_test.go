@@ -20,6 +20,7 @@ type fakeCore struct {
 	upserts   []map[string]any
 	issuesOut string
 	withRoom  bool
+	roomArgs  []map[string]any
 }
 
 func (f *fakeCore) start(t *testing.T) *httptest.Server {
@@ -43,9 +44,12 @@ func (f *fakeCore) start(t *testing.T) *httptest.Server {
 			return mcp.NewToolResultText(`{"id":"x","status":"active"}`), nil
 		})
 	if f.withRoom {
-		s.AddTool(mcp.NewTool("read_workspace_room", mcp.WithString("tenant"), mcp.WithString("room"), mcp.WithString("since")),
+		s.AddTool(mcp.NewTool("read_workspace_room", mcp.WithString("tenant"), mcp.WithString("room"), mcp.WithNumber("since_ts")),
 			func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(`{"messages":[{"id":"m1","sender":"alice","text":"hi"}]}`), nil
+				f.mu.Lock()
+				f.roomArgs = append(f.roomArgs, r.GetArguments())
+				f.mu.Unlock()
+				return mcp.NewToolResultText(`{"messages":[{"id":"m1","sender":"alice","text":"hi","ts":1792672900123}]}`), nil
 			})
 	}
 	h := server.NewStreamableHTTPServer(s)
@@ -129,8 +133,23 @@ func TestRoomToolPresent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	msgs, next, err := c.RoomMessages(ctx, "team", "")
-	if err != nil || len(msgs) != 1 || msgs[0].Sender != "alice" || next != "m1" {
+	if err != nil || len(msgs) != 1 || msgs[0].Sender != "alice" || next != "1792672900123" {
 		t.Fatalf("msgs=%+v next=%q err=%v", msgs, next, err)
+	}
+	// The cursor goes back to the core as the number since_ts, not as "since".
+	if _, _, err := c.RoomMessages(ctx, "team", next); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, has := f.roomArgs[0]["since_ts"]; has {
+		t.Fatalf("first read must not send a cursor: %v", f.roomArgs[0])
+	}
+	if got, ok := f.roomArgs[1]["since_ts"].(float64); !ok || int64(got) != 1792672900123 {
+		t.Fatalf("second read args: %v", f.roomArgs[1])
+	}
+	if _, has := f.roomArgs[1]["since"]; has {
+		t.Fatalf("the old since argument must be gone: %v", f.roomArgs[1])
 	}
 }
 
@@ -155,5 +174,25 @@ func TestUnreachableCoreErrors(t *testing.T) {
 	defer cancel()
 	if _, err := c.ListOpenIssues(ctx); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+// The shape the core's read_workspace_room really returns (ts is a number in
+// milliseconds, the cursor is the newest ts, and it is sent back as since_ts).
+func TestParseRoomCoreShape(t *testing.T) {
+	reply := `{"room":"team","messages":[` +
+		`{"id":"$a","sender":"@u.den:srv","name":"den","body":"hey","ts":1792672900123},` +
+		`{"id":"$b","sender":"@u.spot.t:srv","name":"t-spot","body":"hi","ts":1792672901123,"spot":"t-spot","hop":0},` +
+		`{"id":"$c","sender":"@tria:srv","name":"Tria","body":"ok","ts":1792672902123,"tria":true}]}`
+	m, next, err := ParseRoom(reply, "")
+	if err != nil || len(m) != 3 {
+		t.Fatalf("%+v %v", m, err)
+	}
+	if next != "1792672902123" || m[0].TS != 1792672900123 || m[0].Name != "den" || m[1].Spot != "t-spot" || !m[2].Tria {
+		t.Fatalf("next=%q msgs=%+v", next, m)
+	}
+	// An empty read keeps the cursor.
+	if _, next, _ := ParseRoom(`{"room":"team","messages":[]}`, "1792672902123"); next != "1792672902123" {
+		t.Fatalf("empty read moved the cursor to %q", next)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -297,13 +298,30 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) []edges.Edge {
 	}
 	var out []edges.Edge
 	for _, m := range msgs {
-		if m.Sender == s.cfg.Name {
+		if s.isOwn(m) {
 			continue
 		}
-		out = append(out, edges.Edge{Kind: edges.Message, Human: true,
-			Fact: fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %q", room, orUnknown(m.Sender), clip(m.Text, 400))})
+		who := m.Name
+		if who == "" {
+			who = m.Sender
+		}
+		// A person is talking to the spot; Tria and other agents are news but
+		// not a human asking.
+		human := !m.Tria && m.Spot == ""
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human,
+			Fact: fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %q", room, orUnknown(who), clip(m.Text, 400))})
 	}
 	return out
+}
+
+// badLocal mirrors the core's sanitiser for the spot's Matrix localpart.
+var badLocal = regexp.MustCompile(`[^a-z0-9._=/-]`)
+
+// isOwn reports whether a room message is this spot's own. The core posts the
+// spot as @u.spot.<tenant>:<server>, with the tenant lowercased and sanitised.
+func (s *Supervisor) isOwn(m corecli.RoomMessage) bool {
+	prefix := "@u.spot." + badLocal.ReplaceAllString(strings.ToLower(s.cfg.Tenant), "_") + ":"
+	return strings.HasPrefix(m.Sender, prefix)
 }
 
 func orUnknown(s string) string {

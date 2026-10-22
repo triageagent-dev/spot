@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,9 +37,13 @@ type Issue struct {
 // RoomMessage is one message from read_workspace_room.
 type RoomMessage struct {
 	ID     string
-	Sender string
+	Sender string // the Matrix user id of the sender
+	Name   string // the sender's display name
 	Text   string
 	Time   string
+	TS     int64  // milliseconds; the core's read_workspace_room cursor
+	Tria   bool   // Tria wrote it
+	Spot   string // a teammate agent wrote it; its name
 }
 
 // Client talks to one core.
@@ -212,8 +217,9 @@ func (c *Client) RoomMessages(ctx context.Context, room, since string) ([]RoomMe
 		return nil, since, ErrNoRoomTool
 	}
 	args := map[string]any{"tenant": c.tenant, "room": room}
-	if since != "" {
-		args["since"] = since
+	// The core's cursor is the ts of the newest message seen, in milliseconds.
+	if ts, err := strconv.ParseInt(since, 10, 64); err == nil && ts > 0 {
+		args["since_ts"] = ts
 	}
 	text, err := c.call(ctx, "read_workspace_room", args)
 	if err != nil {
@@ -243,13 +249,29 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 		raw = obj.Messages
 	}
 	var out []RoomMessage
+	var maxTS int64
 	for _, m := range raw {
-		out = append(out, RoomMessage{
+		rm := RoomMessage{
 			ID:     str(m, "id", "event_id"),
 			Sender: str(m, "sender", "from", "author"),
+			Name:   str(m, "name"),
 			Text:   str(m, "text", "body", "message"),
-			Time:   str(m, "ts", "time", "created_at"),
-		})
+			Time:   str(m, "time", "created_at"),
+			Spot:   str(m, "spot"),
+		}
+		if t, ok := m["tria"].(bool); ok {
+			rm.Tria = t
+		}
+		// ts is a JSON number in milliseconds; fmt.Sprint of a float64 would
+		// give scientific notation and lose the cursor.
+		if f, ok := m["ts"].(float64); ok {
+			rm.TS = int64(f)
+			rm.Time = strconv.FormatInt(rm.TS, 10)
+		}
+		if rm.TS > maxTS {
+			maxTS = rm.TS
+		}
+		out = append(out, rm)
 	}
 	next := since
 	switch {
@@ -257,6 +279,8 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 		next = obj.Next
 	case obj.Cursor != "":
 		next = obj.Cursor
+	case maxTS > 0:
+		next = strconv.FormatInt(maxTS, 10)
 	case len(out) > 0:
 		last := out[len(out)-1]
 		if last.ID != "" {
