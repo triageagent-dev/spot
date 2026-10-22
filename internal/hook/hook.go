@@ -39,11 +39,21 @@ type Options struct {
 	MaxAuditSize int64 // rotate audit.log past this; default 5 MiB
 }
 
-// Files in the state directory.
+// Files, under the supervisor directory of the state directory, which the
+// agent's Edit and Write tools are denied.
 const (
-	AuditFile   = "audit.log"
-	CounterFile = "hook-writes.json"
+	SupervisorDir = "supervisor"
+	AuditFile     = "audit.log"
+	CounterFile   = "hook-writes.json"
 )
+
+// dir is where the hook keeps its files. It is created if missing, so the
+// hook works against a state directory the supervisor has not laid out.
+func dir(o Options) string {
+	d := filepath.Join(o.StateDir, SupervisorDir)
+	_ = os.MkdirAll(d, 0o700)
+	return d
+}
 
 // decision is the PreToolUse JSON output for a denial.
 type decision struct {
@@ -118,7 +128,7 @@ type auditLine struct {
 }
 
 func audit(o Options, l auditLine, errOut io.Writer) {
-	path := filepath.Join(o.StateDir, AuditFile)
+	path := filepath.Join(dir(o), AuditFile)
 	if st, err := os.Stat(path); err == nil && st.Size() > o.MaxAuditSize {
 		_ = os.Rename(path, path+".1")
 	}
@@ -139,7 +149,7 @@ type counter struct {
 // reserve records n mutating commands if the hour has room. It returns
 // whether they may run and how many ran in the last hour before this call.
 func reserve(o Options, n int) (ok bool, used int, err error) {
-	path := filepath.Join(o.StateDir, CounterFile)
+	path := filepath.Join(dir(o), CounterFile)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return true, 0, err

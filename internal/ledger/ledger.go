@@ -1,6 +1,13 @@
 // Package ledger keeps the supervisor's small durable state under /state: the
-// session id the conversation resumes from, the daily token counter, and the
-// status file the core and humans read. Writes are atomic.
+// session id the conversation resumes from, the daily token counter, the room
+// cursors, and the status file the core and humans read. Writes are atomic.
+//
+// The state volume has two areas. The agent's area is the notes directory,
+// next.json and the working directory; the agent may edit those. Everything
+// the supervisor relies on lives in the supervisor directory, which the
+// agent's Edit and Write tools are denied, and the counters that gate the
+// agent (the daily usage) are held in memory and only written through, so a
+// rewritten file changes nothing until the next restart.
 package ledger
 
 import (
@@ -12,31 +19,66 @@ import (
 	"time"
 )
 
-// File names under the state directory.
+// Directories and files under the state directory.
 const (
+	// SupervisorDir holds the supervisor's own files. The agent cannot edit it.
+	SupervisorDir = "supervisor"
+	// NotesDir is the agent's notes; the agent reads and writes it freely.
+	NotesDir = "notes"
+	// WorkDir is the CLI's working directory: an empty directory of its own,
+	// so the CLI picks up no project settings or instructions from the state
+	// root.
+	WorkDir = "work"
+	// NextFile is the agent's schedule request, at the state root.
+	NextFile = "next.json"
+
 	SessionFile = "session.json"
 	UsageFile   = "usage.json"
 	StatusFile  = "status.json"
-	NextFile    = "next.json"
-	NotesDir    = "notes"
+	RoomsFile   = "rooms.json"
 	AuditFile   = "audit.log"
+	CounterFile = "hook-writes.json"
 )
+
+// migrated are the files an earlier layout kept at the state root. New
+// returns them to the supervisor directory once.
+var migrated = []string{SessionFile, UsageFile, StatusFile, CounterFile, AuditFile, AuditFile + ".1"}
 
 // Ledger is safe for concurrent use.
 type Ledger struct {
 	dir string
+	sup string
 	now func() time.Time
 	mu  sync.Mutex
+	// usage is today's counter as the supervisor knows it. The file is a
+	// write-through copy read once at start.
+	usage Usage
 }
 
-// New returns a Ledger rooted at dir, creating it and the notes directory.
+// New returns a Ledger rooted at dir, creating the layout.
 func New(dir string) (*Ledger, error) {
-	for _, d := range []string{dir, filepath.Join(dir, NotesDir)} {
+	sup := filepath.Join(dir, SupervisorDir)
+	for _, d := range []string{dir, filepath.Join(dir, NotesDir), filepath.Join(dir, WorkDir)} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	return &Ledger{dir: dir, now: time.Now}, nil
+	if err := os.MkdirAll(sup, 0o700); err != nil {
+		return nil, err
+	}
+	for _, name := range migrated {
+		old, now := filepath.Join(dir, name), filepath.Join(sup, name)
+		if _, err := os.Stat(old); err != nil {
+			continue
+		}
+		if _, err := os.Stat(now); err == nil {
+			continue
+		}
+		_ = os.Rename(old, now)
+	}
+	l := &Ledger{dir: dir, sup: sup, now: time.Now}
+	_ = readJSON(l.Path(UsageFile), &l.usage)
+	return l, nil
 }
 
 // SetClock replaces the clock, for tests.
@@ -45,8 +87,11 @@ func (l *Ledger) SetClock(f func() time.Time) { l.now = f }
 // Dir is the state directory.
 func (l *Ledger) Dir() string { return l.dir }
 
-// Path joins name onto the state directory.
-func (l *Ledger) Path(name string) string { return filepath.Join(l.dir, name) }
+// Path joins name onto the supervisor directory.
+func (l *Ledger) Path(name string) string { return filepath.Join(l.sup, name) }
+
+// AgentPath joins name onto the state root, the agent's area.
+func (l *Ledger) AgentPath(name string) string { return filepath.Join(l.dir, name) }
 
 // Session is what a restart resumes from.
 type Session struct {
@@ -86,7 +131,7 @@ type Usage struct {
 func Day(t time.Time) string { return t.UTC().Format("2006-01-02") }
 
 // Usage returns today's counters; a counter from an earlier UTC day reads as
-// zero.
+// zero. It never reads the file: the agent could have rewritten it.
 func (l *Ledger) Usage() Usage {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -94,12 +139,10 @@ func (l *Ledger) Usage() Usage {
 }
 
 func (l *Ledger) usageLocked() Usage {
-	var u Usage
-	_ = readJSON(l.Path(UsageFile), &u)
-	if today := Day(l.now()); u.Date != today {
+	if today := Day(l.now()); l.usage.Date != today {
 		return Usage{Date: today}
 	}
-	return u
+	return l.usage
 }
 
 // AddUsage adds one turn's tokens (input + output + cache creation), cache
@@ -112,6 +155,7 @@ func (l *Ledger) AddUsage(tokens, cacheRead int64, cost float64) (Usage, error) 
 	u.CacheRead += cacheRead
 	u.CostUSD += cost
 	u.Turns++
+	l.usage = u
 	return u, writeJSON(l.Path(UsageFile), u, 0o600)
 }
 
@@ -136,6 +180,24 @@ func (l *Ledger) WriteStatus(v any) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return writeJSON(l.Path(StatusFile), v, 0o644)
+}
+
+// LoadRoomCursors returns the saved room cursors (room name to cursor), so a
+// restart carries on from the last message seen instead of dropping what was
+// said while the pod was down.
+func (l *Ledger) LoadRoomCursors() map[string]string {
+	out := map[string]string{}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = readJSON(l.Path(RoomsFile), &out)
+	return out
+}
+
+// SaveRoomCursors persists the room cursors.
+func (l *Ledger) SaveRoomCursors(c map[string]string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return writeJSON(l.Path(RoomsFile), c, 0o600)
 }
 
 func readJSON(path string, v any) error {

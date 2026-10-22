@@ -1,0 +1,35 @@
+{{- if and .Values.spot.enabled (eq (include "tria-spot.coreIdentity" .) "serviceAccount") .Values.core.rbac.create }}
+# The core grant for this spot's ServiceAccount. The core resolves grants from
+# Roles and RoleBindings in its own namespace, which is why the chart is
+# installed there in this mode.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tria-spot.name" . }}-core
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tria-spot.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [triageagent.dev]
+    resources: [tenants]
+    resourceNames: [{{ include "tria-spot.tenant" . | quote }}]
+    verbs:
+      {{- toYaml .Values.core.verbs | nindent 6 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tria-spot.name" . }}-core
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tria-spot.labels" . | nindent 4 }}
+    triageagent.dev/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tria-spot.name" . }}-core
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tria-spot.saName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

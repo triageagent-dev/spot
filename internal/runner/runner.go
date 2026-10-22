@@ -40,6 +40,12 @@ type Options struct {
 	Paths          render.Paths
 	PermissionMode string
 	AllowedTools   []string
+	// DisallowedTools is the --disallowedTools list; empty means DefaultDisallowed.
+	DisallowedTools []string
+	// CoreMCPURL and CoreTokenFile re-render the MCP file before every turn,
+	// so the CLI always carries the token the file holds now.
+	CoreMCPURL    string
+	CoreTokenFile string
 	// Env is appended to the scrubbed parent environment.
 	Env []string
 	// Grace is how long the CLI gets after SIGTERM before it is killed.
@@ -126,25 +132,74 @@ type Result struct {
 	// Secret is wrong or revoked. The runner stops the turn instead of letting
 	// the CLI back off for the whole turn timeout.
 	AuthFailed bool
-	Stderr     string
-	Duration   time.Duration
-	Err        error // failure to start or a non-zero exit
+	// CoreDown is set when the init message reports the core MCP server as
+	// anything but connected: the agent ran without its tools, so the turn
+	// counts as failed and the heartbeat is not refreshed.
+	CoreDown bool
+	Stderr   string
+	Duration time.Duration
+	Err      error // failure to start or a non-zero exit
 }
 
-// DefaultAllowed is the --allowedTools list: reads, the notes directory, the
-// core's MCP tools and the shell tools an investigation needs. kubectl is
-// allowed as a whole because the ServiceAccount's RBAC, not a rule here, is
-// what bounds it; the PreToolUse hook counts the writes.
+// CoreTools is the core's tools the loop needs: the ones the system prompt
+// names, the read-only situation and memory tools, and the two speech tools.
+// Everything else the core offers goes through the classifier in auto mode
+// and is refused in dontAsk; the tools in CoreToolsDenied never run.
+var CoreTools = []string{
+	"get_triage_instructions", "get_tenant_situation", "get_tenant_health", "get_tenant_goals",
+	"list_open_issues", "list_issues", "get_issue_detail", "get_issue_graph", "get_recent_events",
+	"search_memory", "search_corpus", "get_memory", "get_memory_context", "get_memory_items", "get_memory_cell",
+	"fetch_memory", "get_world_context", "get_service_analytics", "get_service_prediction",
+	"inspect_service", "list_services", "list_applications", "analyze_issue", "verify_hypothesis",
+	"comment_on_issue", "upsert_memory_item", "note_observation",
+	"say_in_workspace", "read_workspace_room", "read_workspace_file",
+}
+
+// CoreToolsDenied are the core's tools the spot must never call: they close,
+// forget or re-rate issues, change tenant settings, drive the core's own
+// loops, or send test traffic. The prompt says so too, but a rule the CLI
+// enforces is what holds under an injected instruction.
+var CoreToolsDenied = []string{
+	"resolve_issue", "forget_issue", "update_issue_severity", "link_issues",
+	"set_tenant_goals", "run_rsi", "emit_event", "classify_event", "decide_event", "guardrail_event",
+	"test_notify", "test_push", "approve_pattern", "link_pattern", "recognize_pattern",
+	"expire_memory_item", "refute_memory_item", "supersede_memory_item", "consolidate_memory",
+	"build_memory", "build_knowledge", "build_rca",
+}
+
+// DefaultAllowed is the --allowedTools list: reads, the notes directory and
+// next.json, the core tools the loop uses and the shell tools an
+// investigation needs. kubectl is allowed as a whole because the
+// ServiceAccount's RBAC, not a rule here, is what bounds it; the PreToolUse
+// hook counts the writes. No tool that writes an arbitrary path is here:
+// echo, mkdir, sort and uniq can write files, so the agent keeps its notes
+// with Edit and Write.
 func DefaultAllowed(stateDir string) []string {
-	return []string{
+	state := "/" + filepath.ToSlash(stateDir)
+	out := []string{
 		"Read", "Glob", "Grep",
-		"Edit(/" + filepath.ToSlash(stateDir) + "/**)",
-		"mcp__" + render.ServerName + "__*",
+		"Edit(" + state + "/notes/**)", "Write(" + state + "/notes/**)",
+		"Edit(" + state + "/next.json)", "Write(" + state + "/next.json)",
+	}
+	for _, t := range CoreTools {
+		out = append(out, "mcp__"+render.ServerName+"__"+t)
+	}
+	return append(out,
 		"Bash(kubectl *)",
 		"Bash(jq *)", "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(grep *)",
-		"Bash(wc *)", "Bash(sort *)", "Bash(uniq *)", "Bash(date *)", "Bash(echo *)",
-		"Bash(mkdir *)",
+		"Bash(wc *)", "Bash(date *)",
+	)
+}
+
+// DefaultDisallowed is the --disallowedTools list: the web, subagents (their
+// usage is not in the result the ledger counts) and the core tools the spot
+// must never call.
+func DefaultDisallowed() []string {
+	out := []string{"WebFetch", "WebSearch", "Task", "Agent"}
+	for _, t := range CoreToolsDenied {
+		out = append(out, "mcp__"+render.ServerName+"__"+t)
 	}
+	return out
 }
 
 // BuildArgs returns the CLI arguments for a turn. resume is a session id or
@@ -161,8 +216,12 @@ func BuildArgs(o Options, resume string) []string {
 		"--settings", o.Paths.Settings,
 		"--append-system-prompt-file", o.Paths.Instruction,
 		"--max-turns", fmt.Sprint(o.MaxTurns),
-		"--disallowedTools", "WebFetch,WebSearch",
 	}
+	disallowed := o.DisallowedTools
+	if len(disallowed) == 0 {
+		disallowed = DefaultDisallowed()
+	}
+	a = append(a, "--disallowedTools", strings.Join(disallowed, ","))
 	if o.Model != "" {
 		a = append(a, "--model", o.Model)
 	}
@@ -244,8 +303,15 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	start := time.Now()
 	o := r.options()
 	res := Result{Args: BuildArgs(o, resume)}
-	for _, d := range []string{"home", "claude"} {
+	for _, d := range []string{"home", "claude", "work"} {
 		if err := os.MkdirAll(filepath.Join(o.StateDir, d), 0o700); err != nil {
+			res.Err = err
+			return res
+		}
+	}
+	// The token the file holds now, every turn.
+	if o.CoreTokenFile != "" {
+		if err := render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile); err != nil {
 			res.Err = err
 			return res
 		}
@@ -254,7 +320,9 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	cctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, o.Bin, res.Args...)
-	cmd.Dir = o.StateDir
+	// An empty directory of its own: the CLI reads project settings and
+	// instructions from its working directory, and the agent cannot write here.
+	cmd.Dir = filepath.Join(o.StateDir, "work")
 	cmd.Env = r.env(o)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -292,9 +360,10 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	res.Stderr = strings.TrimSpace(stderr.String())
 	res.Duration = time.Since(start)
 	res.TimedOut = errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil && !res.AuthFailed
-	if res.Stderr != "" {
+	if res.Stderr != "" && o.LogContent {
 		o.Logger.Debug("claude stderr", "stderr", truncate(res.Stderr, 1000))
 	}
+	res.CoreDown = sum.GotInit && !coreConnected(sum.MCPServers)
 	res.Canceled = ctx.Err() != nil
 	if werr != nil {
 		var ee *exec.ExitError
@@ -304,6 +373,17 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 		res.Err = fmt.Errorf("claude exited: %w", werr)
 	}
 	return res
+}
+
+// coreConnected reports whether the init message listed the core MCP server
+// as connected.
+func coreConnected(servers []stream.MCPServer) bool {
+	for _, s := range servers {
+		if s.Name == render.ServerName {
+			return s.Status == "connected"
+		}
+	}
+	return false
 }
 
 func signalGroup(cmd *exec.Cmd, sig syscall.Signal) error {

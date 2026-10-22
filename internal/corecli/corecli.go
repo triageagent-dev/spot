@@ -48,6 +48,7 @@ type RoomMessage struct {
 	// it carries none; read_workspace_file shows it by the message id.
 	File     string
 	FileName string
+	Hop      int // machine-to-machine hop count the core carries; 0 when absent
 }
 
 // Client talks to one core.
@@ -284,6 +285,9 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 			if rm.File == "" {
 				rm.File = "file"
 			}
+		}
+		if h, ok := m["hop"].(float64); ok {
+			rm.Hop = int(h)
 		}
 		// ts is a JSON number in milliseconds; fmt.Sprint of a float64 would
 		// give scientific notation and lose the cursor.

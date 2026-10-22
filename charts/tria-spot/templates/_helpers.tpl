@@ -35,3 +35,31 @@ app.kubernetes.io/instance: {{ include "tria-spot.name" . }}
 {{- end -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
+
+{{- define "tria-spot.coreIdentity" -}}
+{{- if not (has .Values.core.identity (list "serviceAccount" "secret")) -}}
+{{- fail "core.identity must be serviceAccount or secret" -}}
+{{- end -}}
+{{- .Values.core.identity -}}
+{{- end -}}
+
+{{- /* Egress peers for one NetworkPolicy target (.t, the values block; .what, its
+       name for the error). A selector that is empty is left out: an empty
+       namespaceSelector would match every namespace. */ -}}
+{{- define "tria-spot.egressPeers" -}}
+{{- $t := .t -}}
+{{- $peers := list -}}
+{{- if or $t.namespaceSelector $t.podSelector -}}
+{{- $p := dict -}}
+{{- if $t.namespaceSelector }}{{ $_ := set $p "namespaceSelector" $t.namespaceSelector }}{{ end -}}
+{{- if $t.podSelector }}{{ $_ := set $p "podSelector" $t.podSelector }}{{ end -}}
+{{- $peers = append $peers $p -}}
+{{- end -}}
+{{- range $t.cidrs -}}
+{{- $peers = append $peers (dict "ipBlock" (dict "cidr" .)) -}}
+{{- end -}}
+{{- if not $peers -}}
+{{- fail (printf "networkPolicy.%s needs a namespaceSelector/podSelector or cidrs so egress to it is explicit" .what) -}}
+{{- end -}}
+{{- toYaml $peers -}}
+{{- end -}}

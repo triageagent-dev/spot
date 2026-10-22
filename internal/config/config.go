@@ -40,8 +40,14 @@ type Config struct {
 	MaxContextTokens       int64   // start a fresh conversation after a turn whose context passed this; 0 = never
 	PollInterval           time.Duration
 	EdgeCooldown           time.Duration
-	LogLevel               string
-	LogContent             bool // allow message, issue and model text in debug logs
+	// ChatBatch is how long a room message that does not name the spot may
+	// wait before it wakes a turn on its own; a message that names it wakes
+	// after EdgeCooldown. MaxEdgeWakesHr caps early wakes per hour; past it,
+	// edges are held for the next scheduled wake.
+	ChatBatch      time.Duration
+	MaxEdgeWakesHr int
+	LogLevel       string
+	LogContent     bool // allow message, issue and model text in debug logs
 
 	// Telemetry: the CLI's own OpenTelemetry traces go to an OTLP/HTTP
 	// endpoint (ego). The sender token is a file, never an environment value.
@@ -55,6 +61,7 @@ type Config struct {
 	PermissionMode   string
 	FallbackPermMode string
 	ExtraAllowed     string // comma-separated extra --allowedTools rules
+	ExtraDisallowed  string // comma-separated extra --disallowedTools rules
 	HeartbeatID      string
 	KubectlWritesHr  int
 	HookBin          string // path of this binary, for the PreToolUse hook; default os.Executable
@@ -102,6 +109,8 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.Int64Var(&c.MaxContextTokens, "max-context-tokens", 0, "start a fresh conversation after a turn whose context passed this many tokens; 0 never rotates")
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
+	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
+	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the CLI's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
@@ -111,6 +120,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")
 	fs.StringVar(&c.FallbackPermMode, "fallback-permission-mode", "dontAsk", "mode used when the CLI does not start in --permission-mode")
 	fs.StringVar(&c.ExtraAllowed, "allowed-tools", "", "extra comma-separated --allowedTools rules")
+	fs.StringVar(&c.ExtraDisallowed, "disallowed-tools", "", "extra comma-separated --disallowedTools rules")
 	fs.StringVar(&c.HeartbeatID, "heartbeat-id", "", "memory cell id of the heartbeat; default system2-heartbeat-<tenant>")
 	fs.IntVar(&c.KubectlWritesHr, "kubectl-writes-per-hour", 20, "hook cap on mutating kubectl commands per hour")
 	fs.StringVar(&c.HookBin, "hook-bin", "", "path of the binary the PreToolUse hook runs; default this executable")
@@ -200,6 +210,9 @@ func (c *Config) Validate() error {
 	}
 	if c.PollInterval <= 0 {
 		errs = append(errs, errors.New("--poll-interval must be positive"))
+	}
+	if c.ChatBatch < 0 || c.MaxEdgeWakesHr < 0 {
+		errs = append(errs, errors.New("--chat-batch and --max-edge-wakes-per-hour cannot be negative"))
 	}
 	if c.DailyTokenCeil < 0 {
 		errs = append(errs, errors.New("--daily-token-ceiling must not be negative"))

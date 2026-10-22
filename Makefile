@@ -78,21 +78,30 @@ push: kodata ## Build and push the image with ko: make push IMAGE=<registry>/<re
 CHART_TMP := $(or $(TMPDIR),/tmp)
 
 .PHONY: chart-lint
-chart-lint: ## helm lint and helm template: flag off, key mode, federation mode
+chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, key mode, federation mode
 	helm lint $(CHART)
 	helm lint $(CHART) -f $(CHART)/ci/enabled-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/federation-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
 	helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml > $(CHART_TMP)/tria-spot-tel.yaml
-	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml; do \
+	helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml > $(CHART_TMP)/tria-spot-sa.yaml
+	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml $(CHART_TMP)/tria-spot-sa.yaml; do \
 	  ! grep -qE '^[[:space:]]+env(From)?:' $$f || { echo "the pod must carry no env ($$f)"; exit 1; }; \
 	  ! grep -qE 'resources:.*secrets' $$f || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
+	  ! awk '/resources:/ {r=$$0} /verbs:.*patch/ {n=split(r,a,/[][ ,]+/); for(i=1;i<=n;i++) if(a[i]=="deployments"||a[i]=="statefulsets"||a[i]=="daemonsets") bad=1} END {exit !bad}' $$f || { echo "no rule may patch a workload, only the scale subresources ($$f)"; exit 1; }; \
 	done
 	@grep -q -- '--anthropic-key-file=' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-key.yaml || { echo "key mode: key file, no projected token"; exit 1; }
 	@grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-fed.yaml && ! grep -q -- '--anthropic-key-file' $(CHART_TMP)/tria-spot-fed.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-fed.yaml)" = 1 ] || { echo "federation mode: projected token, no key Secret"; exit 1; }
+	@grep -q 'audience: triage-core' $(CHART_TMP)/tria-spot-sa.yaml && grep -q 'resourceNames:' $(CHART_TMP)/tria-spot-sa.yaml && grep -q 'triageagent.dev/managed: "true"' $(CHART_TMP)/tria-spot-sa.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-sa.yaml)" = 1 ] || { echo "serviceAccount identity: projected core token, Role with resourceNames, one Secret (the Anthropic key)"; exit 1; }
+	@grep -q 'resourceNames:' $(CHART_TMP)/tria-spot-key.yaml && { echo "secret identity must render no core Role"; exit 1; } || true
+	@! helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml --set core.identity=token >/dev/null 2>&1 || { echo "unknown core identity must fail"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set core.tokenSecret.name= >/dev/null 2>&1 || { echo "secret identity needs a core Secret name"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml --set networkPolicy.telemetry.namespaceSelector=null --set networkPolicy.telemetry.podSelector=null >/dev/null 2>&1 || { echo "telemetry egress needs a target"; exit 1; }
+	@! grep -q 'namespaceSelector: {}' $(CHART_TMP)/tria-spot-sa.yaml || { echo "an empty namespaceSelector would match every namespace"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set anthropic.federation.ruleId= >/dev/null 2>&1 || { echo "federation needs a rule id"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set anthropic.keySecret.name= >/dev/null 2>&1 || { echo "key mode needs a key Secret name"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set anthropic.auth=oauth >/dev/null 2>&1 || { echo "unknown auth mode must fail"; exit 1; }

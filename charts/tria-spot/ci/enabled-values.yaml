@@ -3,6 +3,7 @@ spot:
   enabled: true
   tenant: example
 core:
+  identity: secret
   mcpUrl: https://core.example-core.svc/mcp
   tokenSecret:
     name: example-spot-core-token

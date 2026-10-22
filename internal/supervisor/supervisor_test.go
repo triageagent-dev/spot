@@ -49,6 +49,7 @@ type fakeCore struct {
 	roomAbsent bool
 	typing     []string // "room|on" per call
 	typingErr  error
+	late       func() []corecli.Issue // extra issues, for changes that land during a turn
 }
 
 func (f *fakeCore) Typing(_ context.Context, room string, on bool) error {
@@ -70,7 +71,11 @@ func (f *fakeCore) typingLog() string {
 func (f *fakeCore) ListOpenIssues(context.Context) ([]corecli.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]corecli.Issue(nil), f.issues...), f.listErr
+	out := append([]corecli.Issue(nil), f.issues...)
+	if f.late != nil {
+		out = append(out, f.late()...)
+	}
+	return out, f.listErr
 }
 
 func (f *fakeCore) Heartbeat(_ context.Context, id, title, content string, stale time.Duration) error {
@@ -201,7 +206,7 @@ func (h *harness) turns() int {
 
 func (h *harness) status() Status {
 	var s Status
-	b, err := os.ReadFile(filepath.Join(h.state, ledger.StatusFile))
+	b, err := os.ReadFile(filepath.Join(h.state, ledger.SupervisorDir, ledger.StatusFile))
 	if err == nil {
 		_ = json.Unmarshal(b, &s)
 	}
@@ -267,8 +272,8 @@ func TestStartupTickAndResume(t *testing.T) {
 	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, h.state+"/next.json") {
 		t.Errorf("startup prompt:\n%s", in)
 	}
-	if cwd := strings.TrimSpace(h.file("cwd", 1)); !strings.HasSuffix(cwd, "/state") {
-		t.Errorf("cwd = %q, want the state dir", cwd)
+	if cwd := strings.TrimSpace(h.file("cwd", 1)); !strings.HasSuffix(cwd, "/state/work") {
+		t.Errorf("cwd = %q, want the work dir under the state dir", cwd)
 	}
 
 	// The schedule the agent wrote is consumed, taken and reflected in the heartbeat.
@@ -355,7 +360,7 @@ func TestEdgeWakesAgentEarly(t *testing.T) {
 	h.core.setIssues(issue("a", "critical", 0), issue("b", "info", 0))
 	h.waitIdle(2)
 	in := h.file("stdin", 2)
-	for _, want := range []string{"Wake reason: edge", "new issue b", "severity warning -> critical"} {
+	for _, want := range []string{"Wake reason: edge", `new issue "b"`, `severity "warning" -> "critical"`} {
 		if !strings.Contains(in, want) {
 			t.Errorf("edge prompt lacks %q:\n%s", want, in)
 		}
@@ -405,7 +410,7 @@ func TestEdgeCooldownHoldsEdges(t *testing.T) {
 	}
 	h.clock.Advance(61 * time.Second)
 	h.waitIdle(2)
-	if in := h.file("stdin", 2); !strings.Contains(in, "new issue b") {
+	if in := h.file("stdin", 2); !strings.Contains(in, `new issue "b"`) {
 		t.Errorf("held edge lost:\n%s", in)
 	}
 }
@@ -439,7 +444,7 @@ func TestRoomMessageWakesAndAbsentToolIsTolerated(t *testing.T) {
 	h.core.mu.Unlock()
 	h.waitIdle(2)
 	in := h.file("stdin", 2)
-	if !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "from alice") || !strings.Contains(in, "untrusted") {
+	if !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, `from "alice"`) || !strings.Contains(in, "untrusted") {
 		t.Errorf("prompt:\n%s", in)
 	}
 	if strings.Contains(in, "my own") {
@@ -484,7 +489,7 @@ func TestDailyCeilingStopsWakesUntilUTCMidnight(t *testing.T) {
 	if !strings.Contains(in, "Tokens today: 0 used") {
 		t.Errorf("counter did not reset:\n%s", in)
 	}
-	if !strings.Contains(in, "severity warning -> critical") {
+	if !strings.Contains(in, `severity "warning" -> "critical"`) {
 		t.Errorf("held edge not delivered after the pause:\n%s", in)
 	}
 }
@@ -868,6 +873,180 @@ func TestConversationRotatesPastTheContextLimit(t *testing.T) {
 	}
 }
 
+func say(sender, name, text string) corecli.RoomMessage {
+	return corecli.RoomMessage{Sender: sender, Name: name, Text: text}
+}
+
+func (h *harness) post(room string, m ...corecli.RoomMessage) {
+	h.core.mu.Lock()
+	h.core.roomMsgs[room] = append(h.core.roomMsgs[room], m...)
+	h.core.mu.Unlock()
+}
+
+// roomHarness starts a supervisor whose first poll has already set the room
+// cursor, so every message posted afterwards is news.
+func roomHarness(t *testing.T, mut func(*config.Config)) *harness {
+	t.Helper()
+	h := newHarness(t, mut)
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	h.waitIdle(1)
+	time.Sleep(80 * time.Millisecond)
+	return h
+}
+
+func TestUnmentionedMessageWaitsForChatBatch(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = 10 * time.Minute })
+	defer h.stop()
+	h.post("team", say("alice", "alice", "morning everyone"))
+	time.Sleep(80 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("a message that does not name the spot woke it at once")
+	}
+	h.clock.Advance(10 * time.Minute)
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "morning everyone") {
+		t.Fatalf("the batched message must reach the agent:\n%s", in)
+	}
+	h.post("team", say("alice", "alice", "@example-spot can you look at the checkout pods?"))
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "checkout pods") {
+		t.Fatalf("a mention must wake at once:\n%s", in)
+	}
+}
+
+func TestMachineMessagesDoNotWakeAndHopTwoIsDropped(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = time.Hour })
+	defer h.stop()
+	h.post("agents",
+		corecli.RoomMessage{Sender: "@tria:srv", Name: "Tria", Text: "I noticed something", Tria: true},
+		corecli.RoomMessage{Sender: "@tria:srv", Name: "Tria", Text: "@example-spot ping", Tria: true, Hop: 2})
+	time.Sleep(80 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("a machine message woke the spot")
+	}
+	h.post("agents", corecli.RoomMessage{Sender: "@tria:srv", Name: "Tria", Text: "@example-spot the RCA is ready", Tria: true, Hop: 1})
+	h.waitIdle(2)
+	in := h.file("stdin", 2)
+	if !strings.Contains(in, "RCA is ready") || !strings.Contains(in, "I noticed something") {
+		t.Fatalf("a mention from a machine wakes and carries the earlier fact:\n%s", in)
+	}
+	if strings.Contains(in, "ping") {
+		t.Fatalf("a hop-2 message must not reach the agent:\n%s", in)
+	}
+	if strings.Contains(in, "Wake reason: human") {
+		t.Fatalf("machines are not humans:\n%s", in)
+	}
+}
+
+func TestEarlyWakesAreCappedPerHour(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.MaxEdgeWakesHr = 2 })
+	h.core.setIssues(issue("a", "warning", 0))
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	for i, id := range []string{"b", "c"} {
+		h.core.setIssues(issue("a", "warning", 0), issue("b", "warning", 0), issue(id, "warning", 0))
+		h.waitIdle(2 + i)
+	}
+	h.core.setIssues(issue("a", "warning", 0), issue("b", "warning", 0), issue("c", "warning", 0), issue("d", "critical", 0))
+	time.Sleep(80 * time.Millisecond)
+	if h.turns() != 3 {
+		t.Fatalf("the third early wake inside the hour ran: %d turns", h.turns())
+	}
+	if st := h.status(); st.EdgeWakesHour != 2 || st.HeldEdges != 1 {
+		t.Fatalf("status: wakes %d held %d", st.EdgeWakesHour, st.HeldEdges)
+	}
+	h.clock.Advance(61 * time.Minute)
+	h.waitIdle(4)
+	if in := h.file("stdin", 4); !strings.Contains(in, `new issue "d"`) {
+		t.Fatalf("the held edge must reach the agent once the hour passed:\n%s", in)
+	}
+}
+
+func TestRoomCursorSurvivesRestart(t *testing.T) {
+	h := roomHarness(t, nil)
+	h.stop()
+	h.post("team", say("alice", "alice", "@example-spot while you were down"))
+	h.start()
+	defer h.stop()
+	h.waitIdle(3) // 2 = startup, 3 = the message
+	if in := h.file("stdin", 3); !strings.Contains(in, "while you were down") {
+		t.Fatalf("a message sent while the pod was down was lost:\n%s", in)
+	}
+}
+
+func TestCoreDownTurnFailsAndSkipsHeartbeat(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("mode", "coredown")
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	st := h.status()
+	if st.LastTurn == nil || !st.LastTurn.CoreDown || !st.LastTurn.IsError || st.Failures != 1 || !strings.Contains(st.LastError, "core MCP server") {
+		t.Fatalf("status: %+v last %+v", st, st.LastTurn)
+	}
+	if h.core.beatCount() != 0 {
+		t.Fatal("a turn without the core must not refresh the heartbeat")
+	}
+}
+
+func TestMaxTurnsIsNotAFailure(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("mode", "maxturns")
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	if st := h.status(); st.Failures != 0 || st.LastTurn == nil || st.LastTurn.IsError || st.LastTurn.Subtype != "error_max_turns" {
+		t.Fatalf("status: %+v last %+v", st, st.LastTurn)
+	}
+	if h.core.beatCount() != 1 {
+		t.Fatal("hitting max-turns is still a turn that ran")
+	}
+}
+
+func TestChangesDuringATurnAreNotLost(t *testing.T) {
+	h := newHarness(t, nil)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.set("next", `{"after":"2h"}`)
+	// Issue b appears once turn 2 has started, so the poll before the turn
+	// did not see it and only the look after the turn can.
+	h.core.late = func() []corecli.Issue {
+		if _, err := os.Stat(filepath.Join(h.fake, "stdin.2")); err == nil {
+			return []corecli.Issue{issue("b", "critical", 0)}
+		}
+		return nil
+	}
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.clock.Advance(3 * time.Hour)
+	h.waitIdle(2)
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, `new issue "b"`) {
+		t.Fatalf("an issue that landed during the turn must wake the agent:\n%s", in)
+	}
+}
+
+func TestEdgesWaitForTheFailureBackoff(t *testing.T) {
+	h := newHarness(t, nil)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.set("mode", "fail")
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.set("mode", "ok")
+	h.core.setIssues(issue("a", "warning", 0), issue("b", "warning", 0))
+	time.Sleep(80 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("an edge ran a turn inside the failure backoff")
+	}
+	h.clock.Advance(3 * time.Minute)
+	h.waitIdle(2)
+}
+
 func TestTypingShowsWhileATurnRunsAndClearsAfter(t *testing.T) {
 	h := newHarness(t, nil)
 	h.set("next", `{"after":"2h"}`)
@@ -940,5 +1119,24 @@ func TestAttachmentIsNamedInTheWakeSoTheAgentLooksAtIt(t *testing.T) {
 	in := h.file("stdin", 2)
 	if !strings.Contains(in, "read_workspace_file") || !strings.Contains(in, `"$img"`) || !strings.Contains(in, "image/png") {
 		t.Fatalf("the wake does not point at the file:\n%s", in)
+	}
+}
+
+func TestAPersonWaitingCutsTheEdgeCooldown(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.EdgeCooldown = time.Hour; c.ChatBatch = time.Hour })
+	defer h.stop()
+	// An issue edge waits out the long cooldown.
+	h.core.setIssues(issue("a", "critical", 0))
+	h.clock.Advance(10 * time.Second)
+	time.Sleep(80 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("an issue edge woke the spot inside the cooldown")
+	}
+	// A person naming the spot does not: the gap is a few seconds.
+	h.post("team", say("alice", "alice", "@example-spot are you there?"))
+	h.clock.Advance(10 * time.Second)
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "are you there") {
+		t.Fatalf("the message did not reach the agent:\n%s", in)
 	}
 }

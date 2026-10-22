@@ -21,7 +21,7 @@ func TestBuildArgs(t *testing.T) {
 		"-p", "--output-format\x00stream-json", "--verbose", "--permission-mode\x00auto", "--permission-prompts\x00none",
 		"--mcp-config\x00/run/tria-spot/mcp.json", "--strict-mcp-config", "--settings\x00/run/tria-spot/settings.json",
 		"--append-system-prompt-file\x00/run/tria-spot/instruction.md", "--max-turns\x0012", "--model\x00sonnet",
-		"--disallowedTools\x00WebFetch,WebSearch",
+		"--disallowedTools\x00" + strings.Join(DefaultDisallowed(), ","),
 	} {
 		if !strings.Contains(j, "\x00"+want+"\x00") {
 			t.Errorf("missing %q in %q", want, a)
@@ -43,16 +43,29 @@ func TestBuildArgs(t *testing.T) {
 
 func TestAllowedToolsAreScoped(t *testing.T) {
 	allowed := strings.Join(DefaultAllowed("/state"), ",")
-	for _, want := range []string{"Edit(//state/**)", "mcp__core__*", "Bash(kubectl *)"} {
+	for _, want := range []string{"Edit(//state/notes/**)", "Write(//state/next.json)", "mcp__core__list_open_issues", "mcp__core__say_in_workspace", "Bash(kubectl *)"} {
 		if !strings.Contains(allowed, want) {
 			t.Errorf("allowed tools lack %q: %s", want, allowed)
 		}
 	}
-	// A bare Bash or an unscoped Edit would pre-approve everything.
+	// A bare Bash, an unscoped Edit, a wildcard over the core's tools or a
+	// shell command that writes a file would pre-approve too much.
 	for _, r := range DefaultAllowed("/state") {
-		if r == "Bash" || r == "Edit" || r == "Write" || r == "Bash(*)" || r == "Bash(cat *)" {
+		switch {
+		case r == "Bash" || r == "Edit" || r == "Write" || r == "Bash(*)" || r == "Bash(cat *)",
+			r == "mcp__core__*" || r == "Edit(//state/**)",
+			strings.HasPrefix(r, "Bash(echo"), strings.HasPrefix(r, "Bash(mkdir"), strings.HasPrefix(r, "Bash(sort"):
 			t.Errorf("too broad: %s", r)
 		}
+	}
+	dis := strings.Join(DefaultDisallowed(), ",")
+	for _, want := range []string{"mcp__core__resolve_issue", "mcp__core__forget_issue", "mcp__core__run_rsi", "Task", "Agent", "WebFetch"} {
+		if !strings.Contains(dis, want) {
+			t.Errorf("disallowed tools lack %q: %s", want, dis)
+		}
+	}
+	if args := strings.Join(BuildArgs(opts(), ""), "\n"); !strings.Contains(args, "--disallowedTools\n"+dis) {
+		t.Errorf("args lack the disallowed list:\n%s", args)
 	}
 }
 

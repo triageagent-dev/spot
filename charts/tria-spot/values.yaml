@@ -17,11 +17,33 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# The core's MCP endpoint and the Secret holding this spot's bearer token (a
-# machine identity with r and w on one tenant and no x, i, v: ADR-051).
+# The core's MCP endpoint and how this spot proves who it is to the core. Two
+# identities; the one not in use needs no values and mounts nothing extra.
 core:
   mcpUrl: ""         # e.g. https://<core-service>.<namespace>.svc/mcp (required)
-  tokenSecret:
+  # serviceAccount: the spot's own ServiceAccount, presented as a projected
+  #   token with audience core.audience; the core validates it by TokenReview and
+  #   resolves the grants from a Role and RoleBinding in ITS OWN namespace. No
+  #   Secret is mounted for the core. The core only accepts ServiceAccounts of
+  #   its own namespace, so in this mode the chart MUST be installed in the
+  #   core's namespace.
+  # secret: a static bearer token from a Secret (core.tokenSecret), a machine
+  #   identity with r and w on one tenant and no x, i, v: ADR-051. The spot can
+  #   live in any namespace.
+  identity: serviceAccount
+  audience: triage-core          # identity: serviceAccount. The audience the core checks
+  tokenExpirationSeconds: 3600   # identity: serviceAccount. The kubelet rotates the token at 80% of this; minimum 600
+  rbac:
+    # identity: serviceAccount. Render the Role (<spot name>-core) and the
+    # RoleBinding (<spot name>-core, label triageagent.dev/managed: "true") in
+    # the release namespace that grant this ServiceAccount access to the tenant.
+    # false = the grant is made elsewhere. Ignored when identity is secret.
+    create: true
+  # identity: serviceAccount. Verbs on the tenant, from get, list, create,
+  # update, execute, ingest, voice, observe. The default is the ADR-051 grant
+  # (no execute, ingest, voice).
+  verbs: [get, list, create, update]
+  tokenSecret:                   # identity: secret (required then); ignored otherwise
     name: ""         # Secret name only; mounted as a file, never an env var
     key: token
 
@@ -66,6 +88,8 @@ agent:
   maxWake: 2h
   pollInterval: 30s
   edgeCooldown: 1m
+  chatBatch: 10m              # how long a person's message that does not name the spot waits; 0s = every message wakes it
+  maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
   maxTurns: 40
   turnTimeout: 20m
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
@@ -110,10 +134,12 @@ rbac:
     # namespaces only.
     namespaces: []
 
-# ACT stage: namespaces in which the spot may delete pods and patch
-# Deployments, StatefulSets, DaemonSets and the scale subresource of the first
-# two. Empty = it cannot write anywhere. Deleting a name from this list (or the
-# Role it renders) takes the stage back.
+# ACT stage: namespaces in which the spot may delete pods and scale
+# Deployments and StatefulSets (the scale subresource). It gets no patch on the
+# workloads themselves: that would let the holder rewrite the pod template
+# (mount any Secret, change the ServiceAccount). Empty = it cannot write
+# anywhere. Deleting a name from this list (or the Role it renders) takes the
+# stage back.
 actNamespaces: []
 
 # Egress limited to DNS, the Anthropic API, the core and the API server.
@@ -130,13 +156,17 @@ networkPolicy:
     ports: [443]
   core:
     # Select where the core's MCP endpoint lives: a pod/namespace selector pair
-    # for an in-cluster core, or CIDRs for one outside.
+    # for an in-cluster core, or CIDRs for one outside. A selector left empty is
+    # not rendered; a podSelector alone selects pods in the spot's own namespace
+    # (the core's namespace when core.identity is serviceAccount).
     namespaceSelector: {}         # e.g. {matchLabels: {kubernetes.io/metadata.name: <core-namespace>}}
     podSelector: {}               # e.g. {matchLabels: {app.kubernetes.io/name: <core>}}
     cidrs: []
     ports: [443]
   telemetry:
-    # Where the telemetry endpoint lives (required when telemetry.enabled).
+    # Where the telemetry endpoint lives (required when telemetry.enabled): the
+    # same shape as core above, and rendering fails when none of the selectors
+    # and cidrs is set. Rendered only when telemetry.enabled is true.
     namespaceSelector: {}
     podSelector: {}
     cidrs: []
