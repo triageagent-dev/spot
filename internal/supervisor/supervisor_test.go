@@ -452,6 +452,27 @@ func TestRoomMessageWakesAndAbsentToolIsTolerated(t *testing.T) {
 	}
 }
 
+func TestLongRoomMessageIsFlaggedWhenCut(t *testing.T) {
+	h := roomHarness(t, nil)
+	defer h.stop()
+	// A message past 400 characters used to be cut silently; one past the new
+	// limit says it was cut.
+	whole := "@example-spot " + strings.Repeat("a", 1000)
+	h.post("team", say("alice", "alice", whole))
+	h.waitIdle(2)
+	in := h.file("stdin", 2)
+	if !strings.Contains(in, whole) || strings.Contains(in, "message cut at") {
+		t.Errorf("a message under the limit must arrive whole and unflagged")
+	}
+	long := "@example-spot " + strings.Repeat("b", roomFactRunes+50)
+	h.post("team", say("alice", "alice", long))
+	h.waitIdle(3)
+	in = h.file("stdin", 3)
+	if strings.Contains(in, long) || !strings.Contains(in, "message cut at 1500 characters") || !strings.Contains(in, "read_workspace_room") {
+		t.Errorf("a long message must be cut and flagged:\n%.400s", in)
+	}
+}
+
 func TestDailyCeilingStopsWakesUntilUTCMidnight(t *testing.T) {
 	h := newHarness(t, func(c *config.Config) { c.DailyTokenCeil = 200 })
 	h.clock.t = time.Date(2026, 10, 21, 23, 0, 0, 0, time.UTC)

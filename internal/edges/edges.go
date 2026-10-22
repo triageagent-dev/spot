@@ -127,6 +127,11 @@ func diff(prev, cur Snapshot, issues []corecli.Issue, comments bool) []Edge {
 	return out
 }
 
+// Cut reports whether Fence would cut s at n runes.
+func Cut(s string, n int) bool {
+	return n > 0 && utf8.RuneCountInString(strings.TrimSpace(s)) > n
+}
+
 // Fence renders text from outside (an issue summary, a name, a message) as a
 // quoted string with no newline, cut on a rune boundary at n runes, so it
 // cannot forge a line of the prompt.

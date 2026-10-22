@@ -468,7 +468,11 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			s.log.Debug("machine message past the hop limit dropped", "room", room, "hop", m.Hop)
 			continue
 		}
-		fact := fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), edges.Fence(m.Text, 400))
+		fact := fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), edges.Fence(m.Text, roomFactRunes))
+		if edges.Cut(m.Text, roomFactRunes) {
+			// Never let the agent answer a half-read message: say it is cut.
+			fact += fmt.Sprintf(" [message cut at %d characters: read the whole of it with read_workspace_room before you answer]", roomFactRunes)
+		}
 		if m.File != "" {
 			// The file itself is not fetched here: the agent looks at it with
 			// read_workspace_file if it matters.
@@ -540,6 +544,10 @@ func anyMentioned(es []edges.Edge) bool {
 	}
 	return false
 }
+
+// roomFactRunes is how much of a room message goes into the wake prompt; the
+// rest is one read_workspace_room away.
+const roomFactRunes = 1500
 
 func clip(s string, n int) string {
 	if len(s) > n {
