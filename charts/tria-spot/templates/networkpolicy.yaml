@@ -35,19 +35,7 @@ spec:
         {{- end }}
     # The core's MCP endpoint.
     - to:
-        {{- if or $np.core.namespaceSelector $np.core.podSelector }}
-        - namespaceSelector:
-            {{- toYaml $np.core.namespaceSelector | nindent 12 }}
-          podSelector:
-            {{- toYaml $np.core.podSelector | nindent 12 }}
-        {{- end }}
-        {{- range $np.core.cidrs }}
-        - ipBlock:
-            cidr: {{ . }}
-        {{- end }}
-        {{- if not (or $np.core.namespaceSelector $np.core.podSelector $np.core.cidrs) }}
-        {{- fail "networkPolicy.core needs a namespaceSelector/podSelector or cidrs so egress to the core is explicit" }}
-        {{- end }}
+        {{- include "tria-spot.egressPeers" (dict "t" $np.core "what" "core") | nindent 8 }}
       ports:
         {{- range $np.core.ports }}
         - {protocol: TCP, port: {{ . }}}
@@ -55,19 +43,7 @@ spec:
     {{- if $.Values.telemetry.enabled }}
     # The telemetry endpoint (ego): traces only.
     - to:
-        {{- if or $np.telemetry.namespaceSelector $np.telemetry.podSelector }}
-        - namespaceSelector:
-            {{- toYaml $np.telemetry.namespaceSelector | nindent 12 }}
-          podSelector:
-            {{- toYaml $np.telemetry.podSelector | nindent 12 }}
-        {{- end }}
-        {{- range $np.telemetry.cidrs }}
-        - ipBlock:
-            cidr: {{ . }}
-        {{- end }}
-        {{- if not (or $np.telemetry.namespaceSelector $np.telemetry.podSelector $np.telemetry.cidrs) }}
-        {{- fail "networkPolicy.telemetry needs a namespaceSelector/podSelector or cidrs when telemetry.enabled is true" }}
-        {{- end }}
+        {{- include "tria-spot.egressPeers" (dict "t" $np.telemetry "what" "telemetry") | nindent 8 }}
       ports:
         {{- range $np.telemetry.ports }}
         - {protocol: TCP, port: {{ . }}}

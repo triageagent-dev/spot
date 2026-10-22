@@ -4,6 +4,9 @@
 ---
 # ACT stage for one namespace. Deleting this Role (or the namespace from
 # actNamespaces) takes the write grant back; the READ stage is unaffected.
+# Pod delete and scale only. Patch on a workload would let the holder rewrite
+# the pod template (mount any Secret, change the ServiceAccount), so there is
+# none: "rollout restart" is not available, delete pods instead.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -15,9 +18,6 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [delete]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets, daemonsets]
-    verbs: [patch]
   # kubectl scale writes the scale subresource; DaemonSets have none.
   - apiGroups: [apps]
     resources: [deployments/scale, statefulsets/scale]

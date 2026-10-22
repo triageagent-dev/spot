@@ -4,6 +4,8 @@
 {{- $auth := .Values.anthropic.auth }}
 {{- if not (has $auth (list "key" "federation")) }}{{ fail "anthropic.auth must be key or federation" }}{{ end }}
 {{- $fed := .Values.anthropic.federation }}
+{{- $identity := include "tria-spot.coreIdentity" . }}
+{{- if and (eq $identity "serviceAccount") (lt (int64 .Values.core.tokenExpirationSeconds) 600) }}{{ fail "core.tokenExpirationSeconds must be at least 600" }}{{ end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,7 +54,7 @@ spec:
             - --tenant={{ $tenant }}
             - --name={{ $name }}
             - --core-mcp-url={{ required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl }}
-            - --core-token-file=/secrets/core/{{ .Values.core.tokenSecret.key }}
+            - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
             - --anthropic-auth={{ $auth }}
             {{- if eq $auth "key" }}
             - --anthropic-key-file=/secrets/anthropic/{{ .Values.anthropic.keySecret.key }}
@@ -155,10 +157,23 @@ spec:
             secretName: {{ .Values.telemetry.tokenSecret.name }}
             defaultMode: 0440
         {{- end }}
+        {{- if eq $identity "secret" }}
         - name: core-token
           secret:
-            secretName: {{ required "core.tokenSecret.name is required when spot.enabled is true" .Values.core.tokenSecret.name }}
+            secretName: {{ required "core.tokenSecret.name is required when core.identity is secret" .Values.core.tokenSecret.name }}
             defaultMode: 0440
+        {{- else }}
+        # The spot's own ServiceAccount token for the core, audience-bound; the
+        # kubelet writes and rotates it on disk. It is not a Secret object.
+        - name: core-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.core.audience }}
+                  expirationSeconds: {{ int64 .Values.core.tokenExpirationSeconds }}
+                  path: token
+        {{- end }}
         {{- if eq $auth "key" }}
         - name: anthropic-key
           secret:
