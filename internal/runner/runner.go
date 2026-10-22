@@ -45,6 +45,9 @@ type Options struct {
 	// Grace is how long the CLI gets after SIGTERM before it is killed.
 	Grace  time.Duration
 	Logger *slog.Logger
+	// LogContent lets the raw CLI lines, which carry the model's words and tool
+	// output, reach the debug log.
+	LogContent bool
 }
 
 // Runner runs turns.
@@ -236,7 +239,10 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	}
 	authRetries := 0
 	sum, perr := stream.Parse(stdout, func(l []byte) {
-		o.Logger.Debug("claude", "line", truncate(string(l), 600))
+		// A raw stream-json line holds the model's words and tool output.
+		if o.LogContent {
+			o.Logger.Debug("claude", "line", truncate(string(l), 600))
+		}
 		if bytes.Contains(l, []byte(`"subtype":"api_retry"`)) && bytes.Contains(l, []byte(`"authentication_failed"`)) {
 			if authRetries++; authRetries == maxAuthRetries {
 				res.AuthFailed = true

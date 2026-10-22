@@ -265,6 +265,22 @@ read-only root filesystem; every write goes to `/state`, `/run/tria-spot` or
 Seen: ko builds it (`make image`), the kodata files land in the image as mode
 `0555`, and the entrypoint is `/ko-app/tria-spot`.
 
+## Logs
+
+Logs carry what happened, never what was said. At every level the supervisor
+logs counts, kinds, ids, token numbers and timings: an `edges` line says
+`kinds="room-message=1" human=true`, not the message. The text of a person's
+message or an issue, the model's words and the raw CLI output are content, and
+reach the log only with `--log-content` (chart: `agent.logContent`) at debug
+level. An error the API or the CLI produced (`API Error: ...`) is operational
+and is logged, because it is what diagnoses a failed login. `--log-level` is
+`debug`, `info` (default), `warn` or `error`.
+
+Two files on `/state` are not logs and do hold content: `audit.log` (each Bash
+command the agent ran, including what it echoed into its notes) and the notes
+and `status.json` `nextWake.why` the agent wrote itself. They stay in the pod's
+volume.
+
 ## Chart
 
 `charts/tria-spot`: renders nothing unless `spot.enabled=true`. Deployment (1

@@ -78,6 +78,9 @@ spec:
             - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}
             - --kubectl-writes-per-hour={{ .Values.agent.kubectlWritesPerHour }}
             - --log-level={{ .Values.agent.logLevel }}
+            {{- if .Values.agent.logContent }}
+            - --log-content
+            {{- end }}
             {{- if .Values.agent.model }}
             - --model={{ .Values.agent.model }}
             {{- end }}

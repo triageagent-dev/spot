@@ -39,6 +39,7 @@ type Config struct {
 	PollInterval           time.Duration
 	EdgeCooldown           time.Duration
 	LogLevel               string
+	LogContent             bool // allow message, issue and model text in debug logs
 
 	// PermissionMode is what the CLI is started in. FallbackPermMode is used
 	// instead when the CLI reports it did not start in PermissionMode.
@@ -91,6 +92,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
+	fs.BoolVar(&c.LogContent, "log-content", false, "let debug logs carry message, issue and model text; off, no log line carries any")
 	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")
 	fs.StringVar(&c.FallbackPermMode, "fallback-permission-mode", "dontAsk", "mode used when the CLI does not start in --permission-mode")
 	fs.StringVar(&c.ExtraAllowed, "allowed-tools", "", "extra comma-separated --allowedTools rules")

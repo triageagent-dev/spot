@@ -92,6 +92,7 @@ type harness struct {
 	cancel context.CancelFunc
 	done   chan error
 	sup    *Supervisor
+	logs   *safeBuf
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -143,10 +144,12 @@ func (h *harness) start() {
 	led, err := ledger.New(h.state)
 	must(h.t, err)
 	led.SetClock(h.clock.Now)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h.logs = &safeBuf{}
+	log := slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	rn := runner.New(runner.Options{Bin: h.cfg.ClaudeBin, MaxTurns: h.cfg.MaxTurns, Timeout: h.cfg.TurnTimeout,
 		StateDir: h.state, Paths: paths, PermissionMode: h.cfg.PermissionMode,
-		AllowedTools: runner.DefaultAllowed(h.state), Env: []string{"FAKE_DIR=" + h.fake}, Grace: 2 * time.Second, Logger: log})
+		AllowedTools: runner.DefaultAllowed(h.state), Env: []string{"FAKE_DIR=" + h.fake}, Grace: 2 * time.Second, Logger: log,
+		LogContent: h.cfg.LogContent})
 	h.sup = New(h.cfg, led, h.core, rn, log)
 	h.sup.SetClock(h.clock.Now)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -709,26 +712,96 @@ func TestKeyModeAuthFailureBlamesTheKey(t *testing.T) {
 
 func TestFailureTextFederationCatchesOpaqueAuthErrors(t *testing.T) {
 	res := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "WorkloadIdentityError: Authentication failed"}
-	if msg := failureText(res, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
+	if msg := failureText(res, config.AuthFederation, false); !strings.Contains(msg, "jti_reused / match_*") {
 		t.Errorf("federation: %q", msg)
 	}
-	if msg := failureText(res, config.AuthKey); strings.Contains(msg, "jti_reused") {
+	if msg := failureText(res, config.AuthKey, false); strings.Contains(msg, "jti_reused") {
 		t.Errorf("key mode must not give the federation hint: %q", msg)
 	}
 	// The shape the real CLI printed for a rejected exchange (a 400 there); a
 	// 401 reads the same with "Authentication failed" as the message.
 	exch := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
 		ResultText: `API Error: Token exchange failed with status 401 (request-id req_x): {"error":{"message":"Authentication failed","type":"authentication_error"}}`}}
-	if msg := failureText(exch, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
+	if msg := failureText(exch, config.AuthFederation, false); !strings.Contains(msg, "jti_reused / match_*") {
 		t.Errorf("exchange 401: %q", msg)
 	}
 	bad400 := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
 		ResultText: `API Error: Token exchange failed with status 400 (request-id req_x): {"error":{"message":"federation_rule_id is not a well-formed fdrl_ tagged ID"}}`}}
-	if msg := failureText(bad400, config.AuthFederation); !strings.Contains(msg, "not a well-formed") || strings.Contains(msg, "jti_reused") {
+	if msg := failureText(bad400, config.AuthFederation, false); !strings.Contains(msg, "not a well-formed") || strings.Contains(msg, "jti_reused") {
 		t.Errorf("a 400 names its own cause: %q", msg)
 	}
 	other := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "disk full"}
-	if msg := failureText(other, config.AuthFederation); strings.Contains(msg, "federation") {
+	if msg := failureText(other, config.AuthFederation, false); strings.Contains(msg, "federation") {
 		t.Errorf("an unrelated failure got the federation hint: %q", msg)
+	}
+}
+
+// safeBuf is a log sink the supervisor goroutines and the test can share.
+type safeBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// wakeOnSecrets starts the supervisor, lets a person write something
+// sensitive in the team room, and returns the log once the turn is done.
+func wakeOnSecrets(t *testing.T, content bool) string {
+	t.Helper()
+	h := newHarness(t, func(c *config.Config) { c.LogContent = content })
+	h.core.roomAbsent = false
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{Sender: "alice", Text: "old"}}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	time.Sleep(80 * time.Millisecond)
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = append(h.core.roomMsgs["team"], corecli.RoomMessage{Sender: "alice", Name: "alice", Text: "the-password-is-hunter2"})
+	h.core.mu.Unlock()
+	h.waitIdle(2)
+	return h.logs.String()
+}
+
+func TestLogsCarryNoContentByDefault(t *testing.T) {
+	logs := wakeOnSecrets(t, false)
+	if strings.Contains(logs, "hunter2") {
+		t.Fatalf("a person's message reached the log:\n%s", logs)
+	}
+	if strings.Contains(logs, "msg=claude") {
+		t.Fatalf("raw CLI lines (the model's words and tool output) reached the log:\n%s", logs)
+	}
+	if !strings.Contains(logs, "msg=edges") || !strings.Contains(logs, `kinds="room-message=1"`) || !strings.Contains(logs, "human=true") {
+		t.Fatalf("the edges line lost its metadata:\n%s", logs)
+	}
+}
+
+func TestLogContentFlagLetsDebugLogsCarryText(t *testing.T) {
+	logs := wakeOnSecrets(t, true)
+	if !strings.Contains(logs, "hunter2") {
+		t.Fatalf("--log-content should show the text at debug:\n%s", logs)
+	}
+	if !strings.Contains(logs, "msg=claude") {
+		t.Fatalf("--log-content should show the raw CLI lines at debug:\n%s", logs)
+	}
+}
+
+func TestFailureTextHidesTheModelsWordsUnlessAsked(t *testing.T) {
+	res := runner.Result{Summary: stream.Summary{IsError: true, ResultText: "the-password-is-hunter2"}}
+	if msg := failureText(res, config.AuthKey, false); strings.Contains(msg, "hunter2") {
+		t.Fatalf("model text in the failure: %q", msg)
+	}
+	if msg := failureText(res, config.AuthKey, true); !strings.Contains(msg, "hunter2") {
+		t.Fatalf("--log-content must show it: %q", msg)
 	}
 }

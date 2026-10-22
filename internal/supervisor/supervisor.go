@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -268,7 +269,12 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 		out = append(out, s.pollRoom(pctx, room)...)
 	}
 	if len(out) > 0 {
-		s.log.Info("edges", "count", len(out), "first", out[0].Fact)
+		// Logs carry what happened, never what was said: the text of a person's
+		// message or an issue is content, and is logged only on request.
+		s.log.Info("edges", "count", len(out), "kinds", kindCounts(out), "human", anyHuman(out))
+		if s.cfg.LogContent {
+			s.log.Debug("edge text", "first", clip(out[0].Fact, 200))
+		}
 	}
 	return out
 }
@@ -329,6 +335,32 @@ func orUnknown(s string) string {
 		return "someone"
 	}
 	return s
+}
+
+func kindCounts(es []edges.Edge) string {
+	n := map[edges.Kind]int{}
+	for _, e := range es {
+		n[e.Kind]++
+	}
+	keys := make([]string, 0, len(n))
+	for k := range n {
+		keys = append(keys, string(k))
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, n[edges.Kind(k)]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func anyHuman(es []edges.Edge) bool {
+	for _, e := range es {
+		if e.Human {
+			return true
+		}
+	}
+	return false
 }
 
 func clip(s string, n int) string {
@@ -436,7 +468,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if failed {
 		s.failures++
 		s.status.Failures = s.failures
-		s.status.LastError = failureText(res, s.cfg.AnthropicAuth)
+		s.status.LastError = failureText(res, s.cfg.AnthropicAuth, s.cfg.LogContent)
 		s.log.Error("turn failed", "err", s.status.LastError, "failures", s.failures, "timedOut", res.TimedOut,
 			"tokens", u.Billable())
 	} else {
@@ -508,7 +540,15 @@ func looksLikeAuthFailure(res runner.Result) bool {
 }
 
 // failureText describes why a turn failed. mode is the Anthropic auth mode.
-func failureText(res runner.Result, mode string) string {
+// operationalError reports whether a result text is an error the API or the CLI
+// produced, as opposed to text the model wrote.
+func operationalError(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(t, "api error") || strings.Contains(t, "token exchange failed") ||
+		strings.Contains(t, "authentication_error") || strings.Contains(t, "your apikeyhelper script is failing")
+}
+
+func failureText(res runner.Result, mode string, content bool) string {
 	if mode == config.AuthFederation && looksLikeAuthFailure(res) {
 		return "Anthropic authentication failed in federation mode; " + federationHint
 	}
@@ -520,6 +560,11 @@ func failureText(res runner.Result, mode string) string {
 	case len(res.Summary.Errors) > 0:
 		return strings.Join(res.Summary.Errors, "; ")
 	case res.Summary.IsError && res.Summary.ResultText != "":
+		// An error from the API or the CLI is operational and stays; anything
+		// else in an error result may be the model's own words.
+		if !content && !operationalError(res.Summary.ResultText) {
+			return "the turn ended in an error; the model's text is not logged (--log-content shows it)"
+		}
 		return clip(res.Summary.ResultText, 300)
 	case res.Err != nil && res.Stderr != "":
 		return res.Err.Error() + ": " + clip(res.Stderr, 300)

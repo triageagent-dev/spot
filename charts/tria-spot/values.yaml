@@ -56,7 +56,10 @@ agent:
   turnTimeout: 20m
   dailyTokenCeiling: 2000000  # tokens per UTC day; 0 = no ceiling
   kubectlWritesPerHour: 20    # PreToolUse hook cap; best effort, RBAC is the boundary
-  logLevel: info
+  logLevel: info              # debug | info | warn | error
+  # Logs carry what happened, never what was said: no message, issue or model
+  # text at any level. true lets debug logs include it (and the raw CLI lines).
+  logContent: false
   extraAllowedTools: []       # extra --allowedTools rules
   heartbeatId: ""             # default system2-heartbeat-<tenant>
 

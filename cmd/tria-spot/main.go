@@ -127,7 +127,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	rn := runner.New(runner.Options{
 		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
-		AllowedTools: allowed, Logger: log,
+		AllowedTools: allowed, Logger: log, LogContent: cfg.LogContent,
 	})
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
