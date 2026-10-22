@@ -19,6 +19,7 @@ agent:
 telemetry:
   enabled: true
   endpoint: http://collector.example-obs.svc:4318
+  mcpUrl: http://collector.example-obs.svc:8001/mcp
   tokenSecret:
     name: example-spot-otel-token
 networkPolicy:

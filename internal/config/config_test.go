@@ -197,3 +197,18 @@ func TestWakeFlags(t *testing.T) {
 		t.Fatal("a negative cap must be refused")
 	}
 }
+
+func TestEgoMCPNeedsTheSenderToken(t *testing.T) {
+	ok := append(append([]string{}, required...), "--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/t", "--ego-mcp-url", "http://ego.example.svc:8001/mcp")
+	if c, err := Parse(ok, io.Discard); err != nil || c.EgoMCPURL != "http://ego.example.svc:8001/mcp" {
+		t.Fatalf("%v %+v", err, c)
+	}
+	for name, extra := range map[string][]string{
+		"no token":  {"--otel-endpoint", "http://ego.example.svc:4318", "--ego-mcp-url", "http://ego.example.svc:8001/mcp"},
+		"no scheme": {"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/t", "--ego-mcp-url", "ego:8001"},
+	} {
+		if _, err := Parse(append(append([]string{}, required...), extra...), io.Discard); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

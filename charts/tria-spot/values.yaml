@@ -74,6 +74,7 @@ telemetry:
   enabled: false
   endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
   tenant: tria-spot            # the ego.tenant label of the spans
+  mcpUrl: ""                   # ego's MCP endpoint (e.g. http://<service>.<namespace>.svc:8001/mcp); with it the spot reads sessions, usage and findings through the same token. Add its port to networkPolicy.telemetry.ports
   tokenSecret:
     name: ""
     key: token

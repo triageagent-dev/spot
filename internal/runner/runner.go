@@ -46,6 +46,10 @@ type Options struct {
 	// so the CLI always carries the token the file holds now.
 	CoreMCPURL    string
 	CoreTokenFile string
+	// EgoMCPURL and EgoTokenFile, when set, add ego's MCP server (the tools in
+	// EgoTools) to that file.
+	EgoMCPURL    string
+	EgoTokenFile string
 	// Env is appended to the scrubbed parent environment.
 	Env []string
 	// Grace is how long the CLI gets after SIGTERM before it is killed.
@@ -153,6 +157,23 @@ var CoreTools = []string{
 	"inspect_service", "list_services", "list_applications", "analyze_issue", "verify_hypothesis",
 	"comment_on_issue", "upsert_memory_item", "note_observation",
 	"say_in_workspace", "read_workspace_room", "read_workspace_file",
+}
+
+// EgoTools is the ego tools the spot may call: the ones that read sessions,
+// token usage, quality and findings. Corrections, labels, role bindings and
+// running the findings loop are not here.
+var EgoTools = []string{
+	"list_metrics", "list_sessions", "summarize_session", "explain_session", "list_runs", "get_run_results",
+	"get_usage", "get_quality", "explain_regression", "get_findings", "list_corrections",
+}
+
+// EgoAllowed returns the --allowedTools rules for EgoTools.
+func EgoAllowed() []string {
+	out := make([]string, 0, len(EgoTools))
+	for _, t := range EgoTools {
+		out = append(out, "mcp__"+render.EgoServerName+"__"+t)
+	}
+	return out
 }
 
 // CoreToolsDenied are the core's tools the spot must never call: they close,
@@ -311,7 +332,11 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	}
 	// The token the file holds now, every turn.
 	if o.CoreTokenFile != "" {
-		if err := render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile); err != nil {
+		var extra []render.Server
+		if o.EgoMCPURL != "" {
+			extra = append(extra, render.Server{Name: render.EgoServerName, URL: o.EgoMCPURL, TokenFile: o.EgoTokenFile})
+		}
+		if err := render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile, extra...); err != nil {
 			res.Err = err
 			return res
 		}

@@ -120,6 +120,9 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
+	if cfg.EgoMCPURL != "" {
+		allowed = append(allowed, runner.EgoAllowed()...)
+	}
 	disallowed := appendRules(runner.DefaultDisallowed(), cfg.ExtraDisallowed)
 	var tel *runner.Telemetry
 	if cfg.OtelEndpoint != "" {
@@ -131,6 +134,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
 		AllowedTools: allowed, DisallowedTools: disallowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
 		CoreMCPURL: cfg.CoreMCPURL, CoreTokenFile: cfg.CoreTokenFile,
+		EgoMCPURL: cfg.EgoMCPURL, EgoTokenFile: cfg.OtelTokenFile,
 	})
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()

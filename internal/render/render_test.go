@@ -284,3 +284,48 @@ func TestOtelHeaderHelperReadsTheTokenFromAFile(t *testing.T) {
 		t.Fatalf("settings must deny the token file and not hold it: %s", sb)
 	}
 }
+
+func TestWriteMCPAddsEgoWithItsOwnTokenAndReadsItEveryTime(t *testing.T) {
+	d := t.TempDir()
+	core, ego := filepath.Join(d, "core"), filepath.Join(d, "ego")
+	must(t, os.WriteFile(core, []byte("core-tok\n"), 0o600))
+	must(t, os.WriteFile(ego, []byte("ego-tok\n"), 0o600))
+	path := filepath.Join(d, "mcp.json")
+	must(t, WriteMCP(path, "https://core.example.invalid/mcp", core, Server{Name: EgoServerName, URL: "http://ego.example.invalid:8001/mcp", TokenFile: ego}))
+	read := func() map[string]struct {
+		Type    string
+		URL     string
+		Headers map[string]string
+	} {
+		var f struct {
+			Servers map[string]struct {
+				Type    string
+				URL     string
+				Headers map[string]string
+			} `json:"mcpServers"`
+		}
+		b, err := os.ReadFile(path)
+		must(t, err)
+		must(t, json.Unmarshal(b, &f))
+		return f.Servers
+	}
+	got := read()
+	if got["core"].Headers["Authorization"] != "Bearer core-tok" || got["ego"].Headers["Authorization"] != "Bearer ego-tok" || got["ego"].URL != "http://ego.example.invalid:8001/mcp" {
+		t.Fatalf("servers: %+v", got)
+	}
+	// A rotated token reaches the next render, and a missing one fails it.
+	must(t, os.Chmod(path, 0o600))
+	must(t, os.WriteFile(ego, []byte("ego-new\n"), 0o600))
+	must(t, WriteMCP(path, "https://core.example.invalid/mcp", core, Server{Name: EgoServerName, URL: "http://ego.example.invalid:8001/mcp", TokenFile: ego}))
+	if read()["ego"].Headers["Authorization"] != "Bearer ego-new" {
+		t.Fatal("the rotated ego token was not picked up")
+	}
+	if err := WriteMCP(path, "https://core.example.invalid/mcp", core, Server{Name: EgoServerName, URL: "http://x", TokenFile: filepath.Join(d, "gone")}); err == nil {
+		t.Fatal("a missing ego token must fail the render")
+	}
+	// Without ego there is only the core.
+	must(t, WriteMCP(path, "https://core.example.invalid/mcp", core))
+	if len(read()) != 1 {
+		t.Fatalf("core alone: %+v", read())
+	}
+}

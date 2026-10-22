@@ -183,3 +183,17 @@ func TestTelemetryEnvCarriesNoSecret(t *testing.T) {
 		t.Error("telemetry off: no OTEL variable")
 	}
 }
+
+func TestEgoToolsAreReadOnlyAndNamedOneByOne(t *testing.T) {
+	rules := strings.Join(EgoAllowed(), " ")
+	for _, want := range []string{"mcp__ego__list_sessions", "mcp__ego__get_usage", "mcp__ego__get_findings"} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	for _, banned := range []string{"register_correction", "label_session", "set_role_binding", "delete_role_binding", "run_findings", "evaluate_traces", "mcp__ego__*"} {
+		if strings.Contains(rules, banned) {
+			t.Errorf("the spot must not be allowed %s", banned)
+		}
+	}
+}

@@ -129,17 +129,39 @@ func Render(in Input) (Paths, error) {
 // from tokenFile now. The runner calls it before every turn, so a rotated
 // token (a projected ServiceAccount token the kubelet rewrites, or a replaced
 // Secret) reaches the CLI without a restart.
-func WriteMCP(path, url, tokenFile string) error {
+func WriteMCP(path, url, tokenFile string, extra ...Server) error {
 	token, err := readSecretFile(tokenFile)
 	if err != nil {
 		return fmt.Errorf("core token: %w", err)
 	}
-	mcp := map[string]any{"mcpServers": map[string]any{ServerName: map[string]any{
+	servers := map[string]any{ServerName: map[string]any{
 		"type":    "http",
 		"url":     url,
 		"headers": map[string]string{"Authorization": "Bearer " + token},
-	}}}
-	return writeJSON(path, mcp, 0o400)
+	}}
+	for _, s := range extra {
+		t, err := readSecretFile(s.TokenFile)
+		if err != nil {
+			return fmt.Errorf("%s token: %w", s.Name, err)
+		}
+		servers[s.Name] = map[string]any{
+			"type":    "http",
+			"url":     s.URL,
+			"headers": map[string]string{"Authorization": "Bearer " + t},
+		}
+	}
+	return writeJSON(path, map[string]any{"mcpServers": servers}, 0o400)
+}
+
+// EgoServerName is the MCP server name of ego; its tools are mcp__ego__<tool>.
+const EgoServerName = "ego"
+
+// Server is one more MCP server beside the core: its name, streamable-HTTP
+// URL and the file holding its bearer token (read at every render).
+type Server struct {
+	Name      string
+	URL       string
+	TokenFile string
 }
 
 // Settings builds the settings JSON. Exposed for tests.
