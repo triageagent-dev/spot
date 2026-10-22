@@ -23,6 +23,11 @@ Read the ADR and `README.md` before changing behaviour.
   Helm value.
 - **No credentials in environment variables or arguments**, anywhere. A secret
   is a file path. If you add a setting that holds a secret, it takes a file.
+- **Two Anthropic auth modes, key and federation.** In federation mode never
+  render `apiKeyHelper` or pass any `ANTHROPIC_*` variable except
+  `ANTHROPIC_CONFIG_DIR` and `ANTHROPIC_PROFILE`: the key sources outrank
+  federation and silently shadow it. Never start the CLI with `--bare`, which
+  ignores profiles and federation. The ids are not secrets but are still flags.
 - **Flag names come from the docs.** Claude Code flags and settings are
   verified against https://code.claude.com/docs before use; do not guess. If
   you cannot verify one, say so in the README's "Not verified" list.
