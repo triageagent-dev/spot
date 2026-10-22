@@ -47,7 +47,8 @@ type Config struct {
 	// endpoint (ego). The sender token is a file, never an environment value.
 	OtelEndpoint    string
 	OtelTokenFile   string
-	OtelToolDetails bool // add tool parameters (Bash commands, file paths) to spans
+	OtelToolDetails bool   // add tool parameters (Bash commands, file paths) to spans
+	OtelTenant      string // the ego.tenant label of the spans
 
 	// PermissionMode is what the CLI is started in. FallbackPermMode is used
 	// instead when the CLI reports it did not start in PermissionMode.
@@ -104,6 +105,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the CLI's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
+	fs.StringVar(&c.OtelTenant, "otel-tenant", "tria-spot", "the ego.tenant the CLI's traces carry, so every spot lands under one tenant in ego")
 	fs.BoolVar(&c.OtelToolDetails, "otel-tool-details", false, "add tool parameters (Bash commands, file paths) to trace spans; off, spans carry names and timings only")
 	fs.BoolVar(&c.LogContent, "log-content", false, "let debug logs carry message, issue and model text; off, no log line carries any")
 	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")

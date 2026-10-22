@@ -51,6 +51,7 @@ anthropic:
 telemetry:
   enabled: false
   endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
+  tenant: tria-spot            # the ego.tenant label of the spans
   tokenSecret:
     name: ""
     key: token

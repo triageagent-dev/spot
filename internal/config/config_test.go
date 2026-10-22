@@ -169,3 +169,14 @@ func TestTelemetryAndBudgetFlags(t *testing.T) {
 		t.Fatalf("telemetry and the new limits must default to off: %+v", c)
 	}
 }
+
+func TestOtelTenantDefaultsToOneTenantForEverySpot(t *testing.T) {
+	c, err := Parse(required, io.Discard)
+	if err != nil || c.OtelTenant != "tria-spot" {
+		t.Fatalf("default ego tenant = %q, %v", c.OtelTenant, err)
+	}
+	c, err = Parse(append(append([]string{}, required...), "--otel-tenant", "example"), io.Discard)
+	if err != nil || c.OtelTenant != "example" {
+		t.Fatalf("override = %q, %v", c.OtelTenant, err)
+	}
+}

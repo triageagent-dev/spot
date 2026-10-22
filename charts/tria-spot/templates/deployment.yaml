@@ -84,6 +84,7 @@ spec:
             {{- end }}
             {{- if .Values.telemetry.enabled }}
             - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
+            - --otel-tenant={{ .Values.telemetry.tenant }}
             {{- if .Values.telemetry.tokenSecret.name }}
             - --otel-token-file=/secrets/otel/{{ .Values.telemetry.tokenSecret.key }}
             {{- end }}

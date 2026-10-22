@@ -271,7 +271,8 @@ With `telemetry.enabled` (flag `--otel-endpoint`) the CLI exports its own
 OpenTelemetry traces (beta in the CLI: `CLAUDE_CODE_ENABLE_TELEMETRY` and
 `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`, protocol http/protobuf). The supervisor
 sets these in the CLI's environment, so the pod still carries no environment
-variable. Resource attributes are `ego.tenant=<tenant>` and
+variable. Resource attributes are `ego.tenant=tria-spot` (`telemetry.tenant`, flag
+`--otel-tenant`, one tenant in ego for every spot) and
 `gen_ai.agent.name=<spot name>`; `service.name` is the spot name. Spans:
 `claude_code.interaction` per wake, with `llm_request` (model, input, output,
 cache-read and cache-creation tokens, stop reason, errors) and `tool` spans
