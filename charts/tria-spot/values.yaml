@@ -25,12 +25,23 @@ core:
     name: ""         # Secret name only; mounted as a file, never an env var
     key: token
 
-# The Secret holding the Anthropic API key. Mounted as a file; Claude Code
-# reads it through apiKeyHelper.
+# How the CLI authenticates to the Anthropic API. Two modes; the one not in use
+# needs no values and mounts nothing.
 anthropic:
-  keySecret:
+  # key: a static API key from a Secret, read through apiKeyHelper.
+  # federation: Workload Identity Federation. A projected ServiceAccount token
+  #   is exchanged for a short-lived access token; no Secret is mounted.
+  auth: key
+  keySecret:                   # auth: key. Secret name only; mounted as a file
     name: ""
     key: key
+  federation:                  # auth: federation. None of these ids is a secret
+    ruleId: ""                 # fdrl_...
+    organizationId: ""
+    serviceAccountId: ""       # svac_...
+    workspaceId: ""            # wrkspc_...; optional when the rule spans one workspace
+    audience: https://api.anthropic.com
+    tokenExpirationSeconds: 600  # the kubelet rotates the token at 80% of this; minimum 600
 
 # Supervisor settings (see the README for each flag).
 agent:

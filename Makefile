@@ -42,14 +42,26 @@ image: ## Build the container image (does not push)
 	  --build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) --build-arg BUILD_DATE=$(BUILD_DATE) \
 	  -t $(IMAGE):$(VERSION) .
 
+CHART_TMP := $(or $(TMPDIR),/tmp)
+
 .PHONY: chart-lint
-chart-lint: ## helm lint and helm template, flag off and flag on
+chart-lint: ## helm lint and helm template: flag off, key mode, federation mode
 	helm lint $(CHART)
 	helm lint $(CHART) -f $(CHART)/ci/enabled-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/federation-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
-	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(or $(TMPDIR),/tmp)/tria-spot-chart.yaml
-	@! grep -qE '^[[:space:]]+env(From)?:' $(or $(TMPDIR),/tmp)/tria-spot-chart.yaml || { echo "the pod must carry no env"; exit 1; }
-	@! grep -qE 'resources:.*secrets' $(or $(TMPDIR),/tmp)/tria-spot-chart.yaml || { echo "no RBAC rule may name secrets"; exit 1; }
+	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
+	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
+	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml; do \
+	  ! grep -qE '^[[:space:]]+env(From)?:' $$f || { echo "the pod must carry no env ($$f)"; exit 1; }; \
+	  ! grep -qE 'resources:.*secrets' $$f || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
+	done
+	@grep -q -- '--anthropic-key-file=' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-key.yaml || { echo "key mode: key file, no projected token"; exit 1; }
+	@grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-fed.yaml && ! grep -q -- '--anthropic-key-file' $(CHART_TMP)/tria-spot-fed.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-fed.yaml)" = 1 ] || { echo "federation mode: projected token, no key Secret"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set anthropic.federation.ruleId= >/dev/null 2>&1 || { echo "federation needs a rule id"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set anthropic.keySecret.name= >/dev/null 2>&1 || { echo "key mode needs a key Secret name"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set anthropic.auth=oauth >/dev/null 2>&1 || { echo "unknown auth mode must fail"; exit 1; }
+	@helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set anthropic.keySecret.name= >/dev/null || { echo "federation must not need a key Secret"; exit 1; }
 	@echo "chart ok"
 
 .PHONY: check
