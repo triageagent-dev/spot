@@ -4,9 +4,11 @@
 ---
 # ACT stage for one namespace. Deleting this Role (or the namespace from
 # actNamespaces) takes the write grant back; the READ stage is unaffected.
-# Pod delete and scale only. Patch on a workload would let the holder rewrite
-# the pod template (mount any Secret, change the ServiceAccount), so there is
-# none: "rollout restart" is not available, delete pods instead.
+# act.scope limited (default): pod delete and scale only. Patch on a workload
+# would let the holder rewrite the pod template (mount any Secret, change the
+# ServiceAccount), so there is none: delete pods instead of "rollout restart".
+# act.scope namespace: every verb on the namespace's workload objects, an
+# opt-in the operator chooses per install; Secrets and RBAC objects stay out.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -15,6 +17,30 @@ metadata:
   labels:
     {{- include "tria-spot.labels" $root | nindent 4 }}
 rules:
+{{- if eq $root.Values.act.scope "namespace" }}
+  # act.scope namespace: every verb on the workload objects of the namespace,
+  # including patch (so "rollout restart", resources and env can change). Left
+  # out on purpose: Secrets, ServiceAccounts, Roles and RoleBindings and custom
+  # resources, so the grant cannot read a credential or widen itself.
+  - apiGroups: [""]
+    resources: [pods, pods/log, pods/exec, pods/portforward, pods/eviction, services, endpoints, configmaps, persistentvolumeclaims, resourcequotas, limitranges, events, replicationcontrollers, replicationcontrollers/scale]
+    verbs: ["*"]
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale, statefulsets, statefulsets/scale, daemonsets, replicasets]
+    verbs: ["*"]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: ["*"]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: ["*"]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: ["*"]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: ["*"]
+{{- else }}
   - apiGroups: [""]
     resources: [pods]
     verbs: [delete]
@@ -22,6 +48,7 @@ rules:
   - apiGroups: [apps]
     resources: [deployments/scale, statefulsets/scale]
     verbs: [patch, update]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

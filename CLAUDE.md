@@ -33,9 +33,11 @@ Read the ADR and `README.md` before changing behaviour.
   verified against https://code.claude.com/docs before use; do not guess. If
   you cannot verify one, say so in the README's "Not verified" list.
 - **RBAC is the boundary.** The prompt and the PreToolUse hook are best effort.
-  Never widen the chart's Read stage to Secrets, never give the Act stage
-  `patch` on a workload (it is a pod-template rewrite), and keep the Act stage
-  opt-in per namespace. The core's tools are allowed by name
+  Never widen the chart's Read stage to Secrets. The Act stage is opt-in per
+  namespace and defaults to `act.scope: limited` (no `patch` on a workload: it
+  is a pod-template rewrite); `act.scope: namespace` is the operator's explicit
+  choice for an install and still excludes Secrets, ServiceAccounts and RBAC
+  objects. The core's tools are allowed by name
   (`runner.CoreTools`) and the destructive ones are disallowed by name
   (`runner.CoreToolsDenied`); never allow `mcp__core__*`.
 - **The agent must not be able to edit its own limits.** Supervisor files live

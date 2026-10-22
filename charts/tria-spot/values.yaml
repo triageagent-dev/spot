@@ -143,6 +143,13 @@ rbac:
 # stage back.
 actNamespaces: []
 
+act:
+  # limited: delete pods and scale (the default). namespace: every verb on the
+  # workloads, services, config maps, PVCs, jobs, HPAs, ingresses, network
+  # policies and PDBs of each actNamespaces entry, but never Secrets,
+  # ServiceAccounts, Roles or RoleBindings.
+  scope: limited
+
 # Egress limited to DNS, the Anthropic API, the core and the API server.
 # NetworkPolicy has no host names: the CIDRs are the ones Anthropic publishes
 # for its API, and the cluster-specific ones are yours to fill in.
