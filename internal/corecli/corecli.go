@@ -44,6 +44,7 @@ type RoomMessage struct {
 	TS     int64  // milliseconds; the core's read_workspace_room cursor
 	Tria   bool   // Tria wrote it
 	Spot   string // a teammate agent wrote it; its name
+	Hop    int    // machine-to-machine hop count the core carries; 0 when absent
 }
 
 // Client talks to one core.
@@ -261,6 +262,9 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 		}
 		if t, ok := m["tria"].(bool); ok {
 			rm.Tria = t
+		}
+		if h, ok := m["hop"].(float64); ok {
+			rm.Hop = int(h)
 		}
 		// ts is a JSON number in milliseconds; fmt.Sprint of a float64 would
 		// give scientific notation and lose the cursor.

@@ -23,8 +23,9 @@ supervisor works without them.
    |                                                    v     |
    |  Claude Code CLI -- MCP --> core /mcp   kubectl --> API  |
    |        ^  PreToolUse hook: tria-spot hook pretool        |
-   |  /state: session, notes/, next.json, usage.json,         |
-   |          status.json, audit.log                          |
+   |  /state: notes/, next.json (the agent's)                 |
+   |          supervisor/: session, usage, status, cursors,  |
+   |          audit.log (the supervisor's; not editable)      |
    +----------------------------------------------------------+
 ```
 
@@ -44,25 +45,45 @@ supervisor works without them.
 4. **Between turns** the supervisor polls the core every `--poll-interval`
    with `list_open_issues` for the tenant (no model involved) and wakes the
    agent early on a new issue, a reopened issue, a severity change or a new
-   comment. It re-reads the issue list after each turn so the agent's own
-   comments are not edges. If the core offers `read_workspace_room`, messages
-   from anyone but the spot also wake it (`human`); the first read only sets a
-   cursor. Edges inside `--edge-cooldown` of the last turn are held, not lost.
+   comment. After each turn it compares the issue list with the one from
+   before the turn: new issues, reopens and severity changes that landed
+   during the turn are held like any edge; comment counts are re-baselined,
+   because the agent comments itself. If the core offers
+   `read_workspace_room`, messages from anyone but the spot are edges too.
+   A message that names the spot (`@<name>` or the name) wakes it after
+   `--edge-cooldown`; a person's message that does not waits up to
+   `--chat-batch` (10m) and then wakes; a machine's message (Tria, another
+   spot) never wakes on its own and is only a fact in the next prompt, and
+   one with a hop count of 2 or more is dropped. Early wakes are capped at
+   `--max-edge-wakes-per-hour` (12); past the cap, and inside the failure
+   backoff, edges wait for the scheduled wake. Room cursors are saved under
+   `/state/supervisor`, so a message sent while the pod was down is news on
+   the next start; only the very first read of a room sets the cursor without
+   waking. At most 20 edges are held; past that, machine messages are dropped
+   first, then the oldest.
 5. **The heartbeat** (`upsert_memory_item`, kind `note`, `stale_after` of twice
    the next sleep, at least 5m) is refreshed after every turn that succeeded.
    A failed turn does not refresh it: the agent is dark, so reflection should
-   resume (docs/todo/system2-loop-contract.md in the core).
+   resume (docs/todo/system2-loop-contract.md in the core). A turn whose init
+   message reports the `core` MCP server as anything but connected is a
+   failed turn (`coreDown` in the status): the agent ran without its tools,
+   and a stale core token must not look like a healthy spot.
 6. **Spend.** Each turn's tokens (input + output + cache creation, from the
    CLI's result; cache reads are tracked but not counted) go into a UTC-day
-   counter in `/state/usage.json`. Once it reaches `--daily-token-ceiling` no
+   counter held in memory and written through to
+   `/state/supervisor/usage.json`; the file is read once, at start, so the
+   agent rewriting it changes nothing. Once it reaches `--daily-token-ceiling` no
    wake starts, edges are held, and the loop sleeps to UTC midnight. A turn in
    flight can overshoot by up to one turn (bounded by `--max-turns` and
    `--turn-timeout`). The spend limit on the Anthropic workspace that owns the
    key is the real stop.
-7. **Failure.** A failed turn (non-zero exit, error result, no result, timeout)
-   backs the next wake off from `--min-wake`, doubling to `--max-wake`. Four
-   consecutive 401 retries stop the turn at once (`authFailed` in the status).
-   A saved session the CLI can no longer find is dropped and a new one starts.
+7. **Failure.** A failed turn (non-zero exit, error result, no result, timeout,
+   core not connected) backs the next wake off from `--min-wake`, doubling to
+   `--max-wake`; edges wait for the backoff too. Running out of `--max-turns`
+   (`error_max_turns`) is not a failure. Four consecutive 401 retries stop the
+   turn at once (`authFailed` in the status). A saved session is dropped only
+   when the CLI says it cannot find it; an outage keeps the conversation. A
+   timed-out turn is reported as cut off on the next wake.
 8. **SIGTERM** stops the running CLI (SIGTERM to its process group, kill after
    30 s), counts the tokens seen so far, marks the session as cut off, writes
    `status.json` and exits. The next start tells the agent its last turn was
@@ -98,6 +119,9 @@ Flags only. No credential is a flag value or an environment variable.
 | `--permission-mode` | `auto` | `auto`, `dontAsk` or `acceptEdits` |
 | `--fallback-permission-mode` | `dontAsk` | used if the CLI does not start in auto |
 | `--allowed-tools` | | extra comma-separated `--allowedTools` rules |
+| `--disallowed-tools` | | extra comma-separated `--disallowedTools` rules |
+| `--chat-batch` | `10m` | how long a room message that does not name the spot waits before it wakes a turn; `0` wakes at once |
+| `--max-edge-wakes-per-hour` | `12` | cap on early wakes per hour; `0` = no cap |
 | `--heartbeat-id` | `system2-heartbeat-<tenant>` | memory cell id of the heartbeat |
 | `--kubectl-writes-per-hour` | `20` | PreToolUse hook cap |
 | `--hook-bin` | this executable | binary the hook setting runs |
@@ -133,10 +157,14 @@ needs are not secrets, but they are flags, not environment variables.
   `apiKeyHelper` and `CLAUDE_CODE_OAUTH_TOKEN` all outrank federation in the
   CLI's credential order and would silently shadow it. The CLI is never started
   with `--bare`, which ignores profiles and federation variables.
-- **Core token.** A Secret mounted as a file. The supervisor writes it into
-  the CLI's MCP file (`mcp.json`, `Authorization: Bearer ...`) at start, mode
-  0400 in a 0700 directory on a memory-backed emptyDir. Its own MCP client
-  re-reads the token file on every request.
+- **Core token.** A file: by default the pod's own projected ServiceAccount
+  token with audience `triage-core`, which the kubelet rotates (chart
+  `core.identity: serviceAccount`); or a Secret (`core.identity: secret`).
+  The supervisor writes it into the CLI's MCP file (`mcp.json`,
+  `Authorization: Bearer ...`) before every turn, mode 0400 in a 0700
+  directory on a memory-backed emptyDir, so a rotated token reaches the CLI
+  without a restart. Its own MCP client re-reads the token file on every
+  request.
 - **ServiceAccount token.** The cluster's projected token, used by `kubectl`.
 - **The CLI's environment** is the supervisor's, minus every variable whose
   name contains KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL or starts with
@@ -145,8 +173,15 @@ needs are not secrets, but they are flags, not environment variables.
   `DISABLE_ERROR_REPORTING=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. In
   federation mode `ANTHROPIC_CONFIG_DIR` and `ANTHROPIC_PROFILE` are added
   back, and nothing else with that prefix. None of these is a credential.
-- `settings.json` denies the Read tool on the run directory, the core token
-  file, and the key file (key mode) or the identity token file (federation).
+- `settings.json` denies the Read tool on the run directory, everything under
+  `/var/run/secrets` (the ServiceAccount token included), the core token file,
+  and the key file (key mode) or the identity token file (federation); and it
+  denies Edit and Write on `/state/supervisor`, `/state/claude` (the CLI's
+  config home), `/state/home`, `/state/work` (the CLI's working directory, an
+  empty directory of its own) and the run directory. The agent's writable
+  files are `/state/notes/**` and `/state/next.json`, through Edit and Write;
+  no shell command that writes a file (`echo`, `mkdir`, `sort`, `uniq`) is in
+  the allow list.
 
 ### The identity token must be fresh at every exchange
 
@@ -172,13 +207,18 @@ the Console history: `jti_reused`, `match_subject_prefix` and the other
 dedicated issuer is a decision for whoever runs the test.
 
 **Limit, stated plainly.** The agent's shell runs as the same user as the
-supervisor, so a command it runs (`cat /run/tria-spot/mcp.json`) can read the
-rendered files, the mounted Secrets, the identity token and the cached access
-token. The deny rules and the prompt only
-stop the obvious path. What bounds the damage is: the Anthropic key (or the
-federated service account's workspace) has a spend limit, the core token has `r` and `w` on one tenant and
-nothing else, NetworkPolicy lets egress reach only the Anthropic API, the core
-and the API server, and the Read stage grants no Secrets.
+supervisor, so a command it runs (`head /run/tria-spot/mcp.json`; `head`,
+`tail` and `grep` are allowed because log reading needs them) can read the
+rendered files, the mounted tokens, the identity token and the cached access
+token, and it could post what it read to a room through the core. The deny
+rules and the prompt only stop the obvious path. What bounds the damage is:
+the Anthropic key (or the federated service account's workspace) has a spend
+limit, the core identity has `r` and `w` on one tenant and nothing else, the
+ServiceAccount reads a listed namespace and nothing more, NetworkPolicy lets
+egress reach only the Anthropic API, the core, the API server and the OTLP
+endpoint, and the Read stage grants no Secrets. The same user also means a
+shell command can write where the Edit tool is denied; the supervisor's
+counters are therefore held in memory (the ledger) or best effort (the hook).
 
 ## Stages and RBAC
 
@@ -187,17 +227,36 @@ The cluster boundary is the ServiceAccount, not the prompt and not the hook.
 | Stage | Chart | The agent can |
 | --- | --- | --- |
 | Read | ClusterRole + binding (`rbac.read.enabled`, default on; cluster-wide unless `rbac.read.namespaces` lists namespaces, then a Role per namespace and only nodes and namespaces cluster-wide) | `get/list/watch` pods, services, endpoints, events, nodes, namespaces, PVCs, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs, Ingresses, NetworkPolicies, metrics; `pods/log`. No Secrets, no ConfigMaps. |
-| Act | one `Role` + `RoleBinding` per name in `actNamespaces` (default `[]`) | plus `delete` pods; `patch` Deployments, StatefulSets, DaemonSets; `patch`/`update` the scale subresource of Deployments and StatefulSets |
+| Act | one `Role` + `RoleBinding` per name in `actNamespaces` (default `[]`) | plus `delete` pods; `patch`/`update` the scale subresource of Deployments and StatefulSets. No `patch` on the workloads themselves: that would let the holder rewrite the pod template (mount any Secret, change the ServiceAccount). `kubectl rollout restart` is therefore not available; the spot deletes pods instead. |
 
 Back out by emptying `actNamespaces` or deleting the Role. Inside the RBAC the
 supervisor narrows further: an explicit permission mode (auto where the CLI
-offers it), `--allowedTools` for the tools the loop needs, WebFetch and
-WebSearch disallowed, and the PreToolUse hook.
+offers it), `--allowedTools` for the tools the loop needs (an explicit list
+of the core's tools, `runner.CoreTools`, never `mcp__core__*`),
+`--disallowedTools` for WebFetch, WebSearch, subagents (their usage is not in
+the result the ledger counts) and the core tools the spot must never call
+(`runner.CoreToolsDenied`: `resolve_issue`, `forget_issue`,
+`update_issue_severity`, `set_tenant_goals`, `run_rsi`, the event, pattern,
+memory-editing and test tools), and the PreToolUse hook.
+
+### Identity towards the core
+
+By default (`core.identity: serviceAccount`) the spot authenticates to the
+core with its own ServiceAccount: the chart mounts a projected token with
+audience `triage-core` (no core Secret), the kubelet rotates it, and the core
+validates it by TokenReview. The chart renders a Role and RoleBinding named
+`<spot name>-core`, labelled `triageagent.dev/managed: "true"`, that grant
+the ServiceAccount `core.verbs` (default get, list, create, update) on the one
+tenant; set `core.rbac.create: false` if the grant is made elsewhere. The core
+only accepts ServiceAccounts from its own namespace and reads the grants from
+that namespace, so in this mode the chart must be installed in the core's
+namespace. `core.identity: secret` keeps the earlier behaviour: a bearer token
+read from the Secret named in `core.tokenSecret`, usable from any namespace.
 
 ### The hook is not the boundary
 
-`tria-spot hook pretool` appends every Bash command to `/state/audit.log` (one
-JSON line each, rotated at 5 MiB) and refuses a mutating `kubectl` command
+`tria-spot hook pretool` appends every Bash command to
+`/state/supervisor/audit.log` (one JSON line each, rotated at 5 MiB) and refuses a mutating `kubectl` command
 (apply, patch, delete, scale, rollout restart/undo, annotate, label, edit,
 replace, cordon, uncordon, drain, taint, create, set, run, expose, autoscale)
 once `--kubectl-writes-per-hour` have run in the last hour, counting every
@@ -215,12 +274,13 @@ Anthropic workspace's spend limit stops the model regardless of the pod.
 
 ## Status
 
-`/state/status.json` (world-readable, no secrets): state (`starting`, `running`,
+`/state/supervisor/status.json` (world-readable, no secrets): state (`starting`, `running`,
 `idle`, `paused-ceiling`, `stopping`, `stopped`), session id, last turn
 (reason, seconds, tokens, result subtype, timed out, auth failed), next wake
 (time, why, source: `agent`, `agent-clamped`, `default-missing`,
 `default-garbled`, `ceiling`), tokens today against the ceiling, the permission
-mode asked for, reported and used, the last error and the heartbeat time.
+mode asked for, reported and used, the last error, the heartbeat time, the
+edges held for the next wake and the early wakes in the last hour.
 Writing it into a core status cell (ADR-095 section 7) is a later slice.
 
 ## Permission mode and auto mode
@@ -238,8 +298,9 @@ The supervisor reads `permissionMode` from every init message. If you asked
 for `auto` and the CLI reports anything else, it logs an error, records it in
 `status.json` (`fellBack`) and uses `--fallback-permission-mode` (`dontAsk`) for
 all later turns. In `dontAsk`, only `--allowedTools` run, which is why that
-list is kept (reads, edits under `/state`, `mcp__core__*`, `kubectl`, `jq`,
-and a few text tools; no bare `Bash`, no `cat`), and the hook and RBAC carry
+list is kept (reads, edits under `/state/notes` and `next.json`, the core
+tools by name, `kubectl`, `jq` and a few read-only text tools; no bare
+`Bash`, no `cat`, nothing that writes a file), and the hook and RBAC carry
 the rest. `--permission-prompts none` is always passed so nothing waits for an
 answer.
 
@@ -312,36 +373,42 @@ level. An error the API or the CLI produced (`API Error: ...`) is operational
 and is logged, because it is what diagnoses a failed login. `--log-level` is
 `debug`, `info` (default), `warn` or `error`.
 
-Two files on `/state` are not logs and do hold content: `audit.log` (each Bash
-command the agent ran, including what it echoed into its notes) and the notes
-and `status.json` `nextWake.why` the agent wrote itself. They stay in the pod's
-volume.
+Two things on `/state` are not logs and do hold content:
+`supervisor/audit.log` (each Bash command the agent ran) and the notes and
+`status.json` `nextWake.why` the agent wrote itself. They stay in the pod's
+volume. The supervisor is PID 1 in the container and reaps children the CLI
+leaves behind.
 
 ## Chart
 
 `charts/tria-spot`: renders nothing unless `spot.enabled=true`. Deployment (1
 replica, `Recreate`, read-only root, non-root, all capabilities dropped), a
 ServiceAccount, a PVC for `/state`, a memory-backed emptyDir for
-`/run/tria-spot`, an emptyDir for `/tmp`, the core-token Secret referenced by
-name and mounted as a file (mode 0440 with `fsGroup`), and per `anthropic.auth`
+`/run/tria-spot`, an emptyDir for `/tmp`, the core identity (a projected
+ServiceAccount token with audience `triage-core` plus the `<name>-core` Role
+and RoleBinding, or a Secret mounted as a file, mode 0440 with `fsGroup`; see
+Identity towards the core), and per `anthropic.auth`
 either the key Secret (`key`, default) or a projected `serviceAccountToken`
 volume at `/var/run/secrets/anthropic.com` (`federation`: audience
 `https://api.anthropic.com`, `tokenExpirationSeconds` 600; no Secret mounted;
 `anthropic.federation.ruleId`, `organizationId` and `serviceAccountId` are
 required, `workspaceId` is optional), the Read ClusterRole and
 binding, one Act Role per `actNamespaces` entry, and a NetworkPolicy (egress
-to cluster DNS, the Anthropic API CIDRs, the core, and the API server;
+to cluster DNS, the Anthropic API CIDRs, the core, the API server and, with
+`telemetry.enabled`, the OTLP endpoint from `networkPolicy.telemetry`;
 nothing in). NetworkPolicy has no host names, so the Anthropic CIDRs are the
 ones Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`,
 platform.claude.com/docs/en/api/ip-addresses), the core is selected by
 namespace and pod selector or CIDR, and `networkPolicy.apiServer.cidrs` is yours
 to set. The chart fails to render when a required value is missing.
 `make chart-lint` runs `helm lint` and `helm template` with the flag off (must
-render nothing), in key mode (`ci/enabled-values.yaml`) and in federation mode
-(`ci/federation-values.yaml`; placeholders only), checks that the pod has no
-`env`, that no rule names Secrets, that each mode mounts only its own
-credential, and that a missing required value or an unknown mode fails to
-render. The federation exchange goes to the Anthropic API, so the NetworkPolicy
+render nothing), in key mode (`ci/enabled-values.yaml`), in federation mode
+(`ci/federation-values.yaml`), with telemetry (`ci/telemetry-values.yaml`) and
+with the ServiceAccount identity (`ci/serviceaccount-values.yaml`;
+placeholders only), checks that the pod has no `env`, that no rule names
+Secrets, that no Act rule has `patch` on a workload, that each mode mounts
+only its own credential, and that a missing required value or an unknown
+mode fails to render. The federation exchange goes to the Anthropic API, so the NetworkPolicy
 is unchanged.
 
 ## Run it against a local kubeconfig
@@ -370,7 +437,7 @@ key helper.
 ## Layout
 
 ```
-cmd/tria-spot            entrypoint: supervisor, `hook pretool`, `version`
+cmd/tria-spot            entrypoint: supervisor, `hook pretool`, `version`, PID-1 reaper
 internal/config          flags
 internal/render          CLI config into the run dir (modes, helper script)
 internal/runner          one `claude -p` turn: args, env scrub, stream parse, timeouts
@@ -378,7 +445,7 @@ internal/stream          stream-json reader (session, permission mode, usage, re
 internal/schedule        next.json parse and clamp
 internal/corecli         the supervisor's MCP client (list_open_issues, heartbeat, rooms)
 internal/edges           edge detection between issue snapshots
-internal/ledger          /state files: session, daily usage, status
+internal/ledger          /state layout: the supervisor directory, session, daily usage (in memory, written through), room cursors, status
 internal/hook            the PreToolUse hook
 internal/prompt          the system prompt (instruction.md, embedded) and turn prompts
 internal/supervisor      the loop; tests drive it with a fake `claude` script

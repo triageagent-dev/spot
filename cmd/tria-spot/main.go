@@ -77,6 +77,7 @@ func hookCmd(args []string, in io.Reader, out, errOut io.Writer) int {
 }
 
 func supervise(cfg config.Config, errOut io.Writer) int {
+	reapOrphans()
 	log := slog.New(slog.NewTextHandler(errOut, &slog.HandlerOptions{Level: level(cfg.LogLevel)}))
 	log = log.With("spot", cfg.Name, "tenant", cfg.Tenant)
 	log.Info("starting", "version", version, "commit", gitCommit)
@@ -118,12 +119,8 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		return 1
 	}
 
-	allowed := runner.DefaultAllowed(cfg.StateDir)
-	for _, r := range strings.Split(cfg.ExtraAllowed, ",") {
-		if r = strings.TrimSpace(r); r != "" {
-			allowed = append(allowed, r)
-		}
-	}
+	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
+	disallowed := appendRules(runner.DefaultDisallowed(), cfg.ExtraDisallowed)
 	var tel *runner.Telemetry
 	if cfg.OtelEndpoint != "" {
 		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, ToolDetails: cfg.OtelToolDetails}
@@ -132,7 +129,8 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	rn := runner.New(runner.Options{
 		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
-		AllowedTools: allowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
+		AllowedTools: allowed, DisallowedTools: disallowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
+		CoreMCPURL: cfg.CoreMCPURL, CoreTokenFile: cfg.CoreTokenFile,
 	})
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
@@ -145,6 +143,39 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 	log.Info("stopped")
 	return 0
+}
+
+// appendRules adds the comma-separated extra rules to base.
+func appendRules(base []string, extra string) []string {
+	for _, r := range strings.Split(extra, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			base = append(base, r)
+		}
+	}
+	return base
+}
+
+// reapOrphans makes the supervisor reap re-parented children when it is PID 1
+// in the container: a kubectl or shell the CLI left behind after a kill would
+// otherwise stay a zombie. Only children the runner is not waiting on are
+// reaped here; exec.Cmd.Wait collects its own.
+func reapOrphans() {
+	if os.Getpid() != 1 {
+		return
+	}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGCHLD)
+	go func() {
+		for range ch {
+			for {
+				var ws syscall.WaitStatus
+				pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+				if pid <= 0 || err != nil {
+					break
+				}
+			}
+		}
+	}()
 }
 
 // resolveClaudeBin returns the CLI to run. In the ko image the CLI lives in

@@ -45,7 +45,7 @@ type Supervisor struct {
 	now    func() time.Time
 
 	tracker  edges.Tracker
-	held     []edges.Edge
+	held     []heldEdge
 	rooms    map[string]*roomState
 	permMode string
 
@@ -53,7 +53,13 @@ type Supervisor struct {
 	scheduledWhy string
 	lastTurnEnd  time.Time
 	failures     int
+	edgeWakes    []time.Time // early wakes in the last hour
 	status       Status
+}
+
+type heldEdge struct {
+	edges.Edge
+	at time.Time
 }
 
 type roomState struct {
@@ -62,7 +68,7 @@ type roomState struct {
 	disabled time.Time // do not ask again before this
 }
 
-// Status is /state/status.json.
+// Status is /state/supervisor/status.json.
 type Status struct {
 	Name        string `json:"name"`
 	Tenant      string `json:"tenant"`
@@ -79,6 +85,10 @@ type Status struct {
 	CoreError   string `json:"coreError,omitempty"`
 	HeartbeatAt string `json:"heartbeatAt,omitempty"`
 	HeartbeatID string `json:"heartbeatId,omitempty"`
+	// HeldEdges is how many changes wait for the next wake; EdgeWakesHour how
+	// many early wakes ran in the last hour against the cap.
+	HeldEdges     int `json:"heldEdges,omitempty"`
+	EdgeWakesHour int `json:"edgeWakesLastHour,omitempty"`
 }
 
 // Turn summarises the last turn.
@@ -93,6 +103,7 @@ type Turn struct {
 	IsError    bool    `json:"isError"`
 	TimedOut   bool    `json:"timedOut,omitempty"`
 	AuthFailed bool    `json:"authFailed,omitempty"`
+	CoreDown   bool    `json:"coreDown,omitempty"`
 	Denials    int     `json:"permissionDenials,omitempty"`
 	Terminal   string  `json:"terminalReason,omitempty"`
 	ExitCode   int     `json:"exitCode,omitempty"`
@@ -132,6 +143,12 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 		cfg: cfg, led: led, core: core, turner: turner, log: log, now: time.Now,
 		rooms:    map[string]*roomState{"team": {}, "agents": {}},
 		permMode: cfg.PermissionMode,
+	}
+	// A saved cursor means the messages after it are news, restart or not.
+	for room, cur := range led.LoadRoomCursors() {
+		if rs, ok := s.rooms[room]; ok && cur != "" {
+			rs.cursor, rs.primed = cur, true
+		}
 	}
 	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID,
 		PermMode: Perm{Requested: cfg.PermissionMode, InUse: cfg.PermissionMode}}
@@ -180,10 +197,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if !s.sleep(ctx, s.untilNext()) {
 			break
 		}
-		edgesNow := s.poll(ctx)
-		s.held = appendCapped(s.held, edgesNow)
-		if len(s.held) > 0 && !s.paused() && s.now().Sub(s.lastTurnEnd) >= s.cfg.EdgeCooldown {
-			pend = s.fromHeld()
+		if es := s.poll(ctx); len(es) > 0 {
+			s.hold(es)
+		}
+		if pend = s.dueFromHeld(); pend == nil && len(s.held) > 0 {
+			s.setState(s.status.State) // the held count is visible while it waits
 		}
 	}
 	s.setState("stopping")
@@ -238,12 +256,88 @@ func (s *Supervisor) sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func appendCapped(held, add []edges.Edge) []edges.Edge {
-	held = append(held, add...)
-	if len(held) > maxHeld {
-		held = held[len(held)-maxHeld:]
+// hold keeps edges for the next wake. Past maxHeld, machine messages go
+// first, then the oldest of the rest: a person's words are the last thing
+// dropped.
+func (s *Supervisor) hold(add []edges.Edge) {
+	now := s.now()
+	for _, e := range add {
+		s.held = append(s.held, heldEdge{Edge: e, at: now})
 	}
-	return held
+	for len(s.held) > maxHeld {
+		drop := -1
+		for i, h := range s.held {
+			if h.Kind == edges.Message && !h.Human {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			drop = 0
+		}
+		s.held = append(s.held[:drop], s.held[drop+1:]...)
+	}
+	s.status.HeldEdges = len(s.held)
+}
+
+// dueFromHeld decides whether what is held wakes the agent now. Issue edges
+// and messages that name the spot wake after the edge cooldown (or the
+// failure backoff, whichever is longer). A person's message that does not
+// name the spot waits up to ChatBatch. A machine's message never wakes on
+// its own; it is a fact for the next wake. Early wakes are capped per hour.
+func (s *Supervisor) dueFromHeld() *pending {
+	if len(s.held) == 0 || s.paused() {
+		return nil
+	}
+	now := s.now()
+	gap := s.cfg.EdgeCooldown
+	if s.failures > 0 {
+		if b := s.backoff(); b > gap {
+			gap = b
+		}
+	}
+	if now.Sub(s.lastTurnEnd) < gap {
+		return nil
+	}
+	urgent := false
+	for _, h := range s.held {
+		switch {
+		case h.Kind != edges.Message:
+			urgent = true
+		case h.Mentioned:
+			urgent = true
+		case h.Human && now.Sub(h.at) >= s.cfg.ChatBatch:
+			urgent = true
+		}
+		if urgent {
+			break
+		}
+	}
+	if !urgent {
+		return nil
+	}
+	if s.edgeWakesCapped(now) {
+		return nil
+	}
+	s.edgeWakes = append(s.edgeWakes, now)
+	s.status.EdgeWakesHour = len(s.edgeWakes)
+	return s.fromHeld()
+}
+
+func (s *Supervisor) edgeWakesCapped(now time.Time) bool {
+	kept := s.edgeWakes[:0]
+	for _, t := range s.edgeWakes {
+		if now.Sub(t) < time.Hour {
+			kept = append(kept, t)
+		}
+	}
+	s.edgeWakes = kept
+	s.status.EdgeWakesHour = len(kept)
+	if s.cfg.MaxEdgeWakesHr > 0 && len(kept) >= s.cfg.MaxEdgeWakesHr {
+		s.log.Warn("early wakes capped for this hour; changes wait for the scheduled wake", "wakes", len(kept), "cap", s.cfg.MaxEdgeWakesHr, "held", len(s.held))
+		return true
+	}
+	return false
 }
 
 func (s *Supervisor) fromHeld() *pending {
@@ -255,6 +349,7 @@ func (s *Supervisor) fromHeld() *pending {
 		}
 	}
 	s.held = nil
+	s.status.HeldEdges = 0
 	return p
 }
 
@@ -274,13 +369,19 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 		out = append(out, s.tracker.Observe(issues)...)
 	}
 
+	moved := false
 	for _, room := range []string{"team", "agents"} {
-		out = append(out, s.pollRoom(pctx, room)...)
+		es, changed := s.pollRoom(pctx, room)
+		out = append(out, es...)
+		moved = moved || changed
+	}
+	if moved {
+		s.saveCursors()
 	}
 	if len(out) > 0 {
 		// Logs carry what happened, never what was said: the text of a person's
 		// message or an issue is content, and is logged only on request.
-		s.log.Info("edges", "count", len(out), "kinds", kindCounts(out), "human", anyHuman(out))
+		s.log.Info("edges", "count", len(out), "kinds", kindCounts(out), "human", anyHuman(out), "mentioned", anyMentioned(out))
 		if s.cfg.LogContent {
 			s.log.Debug("edge text", "first", clip(out[0].Fact, 200))
 		}
@@ -288,10 +389,23 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 	return out
 }
 
-func (s *Supervisor) pollRoom(ctx context.Context, room string) []edges.Edge {
+func (s *Supervisor) saveCursors() {
+	c := map[string]string{}
+	for room, rs := range s.rooms {
+		if rs.cursor != "" {
+			c[room] = rs.cursor
+		}
+	}
+	if err := s.led.SaveRoomCursors(c); err != nil {
+		s.log.Warn("saving room cursors", "err", err)
+	}
+}
+
+// pollRoom reads one room. It returns the edges and whether the cursor moved.
+func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, bool) {
 	rs := s.rooms[room]
 	if s.now().Before(rs.disabled) {
-		return nil
+		return nil, false
 	}
 	msgs, next, err := s.core.RoomMessages(ctx, room, rs.cursor)
 	switch {
@@ -299,17 +413,18 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) []edges.Edge {
 		// The core predates ADR-095 phase 3. Ask again later, quietly.
 		rs.disabled = s.now().Add(10 * time.Minute)
 		s.log.Debug("core offers no read_workspace_room; skipping room polls")
-		return nil
+		return nil, false
 	case err != nil:
 		if ctx.Err() == nil {
-			s.log.Debug("room poll failed", "room", room, "err", err)
+			s.log.Debug("room poll failed", "room", room)
 		}
-		return nil
+		return nil, false
 	}
 	first := !rs.primed
+	moved := next != rs.cursor
 	rs.primed, rs.cursor = true, next
 	if first {
-		return nil // history at startup is not news
+		return nil, moved // history at startup is not news
 	}
 	var out []edges.Edge
 	for _, m := range msgs {
@@ -323,10 +438,26 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) []edges.Edge {
 		// A person is talking to the spot; Tria and other agents are news but
 		// not a human asking.
 		human := !m.Tria && m.Spot == ""
-		out = append(out, edges.Edge{Kind: edges.Message, Human: human,
-			Fact: fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %q", room, orUnknown(who), clip(m.Text, 400))})
+		if !human && m.Hop >= 2 {
+			// A machine conversation two hops deep: not answered, not even
+			// shown, so two agents cannot keep each other awake.
+			s.log.Debug("machine message past the hop limit dropped", "room", room, "hop", m.Hop)
+			continue
+		}
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human, Mentioned: s.mentioned(m.Text),
+			Fact: fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), edges.Fence(m.Text, 400))})
 	}
-	return out
+	return out, moved
+}
+
+// mentioned reports whether a message names the spot: "@<name>" or the name
+// itself, case-insensitively.
+func (s *Supervisor) mentioned(text string) bool {
+	name := strings.ToLower(s.cfg.Name)
+	if name == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(text), name)
 }
 
 // badLocal mirrors the core's sanitiser for the spot's Matrix localpart.
@@ -372,6 +503,15 @@ func anyHuman(es []edges.Edge) bool {
 	return false
 }
 
+func anyMentioned(es []edges.Edge) bool {
+	for _, e := range es {
+		if e.Mentioned {
+			return true
+		}
+	}
+	return false
+}
+
 func clip(s string, n int) string {
 	if len(s) > n {
 		return s[:n] + "..."
@@ -404,6 +544,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 			p.facts = append(p.facts, e.Fact)
 		}
 		s.held = nil
+		s.status.HeldEdges = 0
 	}
 	used := s.led.Usage().Tokens
 	text := prompt.Turn(prompt.Wake{
@@ -419,6 +560,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.setState("running")
 	s.log.Info("turn start", "reason", p.reason, "resume", resume != "", "facts", len(p.facts))
 
+	pre := s.tracker.Snapshot()
 	res := s.turner.Run(ctx, text, resume)
 	s.lastTurnEnd = s.now()
 
@@ -447,9 +589,13 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 			sess.CostUSD = sum.CostUSD
 		}
 	}
-	sess.Running = res.Canceled // a cut-off turn is reported on the next start
-	failed := res.Err != nil || sum.IsError || !sum.GotResult
-	if failed && resume != "" && s.sessionLost(res) {
+	// A cut-off or timed-out turn is reported on the next start: a change may
+	// be half done.
+	sess.Running = res.Canceled || res.TimedOut
+	// Running out of agentic turns is the work stopping, not failing.
+	maxTurns := sum.GotResult && sum.Subtype == "error_max_turns"
+	failed := (!maxTurns && (res.Err != nil || sum.IsError || !sum.GotResult)) || res.CoreDown
+	if failed && resume != "" && sessionLost(res) {
 		s.log.Warn("the saved conversation cannot be resumed; the next turn starts a new one", "session", resume)
 		sess = ledger.Session{}
 	}
@@ -471,7 +617,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		At: s.lastTurnEnd.UTC().Format(time.RFC3339), Reason: string(p.reason), Seconds: res.Duration.Seconds(),
 		Tokens: u.Billable(), NumTurns: sum.NumTurns, CostUSD: costDelta, Subtype: sum.Subtype,
 		IsError: failed, TimedOut: res.TimedOut, Denials: sum.PermissionDenials,
-		Terminal: sum.TerminalReason, ExitCode: res.ExitCode, AuthFailed: res.AuthFailed,
+		Terminal: sum.TerminalReason, ExitCode: res.ExitCode, AuthFailed: res.AuthFailed, CoreDown: res.CoreDown,
 		ContextTokens: sum.LastContext,
 	}
 	s.status.LastTurn = turn
@@ -487,13 +633,16 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.status.Failures = s.failures
 		s.status.LastError = failureText(res, s.cfg.AnthropicAuth, s.cfg.LogContent)
 		s.log.Error("turn failed", "err", s.status.LastError, "failures", s.failures, "timedOut", res.TimedOut,
-			"tokens", u.Billable())
+			"coreDown", res.CoreDown, "tokens", u.Billable())
 	} else {
 		s.failures, s.status.Failures, s.status.LastError = 0, 0, ""
+		if maxTurns {
+			s.log.Warn("turn stopped at max-turns; the work may be unfinished", "tokens", u.Billable(), "numTurns", sum.NumTurns)
+		}
 		s.log.Info("turn done", "tokens", u.Billable(), "numTurns", sum.NumTurns, "seconds", int(res.Duration.Seconds()))
 	}
 
-	w := schedule.Consume(s.led.Path(ledger.NextFile), s.cfg.MinWake, s.cfg.MaxWake)
+	w := schedule.Consume(s.led.AgentPath(ledger.NextFile), s.cfg.MinWake, s.cfg.MaxWake)
 	if w.Source != schedule.SourceAgent {
 		s.log.Warn("schedule not taken as written", "source", w.Source, "note", w.Note, "after", w.After)
 	}
@@ -506,10 +655,14 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.scheduledWhy = w.Why
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
 
-	// Baseline after the turn, so the agent's own comments and changes are not
-	// edges. Edges that arrived during the turn are folded into this look.
+	// Baseline after the turn. What changed during it, other than comments
+	// (the agent writes those itself), is held and wakes the agent again by
+	// the usual rules.
 	if issues, err := s.core.ListOpenIssues(ctx); err == nil {
-		s.tracker.Rebaseline(issues)
+		if late := s.tracker.SettleFrom(pre, issues); len(late) > 0 {
+			s.log.Info("changes during the turn", "count", len(late), "kinds", kindCounts(late))
+			s.hold(late)
+		}
 	}
 
 	if !failed {
@@ -531,11 +684,12 @@ func (s *Supervisor) backoff() time.Duration {
 	return d
 }
 
-func (s *Supervisor) sessionLost(res runner.Result) bool {
-	if strings.Contains(res.Stderr, "No conversation found") || strings.Contains(strings.Join(res.Summary.Errors, " "), "No conversation found") {
-		return true
-	}
-	return s.failures+1 >= 3 && !res.Summary.GotResult
+// sessionLost reports whether the CLI said the saved conversation is gone.
+// Nothing else drops it: an outage or an authentication failure is not a
+// reason to forget the conversation and its cost baseline.
+func sessionLost(res runner.Result) bool {
+	return strings.Contains(res.Stderr, "No conversation found") ||
+		strings.Contains(strings.Join(res.Summary.Errors, " "), "No conversation found")
 }
 
 // federationHint is what to read when federation auth fails. The API answers
@@ -556,7 +710,6 @@ func looksLikeAuthFailure(res runner.Result) bool {
 	return false
 }
 
-// failureText describes why a turn failed. mode is the Anthropic auth mode.
 // operationalError reports whether a result text is an error the API or the CLI
 // produced, as opposed to text the model wrote.
 func operationalError(text string) bool {
@@ -565,6 +718,7 @@ func operationalError(text string) bool {
 		strings.Contains(t, "authentication_error") || strings.Contains(t, "your apikeyhelper script is failing")
 }
 
+// failureText describes why a turn failed. mode is the Anthropic auth mode.
 func failureText(res runner.Result, mode string, content bool) string {
 	if mode == config.AuthFederation && looksLikeAuthFailure(res) {
 		return "Anthropic authentication failed in federation mode; " + federationHint
@@ -572,6 +726,8 @@ func failureText(res runner.Result, mode string, content bool) string {
 	switch {
 	case res.AuthFailed:
 		return "the Anthropic API rejected the key (401); check the key Secret"
+	case res.CoreDown:
+		return "the core MCP server was not connected in this turn; check the core token and the core URL"
 	case res.TimedOut:
 		return "turn timed out"
 	case len(res.Summary.Errors) > 0:

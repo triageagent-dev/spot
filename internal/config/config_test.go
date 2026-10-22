@@ -180,3 +180,20 @@ func TestOtelTenantDefaultsToOneTenantForEverySpot(t *testing.T) {
 		t.Fatalf("override = %q, %v", c.OtelTenant, err)
 	}
 }
+
+func TestWakeFlags(t *testing.T) {
+	c, err := Parse(required, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ChatBatch != 10*time.Minute || c.MaxEdgeWakesHr != 12 || c.ExtraDisallowed != "" {
+		t.Fatalf("defaults: %+v", c)
+	}
+	c, err = Parse(append(append([]string{}, required...), "--chat-batch", "0", "--max-edge-wakes-per-hour", "0", "--disallowed-tools", "Bash(curl *)"), io.Discard)
+	if err != nil || c.ChatBatch != 0 || c.MaxEdgeWakesHr != 0 || c.ExtraDisallowed != "Bash(curl *)" {
+		t.Fatalf("%v %+v", err, c)
+	}
+	if _, err := Parse(append(append([]string{}, required...), "--max-edge-wakes-per-hour", "-1"), io.Discard); err == nil {
+		t.Fatal("a negative cap must be refused")
+	}
+}

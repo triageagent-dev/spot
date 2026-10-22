@@ -69,7 +69,7 @@ func TestAuditsEveryBashCommandAndIgnoresOtherTools(t *testing.T) {
 	if out, _, code := run(t, o, map[string]any{"tool_name": "Read", "tool_input": map[string]any{"file_path": "/x"}}); code != 0 || out != "" {
 		t.Fatalf("non-bash: %d %q", code, out)
 	}
-	b, err := os.ReadFile(filepath.Join(d, AuditFile))
+	b, err := os.ReadFile(filepath.Join(d, SupervisorDir, AuditFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestHourlyCapDeniesMutatingOnly(t *testing.T) {
 	if out, _, _ := run(t, o, bash("kubectl delete pod p")); out != "" {
 		t.Fatalf("cap did not reset after an hour: %s", out)
 	}
-	b, _ := os.ReadFile(filepath.Join(d, AuditFile))
+	b, _ := os.ReadFile(filepath.Join(d, SupervisorDir, AuditFile))
 	if !strings.Contains(string(b), `"verdict":"denied"`) {
 		t.Fatalf("denial not audited: %s", b)
 	}
@@ -137,8 +137,13 @@ func TestZeroCapDisablesCounting(t *testing.T) {
 }
 
 func TestFailsOpen(t *testing.T) {
-	// Unwritable state dir: audit and counter fail, the call is still allowed.
-	o := Options{StateDir: filepath.Join(t.TempDir(), "missing", "dir"), MaxPerHour: 1}
+	// Unwritable state dir (a path under a plain file): audit and counter
+	// fail, the call is still allowed.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{StateDir: filepath.Join(blocker, "dir"), MaxPerHour: 1}
 	out, errOut, code := run(t, o, bash("kubectl delete pod a"))
 	if code != 0 || out != "" || errOut == "" {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -155,7 +160,7 @@ func TestAuditRotates(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		run(t, o, bash("echo "+strings.Repeat("x", 50)))
 	}
-	if _, err := os.Stat(filepath.Join(d, AuditFile+".1")); err != nil {
+	if _, err := os.Stat(filepath.Join(d, SupervisorDir, AuditFile+".1")); err != nil {
 		t.Fatalf("audit log did not rotate: %v", err)
 	}
 }

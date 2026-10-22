@@ -65,8 +65,7 @@ type Paths struct {
 // Render writes the files with mode 0400 (the helper 0500) in a 0700 run
 // directory, replacing earlier ones atomically.
 func Render(in Input) (Paths, error) {
-	token, err := readSecretFile(in.CoreTokenFile)
-	if err != nil {
+	if _, err := readSecretFile(in.CoreTokenFile); err != nil {
 		return Paths{}, fmt.Errorf("core token: %w", err)
 	}
 	if in.Federation == nil {
@@ -94,12 +93,7 @@ func Render(in Input) (Paths, error) {
 		p.KeyHelper = filepath.Join(in.RunDir, "api-key-helper.sh")
 	}
 
-	mcp := map[string]any{"mcpServers": map[string]any{ServerName: map[string]any{
-		"type":    "http",
-		"url":     in.CoreMCPURL,
-		"headers": map[string]string{"Authorization": "Bearer " + token},
-	}}}
-	if err := writeJSON(p.MCPConfig, mcp, 0o400); err != nil {
+	if err := WriteMCP(p.MCPConfig, in.CoreMCPURL, in.CoreTokenFile); err != nil {
 		return Paths{}, err
 	}
 
@@ -129,6 +123,23 @@ func Render(in Input) (Paths, error) {
 		return Paths{}, err
 	}
 	return p, nil
+}
+
+// WriteMCP writes the CLI's MCP file for the core with the bearer token read
+// from tokenFile now. The runner calls it before every turn, so a rotated
+// token (a projected ServiceAccount token the kubelet rewrites, or a replaced
+// Secret) reaches the CLI without a restart.
+func WriteMCP(path, url, tokenFile string) error {
+	token, err := readSecretFile(tokenFile)
+	if err != nil {
+		return fmt.Errorf("core token: %w", err)
+	}
+	mcp := map[string]any{"mcpServers": map[string]any{ServerName: map[string]any{
+		"type":    "http",
+		"url":     url,
+		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}}}
+	return writeJSON(path, mcp, 0o400)
 }
 
 // Settings builds the settings JSON. Exposed for tests.
