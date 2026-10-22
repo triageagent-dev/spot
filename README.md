@@ -186,7 +186,7 @@ The cluster boundary is the ServiceAccount, not the prompt and not the hook.
 
 | Stage | Chart | The agent can |
 | --- | --- | --- |
-| Read | ClusterRole + binding (`rbac.read.enabled`, default on) | `get/list/watch` pods, services, endpoints, events, nodes, namespaces, PVCs, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs, Ingresses, NetworkPolicies, metrics; `pods/log`. No Secrets, no ConfigMaps. |
+| Read | ClusterRole + binding (`rbac.read.enabled`, default on; cluster-wide unless `rbac.read.namespaces` lists namespaces, then a Role per namespace and only nodes and namespaces cluster-wide) | `get/list/watch` pods, services, endpoints, events, nodes, namespaces, PVCs, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs, Ingresses, NetworkPolicies, metrics; `pods/log`. No Secrets, no ConfigMaps. |
 | Act | one `Role` + `RoleBinding` per name in `actNamespaces` (default `[]`) | plus `delete` pods; `patch` Deployments, StatefulSets, DaemonSets; `patch`/`update` the scale subresource of Deployments and StatefulSets |
 
 Back out by emptying `actNamespaces` or deleting the Role. Inside the RBAC the

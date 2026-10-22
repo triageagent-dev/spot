@@ -86,6 +86,10 @@ serviceAccount:
 rbac:
   read:
     enabled: true
+    # Namespaces the spot may read workloads, events and pod logs in. Empty =
+    # every namespace. With a list, the cluster-wide part shrinks to nodes and
+    # namespaces only.
+    namespaces: []
 
 # ACT stage: namespaces in which the spot may delete pods and patch
 # Deployments, StatefulSets, DaemonSets and the scale subresource of the first
