@@ -547,7 +547,7 @@ func anyMentioned(es []edges.Edge) bool {
 
 // roomFactRunes is how much of a room message goes into the wake prompt; the
 // rest is one read_workspace_room away.
-const roomFactRunes = 1500
+const roomFactRunes = 2500
 
 func clip(s string, n int) string {
 	if len(s) > n {

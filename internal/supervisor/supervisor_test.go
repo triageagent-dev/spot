@@ -468,7 +468,7 @@ func TestLongRoomMessageIsFlaggedWhenCut(t *testing.T) {
 	h.post("team", say("alice", "alice", long))
 	h.waitIdle(3)
 	in = h.file("stdin", 3)
-	if strings.Contains(in, long) || !strings.Contains(in, "message cut at 1500 characters") || !strings.Contains(in, "read_workspace_room") {
+	if strings.Contains(in, long) || !strings.Contains(in, "message cut at 2500 characters") || !strings.Contains(in, "read_workspace_room") {
 		t.Errorf("a long message must be cut and flagged:\n%.400s", in)
 	}
 }
