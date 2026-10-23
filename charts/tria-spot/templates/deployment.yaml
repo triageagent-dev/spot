@@ -73,6 +73,9 @@ spec:
             - --anthropic-workspace-id={{ $fed.workspaceId }}
             {{- end }}
             {{- end }}
+            {{- if .Values.connectors }}
+            - --connectors-file=/etc/tria-spot/connectors/connectors.json
+            {{- end }}
             - --state-dir=/state
             - --run-dir=/run/tria-spot
             - --permission-mode={{ .Values.agent.permissionMode }}
@@ -137,6 +140,11 @@ spec:
             - name: core-token
               mountPath: /secrets/core
               readOnly: true
+            {{- if .Values.connectors }}
+            - name: connectors
+              mountPath: /etc/tria-spot/connectors
+              readOnly: true
+            {{- end }}
             {{- if and .Values.telemetry.enabled .Values.telemetry.tokenSecret.name }}
             - name: otel-token
               mountPath: /secrets/otel
@@ -163,6 +171,11 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- if .Values.connectors }}
+        - name: connectors
+          configMap:
+            name: {{ $name }}-connectors
+        {{- end }}
         {{- if and .Values.telemetry.enabled .Values.telemetry.tokenSecret.name }}
         - name: otel-token
           secret:

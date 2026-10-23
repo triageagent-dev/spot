@@ -1,0 +1,16 @@
+{{- if and .Values.spot.enabled .Values.connectors }}
+{{- $list := list }}
+{{- range .Values.connectors }}
+{{- $list = append $list (dict "name" (required "connectors[].name is required" .name) "url" (required (printf "connectors[%s].url is required" .name) .url) "tools" (required (printf "connectors[%s].tools must name the tools the spot may call" .name) .tools) "hint" (default "" .hint)) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tria-spot.name" . }}-connectors
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tria-spot.labels" . | nindent 4 }}
+data:
+  # Names, URLs, tool names and hints. No credential: a connector holds its own.
+  connectors.json: {{ toJson $list | quote }}
+{{- end }}

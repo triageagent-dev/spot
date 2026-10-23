@@ -40,6 +40,15 @@ spec:
         {{- range $np.core.ports }}
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
+    {{- range $.Values.connectors }}
+    # Connector {{ .name }}.
+    - to:
+        {{- include "tria-spot.egressPeers" (dict "t" (default dict .egress) "what" (printf "connector %s egress" .name)) | nindent 8 }}
+      ports:
+        {{- range (required (printf "connectors[%s].egress.ports is required" .name) (dig "egress" "ports" nil .)) }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
     {{- if $.Values.telemetry.enabled }}
     # The telemetry endpoint (ego): traces only.
     - to:

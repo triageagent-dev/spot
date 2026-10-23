@@ -329,3 +329,27 @@ func TestWriteMCPAddsEgoWithItsOwnTokenAndReadsItEveryTime(t *testing.T) {
 		t.Fatalf("core alone: %+v", read())
 	}
 }
+
+func TestWriteMCPConnectorCarriesNoCredential(t *testing.T) {
+	d := t.TempDir()
+	core := filepath.Join(d, "core")
+	must(t, os.WriteFile(core, []byte("core-token\n"), 0o400))
+	path := filepath.Join(d, "mcp.json")
+	must(t, WriteMCP(path, "https://core.example.invalid/mcp", core, Server{Name: "example-kube", URL: "http://tools.example.invalid:8084/mcp"}))
+	b, err := os.ReadFile(path)
+	must(t, err)
+	var got struct {
+		MCPServers map[string]struct {
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	must(t, json.Unmarshal(b, &got))
+	k := got.MCPServers["example-kube"]
+	if k.URL != "http://tools.example.invalid:8084/mcp" || len(k.Headers) != 0 {
+		t.Fatalf("connector entry = %+v: it must carry a URL and no header", k)
+	}
+	if got.MCPServers[ServerName].Headers["Authorization"] != "Bearer core-token" {
+		t.Fatalf("the core keeps its token: %+v", got.MCPServers[ServerName])
+	}
+}

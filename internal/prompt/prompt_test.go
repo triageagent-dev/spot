@@ -37,7 +37,7 @@ func TestWakePromptSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
 func TestTemplateHoldsOnlyKnownPlaceholders(t *testing.T) {
 	// The template ships in the binary: deployment-specific values come from
 	// placeholders, never from the text.
-	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true}
+	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true, "{{CONNECTORS}}": true}
 	raw := Raw()
 	for {
 		i := strings.Index(raw, "{{")
@@ -71,5 +71,16 @@ func TestTurnPrompt(t *testing.T) {
 	}
 	if !strings.Contains(Turn(Wake{Reason: Startup, Resumed: true, Now: now, StateDir: "/s"}), "resumed") {
 		t.Error("resumed startup not mentioned")
+	}
+}
+
+func TestInstructionListsConnectorsOnlyWhenThereAreSome(t *testing.T) {
+	none := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state"})
+	if strings.Contains(none, "{{") || strings.Contains(none, "## Connectors") {
+		t.Fatal("no connectors: no section and no leftover placeholder")
+	}
+	with := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state", Connectors: []Connector{{Name: "example-kube", Hint: "The workspace's cluster, read-only."}}})
+	if !strings.Contains(with, "## Connectors") || !strings.Contains(with, "`mcp__example-kube__*`: The workspace's cluster, read-only.") {
+		t.Fatalf("the connector and its hint belong in the prompt:\n%s", with)
 	}
 }

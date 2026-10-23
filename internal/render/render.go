@@ -140,6 +140,11 @@ func WriteMCP(path, url, tokenFile string, extra ...Server) error {
 		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}
 	for _, s := range extra {
+		if s.TokenFile == "" {
+			// A connector holds its own credential; the spot sends none.
+			servers[s.Name] = map[string]any{"type": "http", "url": s.URL}
+			continue
+		}
 		t, err := readSecretFile(s.TokenFile)
 		if err != nil {
 			return fmt.Errorf("%s token: %w", s.Name, err)
@@ -157,7 +162,8 @@ func WriteMCP(path, url, tokenFile string, extra ...Server) error {
 const EgoServerName = "ego"
 
 // Server is one more MCP server beside the core: its name, streamable-HTTP
-// URL and the file holding its bearer token (read at every render).
+// URL and the file holding its bearer token (read at every render); no token
+// file means the spot sends no credential (a connector).
 type Server struct {
 	Name      string
 	URL       string

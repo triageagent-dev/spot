@@ -50,6 +50,9 @@ type Options struct {
 	// EgoTools) to that file.
 	EgoMCPURL    string
 	EgoTokenFile string
+	// Connectors are more MCP servers, written to the same file without a
+	// credential (the connector holds its own).
+	Connectors []render.Server
 	// Env is appended to the scrubbed parent environment.
 	Env []string
 	// Grace is how long the CLI gets after SIGTERM before it is killed.
@@ -347,6 +350,7 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 		if o.EgoMCPURL != "" {
 			extra = append(extra, render.Server{Name: render.EgoServerName, URL: o.EgoMCPURL, TokenFile: o.EgoTokenFile})
 		}
+		extra = append(extra, o.Connectors...)
 		if err := render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile, extra...); err != nil {
 			res.Err = err
 			return res

@@ -84,12 +84,18 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	helm lint $(CHART) -f $(CHART)/ci/federation-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/connectors-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
 	helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml > $(CHART_TMP)/tria-spot-tel.yaml
 	helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml > $(CHART_TMP)/tria-spot-sa.yaml
-	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml $(CHART_TMP)/tria-spot-sa.yaml; do \
+	helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml > $(CHART_TMP)/tria-spot-conn.yaml
+	@grep -q -- '--connectors-file=' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'connectors.json' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'Connector example-kube' $(CHART_TMP)/tria-spot-conn.yaml || { echo "connectors: the flag, a ConfigMap and an egress rule each"; exit 1; }
+	@! sed -n '/kind: ConfigMap/,/^---/p' $(CHART_TMP)/tria-spot-conn.yaml | grep -qiE 'token|authorization|secret' || { echo "the connectors ConfigMap must hold no credential"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml --set 'connectors[0].tools=null' >/dev/null 2>&1 || { echo "a connector without named tools must fail"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml --set 'connectors[0].egress=null' >/dev/null 2>&1 || { echo "a connector without an egress target must fail"; exit 1; }
+	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml $(CHART_TMP)/tria-spot-sa.yaml $(CHART_TMP)/tria-spot-conn.yaml; do \
 	  ! grep -qE '^[[:space:]]+env(From)?:' $$f || { echo "the pod must carry no env ($$f)"; exit 1; }; \
 	  ! grep -qE 'resources:.*secrets' $$f || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
 	  ! awk '/resources:/ {r=$$0} /verbs:.*patch/ {n=split(r,a,/[][ ,]+/); for(i=1;i<=n;i++) if(a[i]=="deployments"||a[i]=="statefulsets"||a[i]=="daemonsets") bad=1} END {exit !bad}' $$f || { echo "no rule may patch a workload, only the scale subresources ($$f)"; exit 1; }; \

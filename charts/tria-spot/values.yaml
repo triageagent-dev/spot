@@ -75,6 +75,23 @@ anthropic:
     audience: https://api.anthropic.com
     tokenExpirationSeconds: 600  # the kubelet rotates the token at 80% of this; minimum 600
 
+# Connectors: more MCP servers beside the core. Each is a service that holds
+# its own credentials and limits (a Kubernetes tool server for another
+# cluster, a code host, a metrics API); the spot carries no credential for it.
+# The spot may call only the tools named here, by exact name, and its prompt
+# gets the hint. Where the connector lives goes in egress, so the NetworkPolicy
+# opens exactly that.
+connectors: []
+  # - name: example-kube                       # lowercase letters, digits, dashes; not core or ego
+  #   url: http://tools.example.svc:8084/mcp   # streamable HTTP
+  #   tools: [kubectl_get, kubectl_describe]   # required: the tool names the spot may call
+  #   hint: The workspace's cluster, read-only. Use it instead of kubectl.
+  #   egress:                                  # same shape as networkPolicy.core
+  #     namespaceSelector: {}
+  #     podSelector: {}
+  #     cidrs: []
+  #     ports: [8084]
+
 # The CLI's own OpenTelemetry traces (beta in the CLI), sent to an OTLP/HTTP
 # endpoint such as ego. The sender's token is a Secret mounted as a file and
 # read by a rendered header helper; no variable carries it. Spans hold names,

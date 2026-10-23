@@ -113,6 +113,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr, OtelTokenFile: cfg.OtelTokenFile,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+			Connectors: promptConnectors(cfg.Connectors),
 		}),
 	})
 	if err != nil {
@@ -123,6 +124,12 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
 	if cfg.EgoMCPURL != "" {
 		allowed = append(allowed, runner.EgoAllowed()...)
+	}
+	var servers []render.Server
+	for _, c := range cfg.Connectors {
+		allowed = append(allowed, c.AllowedRules()...)
+		servers = append(servers, render.Server{Name: c.Name, URL: c.URL})
+		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
 	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)
 	if cfg.CoreTools == "all" {
@@ -139,7 +146,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
 		AllowedTools: allowed, DisallowedTools: disallowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
 		CoreMCPURL: cfg.CoreMCPURL, CoreTokenFile: cfg.CoreTokenFile,
-		EgoMCPURL: cfg.EgoMCPURL, EgoTokenFile: cfg.OtelTokenFile,
+		EgoMCPURL: cfg.EgoMCPURL, EgoTokenFile: cfg.OtelTokenFile, Connectors: servers,
 	})
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
@@ -225,4 +232,12 @@ func level(s string) slog.Level {
 		return slog.LevelError
 	}
 	return slog.LevelInfo
+}
+
+func promptConnectors(cs []config.Connector) []prompt.Connector {
+	out := make([]prompt.Connector, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, prompt.Connector{Name: c.Name, Hint: c.Hint})
+	}
+	return out
 }

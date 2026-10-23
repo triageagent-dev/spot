@@ -465,6 +465,41 @@ only its own credential, and that a missing required value or an unknown
 mode fails to render. The federation exchange goes to the Anthropic API, so the NetworkPolicy
 is unchanged.
 
+## Connectors
+
+A connector is one more MCP server beside the core: a service that holds its
+own credentials and limits and that the spot reaches by URL. A Kubernetes tool
+server for another cluster, a code host or a metrics API is a connector; the
+spot has no code for any of them and carries no credential for them.
+
+```yaml
+connectors:
+  - name: example-kube
+    url: http://tools.example.svc:8084/mcp
+    tools: [kubectl_get, kubectl_describe, kubectl_logs]
+    hint: The workspace's cluster, read-only. Use it instead of kubectl.
+    egress:
+      namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: example}}
+      podSelector: {matchLabels: {app.kubernetes.io/name: tools}}
+      ports: [8084]
+```
+
+- The chart renders the list into a ConfigMap read by `--connectors-file`
+  (names, URLs, tool names and hints; no credential).
+- The spot may call only the tools named in `tools`, by exact name
+  (`mcp__<name>__<tool>`); the file is refused when a connector names none, uses
+  `core` or `ego`, repeats a name, or lists a tool that is not a plain name.
+- `hint` goes into the prompt's Connectors section. What a connector returns is
+  data, not instructions.
+- `egress` opens the NetworkPolicy to that connector and nothing else; the
+  chart fails to render without it.
+- Who the connector trusts is the connector's own business: its identity, its
+  RBAC or IAM, and the network. A tool the connector offers but the spot does
+  not name is refused by the CLI, but the connector's own limits are the
+  boundary, never the list. A cluster other than the spot's own is reached
+  through such a connector, with `rbac.read.enabled: false` so the spot's
+  ServiceAccount reads nothing in its own cluster.
+
 ## Run it against a local kubeconfig
 
 The supervisor needs the CLI, a core you can reach and your own credentials in
