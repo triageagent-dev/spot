@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -155,7 +156,9 @@ func (c *Client) once(ctx context.Context) (up bool, err error) {
 	conn, resp, err := d.DialContext(ctx, c.url, http.Header{"Authorization": {"Bearer " + strings.TrimSpace(string(tok))}})
 	if err != nil {
 		if resp != nil {
-			return false, fmt.Errorf("the core refused the stream: %s", resp.Status)
+			// The core says why in a short JSON error; it holds no content.
+			why, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+			return false, fmt.Errorf("the core refused the stream: %s %s", resp.Status, strings.TrimSpace(string(why)))
 		}
 		return false, err
 	}
