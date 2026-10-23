@@ -134,6 +134,8 @@ type harness struct {
 	typingEvery time.Duration
 	// trig, when set, is the core's push channel the supervisor is given.
 	trig Trigger
+	// wrap, when set, puts something around the real runner.
+	wrap func(Turner) Turner
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -191,7 +193,11 @@ func (h *harness) start() {
 		StateDir: h.state, Paths: paths, PermissionMode: h.cfg.PermissionMode,
 		AllowedTools: runner.DefaultAllowed(h.state), Env: []string{"FAKE_DIR=" + h.fake}, Grace: 2 * time.Second, Logger: log,
 		LogContent: h.cfg.LogContent})
-	h.sup = New(h.cfg, led, h.core, rn, log)
+	var tn Turner = rn
+	if h.wrap != nil {
+		tn = h.wrap(rn)
+	}
+	h.sup = New(h.cfg, led, h.core, tn, log)
 	h.sup.SetClock(h.clock.Now)
 	h.sup.typingEvery = h.typingEvery
 	if h.trig != nil {
@@ -1386,4 +1392,126 @@ func TestAPersonWaitingCutsTheEdgeCooldown(t *testing.T) {
 	if in := h.file("stdin", 2); !strings.Contains(in, "are you there") {
 		t.Fatalf("the message did not reach the agent:\n%s", in)
 	}
+}
+
+// gateTurner holds a turn open until released and takes messages passed to it
+// meanwhile, as the persistent runner does.
+type gateTurner struct {
+	inner   Turner
+	release chan struct{}
+
+	mu      sync.Mutex
+	gated   bool
+	accept  bool
+	running bool
+	got     []string
+}
+
+func newGateTurner() *gateTurner { return &gateTurner{release: make(chan struct{}), accept: true} }
+
+func (g *gateTurner) Run(ctx context.Context, p, resume string) runner.Result {
+	g.mu.Lock()
+	gated := g.gated
+	g.running = gated
+	g.mu.Unlock()
+	if gated {
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+		}
+	}
+	res := g.inner.Run(ctx, p, resume)
+	g.mu.Lock()
+	g.running = false
+	g.mu.Unlock()
+	return res
+}
+
+func (g *gateTurner) Inject(text string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.running || !g.accept {
+		return false
+	}
+	g.got = append(g.got, text)
+	return true
+}
+
+func (g *gateTurner) set(f func()) { g.mu.Lock(); f(); g.mu.Unlock() }
+func (g *gateTurner) injected() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.got...)
+}
+func (g *gateTurner) isRunning() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.running }
+
+// midTurn starts a supervisor on the stream with the second turn held open.
+func midTurn(t *testing.T) (*harness, *fakeTrigger, *gateTurner) {
+	t.Helper()
+	trig := newFakeTrigger(true)
+	g := newGateTurner()
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.wrap = func(in Turner) Turner { g.inner = in; return g }
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	h.waitIdle(1)
+	trig.say(triggers.Pending{Rooms: []string{"team"}}) // the first read of a room is its history
+	time.Sleep(80 * time.Millisecond)
+	g.set(func() { g.gated = true })
+	h.post("team", say("alice", "alice", "@example-spot look at checkout"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the second turn to run", g.isRunning)
+	return h, trig, g
+}
+
+func TestAPersonsMessageDuringATurnIsHandedToIt(t *testing.T) {
+	h, trig, g := midTurn(t)
+	defer h.stop()
+	h.post("team", say("alice", "alice", "@example-spot and also the cart"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the message to reach the running turn", func() bool { return len(g.injected()) == 1 })
+	if in := g.injected()[0]; !strings.Contains(in, "while you were working") || !strings.Contains(in, "and also the cart") {
+		t.Fatalf("interjection:\n%s", in)
+	}
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(2)
+	time.Sleep(100 * time.Millisecond)
+	if h.turns() != 2 || h.status().HeldEdges != 0 {
+		t.Fatalf("the message was answered in the turn: turns=%d held=%d", h.turns(), h.status().HeldEdges)
+	}
+	if h.status().State != "idle" {
+		t.Fatalf("state %q", h.status().State)
+	}
+}
+
+func TestAMessageTheTurnDoesNotTakeWakesTheAgentAfterIt(t *testing.T) {
+	h, trig, g := midTurn(t)
+	defer h.stop()
+	g.set(func() { g.accept = false }) // the turn ended first, or the runner cannot take one
+	h.post("team", say("alice", "alice", "@example-spot and also the cart"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the message to be held", func() bool { return strings.Contains(h.logs.String(), "held for the next wake") })
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "and also the cart") {
+		t.Fatalf("the held message must wake the agent next:\n%s", in)
+	}
+}
+
+func TestAMachinesMessageDuringATurnIsHeldNotHandedOver(t *testing.T) {
+	h, trig, g := midTurn(t)
+	defer h.stop()
+	h.post("team", corecli.RoomMessage{Sender: "tria", Name: "Tria", Text: "fyi the cart is slow", Tria: true})
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the message to be held", func() bool { return strings.Contains(h.logs.String(), "held during the turn") })
+	if got := g.injected(); len(got) != 0 {
+		t.Fatalf("a machine's message went to the running turn: %v", got)
+	}
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(2)
 }

@@ -18,7 +18,12 @@ import (
 // the stream-json protocol the persistent runner expects (verified against the
 // real CLI: init per turn, a per-turn result, an interrupt receipt then an
 // aborted result with zero usage). The prompt steers a turn: "sleep" waits for
-// an interrupt, "die" exits mid-turn, "authfail" retries a 401 forever.
+// an interrupt, "die" exits mid-turn, "authfail" retries a 401 forever, "work"
+// runs a tool for a moment and then takes a message passed in meanwhile into
+// the same turn (one result), "slow" has no tool boundary left so a message
+// passed in becomes a turn of its own (a second result). Like the CLI it
+// reports command_lifecycle for each message (queued when read, started when
+// taken, completed after the result), unless TRIA_FAKE_NOLIFECYCLE is set.
 func TestMain(m *testing.M) {
 	if os.Getenv("TRIA_FAKE_CLAUDE") == "stream" {
 		fakeClaude()
@@ -43,6 +48,11 @@ func fakeClaude() {
 		b, _ := json.Marshal(v)
 		fmt.Println(string(b))
 	}
+	lifecycle := func(m map[string]any, state string) {
+		if os.Getenv("TRIA_FAKE_NOLIFECYCLE") == "" {
+			out(map[string]any{"type": "command_lifecycle", "command_uuid": m["uuid"], "state": state})
+		}
+	}
 	lines := make(chan map[string]any)
 	go func() {
 		sc := bufio.NewScanner(os.Stdin)
@@ -50,6 +60,9 @@ func fakeClaude() {
 		for sc.Scan() {
 			var m map[string]any
 			if json.Unmarshal(sc.Bytes(), &m) == nil {
+				if m["type"] == "user" {
+					lifecycle(m, "queued")
+				}
 				lines <- m
 			}
 		}
@@ -68,6 +81,7 @@ func fakeClaude() {
 			receipt(m) // idle: nothing to abort
 		case "user":
 			n++
+			lifecycle(m, "started")
 			text, _ := m["message"].(map[string]any)["content"].(string)
 			out(map[string]any{"type": "system", "subtype": "init", "model": "fake", "permissionMode": perm,
 				"mcp_servers": []map[string]any{{"name": "core", "status": "connected"}}})
@@ -80,6 +94,25 @@ func fakeClaude() {
 					out(map[string]any{"type": "system", "subtype": "api_retry", "attempt": i, "error_status": 401, "error": "authentication_failed"})
 				}
 				select {} // retries forever until killed
+			case "work", "slow":
+				time.Sleep(600 * time.Millisecond) // a tool runs
+				var merged map[string]any
+				if text == "work" { // its boundary: a message waiting is taken into this turn
+					select {
+					case merged = <-lines:
+						lifecycle(merged, "started")
+					default:
+					}
+				}
+				answer := fmt.Sprintf("pid=%d n=%d", os.Getpid(), n)
+				if merged != nil {
+					answer += " merged=" + merged["message"].(map[string]any)["content"].(string)
+					lifecycle(merged, "completed")
+				}
+				out(map[string]any{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1,
+					"result": answer, "total_cost_usd": 0.01, "usage": usage})
+				lifecycle(m, "completed")
+				continue
 			case "sleep":
 				for c := range lines {
 					if c["type"] == "control_request" {
@@ -93,6 +126,7 @@ func fakeClaude() {
 			}
 			out(map[string]any{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1,
 				"result": fmt.Sprintf("pid=%d n=%d", os.Getpid(), n), "total_cost_usd": 0.01, "usage": usage})
+			lifecycle(m, "completed")
 		}
 	}
 }
@@ -295,5 +329,61 @@ func TestPersistentCloseStopsTheProcess(t *testing.T) {
 	}
 	if pr.alive() {
 		t.Fatal("Close left the process running")
+	}
+}
+
+// injectWhileRunning hands text to the running turn as soon as there is one.
+func injectWhileRunning(t *testing.T, p *Persistent, text string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !p.Inject(text) {
+		if time.Now().After(deadline) {
+			t.Fatal("no turn started to take the message")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestInjectedMessageJoinsTheRunningTurn(t *testing.T) {
+	p := newPersistent(t, persistentOpts(t))
+	done := make(chan Result, 1)
+	go func() { done <- p.Run(context.Background(), "work", "") }()
+	injectWhileRunning(t, p, "are you there?")
+	r := <-done
+	pid(t, r)
+	if !strings.HasSuffix(r.Summary.ResultText, "merged=are you there?") || r.Summary.NumTurns != 1 || r.Summary.Tokens().Billable() != 150 {
+		t.Fatalf("one result for both: %+v", r.Summary)
+	}
+	if p.Inject("late") {
+		t.Fatal("a message was accepted with no turn running")
+	}
+}
+
+func TestInjectedMessageAfterTheLastBoundaryRunsAsTheNextTurn(t *testing.T) {
+	p := newPersistent(t, persistentOpts(t))
+	done := make(chan Result, 1)
+	go func() { done <- p.Run(context.Background(), "slow", "") }()
+	injectWhileRunning(t, p, "and this?")
+	r := <-done
+	pid(t, r)
+	if r.Summary.NumTurns != 2 || !strings.HasSuffix(r.Summary.ResultText, "n=2") || r.Summary.Tokens().Billable() != 300 {
+		t.Fatalf("Run must wait for the second result and count both: %+v", r.Summary)
+	}
+	// nothing is left behind for the next turn to mistake for its own
+	r2 := p.Run(context.Background(), "next", r.Summary.SessionID)
+	if !strings.HasSuffix(r2.Summary.ResultText, "n=3") || r2.Summary.NumTurns != 1 {
+		t.Fatalf("next turn: %+v", r2.Summary)
+	}
+}
+
+func TestInjectedMessageWithACLIThatReportsNoLifecycle(t *testing.T) {
+	t.Setenv("TRIA_FAKE_NOLIFECYCLE", "1")
+	p := newPersistent(t, persistentOpts(t))
+	done := make(chan Result, 1)
+	go func() { done <- p.Run(context.Background(), "slow", "") }()
+	injectWhileRunning(t, p, "and this?")
+	r := <-done
+	if r.Summary.NumTurns != 2 || r.Summary.Tokens().Billable() != 300 {
+		t.Fatalf("the second turn must be waited for by its init: %+v", r.Summary)
 	}
 }

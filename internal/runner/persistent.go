@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -44,6 +45,9 @@ type Persistent struct {
 	mu     sync.Mutex // one turn at a time; guards p
 	p      *proc
 	maxAge time.Duration
+
+	curMu sync.Mutex // guards cur
+	cur   *proc      // the process whose turn is running; what Inject writes to
 }
 
 // DefaultMaxProcessAge bounds how long one process lives; the next turn after
@@ -69,6 +73,8 @@ type proc struct {
 	stderr  *tailBuffer
 	done    chan struct{} // closed once the process has exited and its output is read
 
+	wmu sync.Mutex // one writer on stdin: the turn's message and a message passed in during it
+
 	mu      sync.Mutex
 	waitErr error
 	session string // the conversation it is in; empty until the first init of a fresh one
@@ -78,15 +84,91 @@ type proc struct {
 // turnState collects one turn's lines.
 type turnState struct {
 	acc         *stream.Accumulator
-	result      chan struct{} // closed on the turn's result message
+	result      chan struct{} // closed when the turn is over: its result, and the result of every message passed in during it
 	resultOnce  sync.Once
 	authFailed  chan struct{} // closed when the CLI keeps retrying a 401
 	authOnce    sync.Once
 	authRetries int
+
+	// Messages passed in while the turn ran (Inject). The CLI takes one at the
+	// next tool boundary and answers both in the turn's single result, or, when
+	// no boundary is left, runs it as a turn of its own with a second result.
+	// Its command_lifecycle lines say which: a message still "queued" when a
+	// result arrives has not begun, so another result follows.
+	injMu     sync.Mutex
+	injected  map[string]string // uuid -> queued or started, until completed
+	lifecycle bool              // the CLI reports command_lifecycle at all
+	over      bool              // the turn is over: nothing more is accepted
+	grace     *time.Timer
 }
 
 func newTurn() *turnState {
-	return &turnState{acc: stream.NewAccumulator(), result: make(chan struct{}), authFailed: make(chan struct{})}
+	return &turnState{acc: stream.NewAccumulator(), result: make(chan struct{}), authFailed: make(chan struct{}), injected: map[string]string{}}
+}
+
+// injectGrace is how long a CLI that reports no command_lifecycle is given to
+// begin the turn of a message passed in after its last tool boundary.
+const injectGrace = 2 * time.Second
+
+// end closes the turn.
+func (t *turnState) end() {
+	t.injMu.Lock()
+	t.over = true
+	t.injMu.Unlock()
+	t.resultOnce.Do(func() { close(t.result) })
+}
+
+// onResult is a result line: the turn ends unless a message passed in has not
+// begun.
+func (t *turnState) onResult() {
+	t.injMu.Lock()
+	waiting := false
+	for _, st := range t.injected {
+		if st == "queued" {
+			waiting = true
+		}
+	}
+	lifecycle := t.lifecycle
+	if waiting && !lifecycle && t.grace == nil {
+		t.grace = time.AfterFunc(injectGrace, t.end)
+	}
+	t.injMu.Unlock()
+	if !waiting {
+		t.end()
+	}
+}
+
+// onInit is a system init line, which opens each turn: a turn that follows
+// the result just seen is under way, so the wait for it stops.
+func (t *turnState) onInit() {
+	t.injMu.Lock()
+	if t.grace != nil {
+		t.grace.Stop()
+		t.grace = nil
+	}
+	t.injMu.Unlock()
+}
+
+// onLifecycle is a command_lifecycle line.
+func (t *turnState) onLifecycle(raw []byte) {
+	var l struct {
+		UUID  string `json:"command_uuid"`
+		State string `json:"state"`
+	}
+	if json.Unmarshal(raw, &l) != nil {
+		return
+	}
+	t.injMu.Lock()
+	defer t.injMu.Unlock()
+	t.lifecycle = true
+	if _, ours := t.injected[l.UUID]; !ours {
+		return
+	}
+	if l.State == "completed" {
+		delete(t.injected, l.UUID)
+		return
+	}
+	t.injected[l.UUID] = l.State
 }
 
 func (p *proc) alive() bool {
@@ -141,6 +223,7 @@ func (p *Persistent) Run(ctx context.Context, prompt, resume string) Result {
 	pr.mu.Lock()
 	pr.turn = turn
 	pr.mu.Unlock()
+	p.setCur(pr)
 
 	if err := pr.send(userMessage(prompt)); err != nil {
 		// The process died between turns; the caller sees a failed turn and the
@@ -168,6 +251,13 @@ func (p *Persistent) Run(ctx context.Context, prompt, resume string) Result {
 
 // finish turns the collected lines into a Result and forgets the turn.
 func (p *Persistent) finish(ctx context.Context, pr *proc, turn *turnState, res Result, start time.Time, authFailed, timedOut bool) Result {
+	p.setCur(nil)
+	turn.injMu.Lock()
+	turn.over = true
+	if turn.grace != nil {
+		turn.grace.Stop()
+	}
+	turn.injMu.Unlock()
 	pr.mu.Lock()
 	pr.turn = nil
 	sum := turn.acc.Summary()
@@ -285,8 +375,15 @@ func (p *proc) line(raw []byte) {
 	if t == nil {
 		return // between turns: control receipts and lifecycle notes
 	}
+	if bytes.HasPrefix(raw, []byte(`{"type":"command_lifecycle"`)) {
+		t.onLifecycle(raw)
+		return
+	}
+	if bytes.Contains(raw, []byte(`"subtype":"init"`)) {
+		t.onInit()
+	}
 	if t.acc.Add(raw) {
-		t.resultOnce.Do(func() { close(t.result) })
+		t.onResult()
 		return
 	}
 	if strings.Contains(string(raw), `"subtype":"api_retry"`) && strings.Contains(string(raw), `"authentication_failed"`) {
@@ -301,8 +398,53 @@ func (p *proc) send(v any) error {
 	if err != nil {
 		return err
 	}
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
 	_, err = p.stdin.Write(append(b, '\n'))
 	return err
+}
+
+func (p *Persistent) setCur(pr *proc) {
+	p.curMu.Lock()
+	p.cur = pr
+	p.curMu.Unlock()
+}
+
+// Inject passes text to the turn that is running, as one more user message.
+// The CLI takes it at the turn's next tool boundary and answers it in the
+// same turn; with no boundary left it runs it as the turn after. Either way
+// Run returns only when both are answered. It reports whether the message was
+// handed to a running turn; false means none was running, and the caller
+// keeps the message for the next one.
+func (p *Persistent) Inject(text string) bool {
+	p.curMu.Lock()
+	pr := p.cur
+	p.curMu.Unlock()
+	if pr == nil || !pr.alive() {
+		return false
+	}
+	pr.mu.Lock()
+	t := pr.turn
+	pr.mu.Unlock()
+	if t == nil {
+		return false
+	}
+	m := userMessage(text)
+	id, _ := m["uuid"].(string)
+	t.injMu.Lock()
+	if t.over {
+		t.injMu.Unlock()
+		return false
+	}
+	t.injected[id] = "queued" // before the write, so no lifecycle line can precede it
+	t.injMu.Unlock()
+	if err := pr.send(m); err != nil {
+		t.injMu.Lock()
+		delete(t.injected, id)
+		t.injMu.Unlock()
+		return false
+	}
+	return true
 }
 
 func userMessage(prompt string) map[string]any {
@@ -326,6 +468,11 @@ func newUUID() string {
 // interrupt asks the CLI to abort the running turn and waits for the result
 // it writes; a CLI that does not answer within the grace is killed.
 func (p *Persistent) interrupt(o Options, pr *proc, turn *turnState) {
+	// What was passed in and has not begun is given up with the turn: the
+	// interrupt's result must end it.
+	turn.injMu.Lock()
+	turn.injected = map[string]string{}
+	turn.injMu.Unlock()
 	_ = pr.send(map[string]any{
 		"type":       "control_request",
 		"request_id": "int-" + newUUID(),

@@ -38,14 +38,26 @@ type Turner interface {
 	Run(ctx context.Context, prompt, resume string) runner.Result
 }
 
+// Interjector is a Turner that can take a message while a turn is running. The
+// persistent runner is one; a Turner that is not never sees one, and a message
+// that arrives during its turn waits for the turn to end, as it always did.
+type Interjector interface {
+	// Inject reports whether the message was handed to a running turn.
+	Inject(text string) bool
+}
+
 // Supervisor owns the loop. Create it with New and call Run once.
 type Supervisor struct {
 	cfg    config.Config
 	led    *ledger.Ledger
 	core   Core
 	turner Turner
-	log    *slog.Logger
-	now    func() time.Time
+	// readNext is set when the stream said, during a turn, that the core's
+	// issues or everything may have changed: the next wait reads the core at
+	// once instead of sleeping for a frame the supervisor has already taken.
+	readNext bool
+	log      *slog.Logger
+	now      func() time.Time
 
 	typingEvery time.Duration // zero = typingEvery; tests shorten it
 
@@ -303,6 +315,10 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 	if s.trig == nil || !s.trig.Connected() {
 		s.setTriggers("poll")
 		return true, s.sleep(ctx, s.untilNext())
+	}
+	if s.readNext {
+		s.readNext = false
+		return true, true
 	}
 	s.setTriggers("stream")
 	d := s.untilNext()
@@ -575,15 +591,7 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 		out = append(out, s.tracker.Observe(issues)...)
 	}
 
-	moved := false
-	for _, room := range []string{"team", "agents"} {
-		es, changed := s.pollRoom(pctx, room)
-		out = append(out, es...)
-		moved = moved || changed
-	}
-	if moved {
-		s.saveCursors()
-	}
+	out = append(out, s.pollRooms(pctx, "team", "agents")...)
 	if len(out) > 0 {
 		// Logs carry what happened, never what was said: the text of a person's
 		// message or an issue is content, and is logged only on request.
@@ -591,6 +599,21 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 		if s.cfg.LogContent {
 			s.log.Debug("edge text", "first", clip(out[0].Fact, 200))
 		}
+	}
+	return out
+}
+
+// pollRooms reads the given rooms and keeps where it got to.
+func (s *Supervisor) pollRooms(ctx context.Context, rooms ...string) []edges.Edge {
+	var out []edges.Edge
+	moved := false
+	for _, room := range rooms {
+		es, changed := s.pollRoom(ctx, room)
+		out = append(out, es...)
+		moved = moved || changed
+	}
+	if moved {
+		s.saveCursors()
 	}
 	return out
 }
@@ -761,6 +784,82 @@ func (s *Supervisor) clearCoreError() {
 	}
 }
 
+// run is the turner's Run, with the loop kept going while it runs: a person
+// who writes to the spot in the middle of a turn is handed to the running turn
+// (interject) instead of waiting for it to end. The turn runs in its own
+// goroutine so that everything the supervisor owns stays on this one.
+func (s *Supervisor) run(ctx context.Context, text, resume string) runner.Result {
+	inj, ok := s.turner.(Interjector)
+	if !ok || s.trig == nil {
+		return s.turner.Run(ctx, text, resume)
+	}
+	done := make(chan runner.Result, 1)
+	go func() { done <- s.turner.Run(ctx, text, resume) }()
+	for {
+		select {
+		case res := <-done:
+			return res
+		case <-s.trig.C():
+			s.interject(ctx, inj)
+		}
+	}
+}
+
+// interject reads what the stream said during a turn. A person's message in a
+// room goes to the running turn; a machine's is held for the next wake, as
+// ever. The issues are not read here: the turn's own end reads them (what
+// changed during it is held then), so a frame that only says they changed is
+// kept for the loop's next read.
+func (s *Supervisor) interject(ctx context.Context, inj Interjector) {
+	wait := s.triggerWait
+	if wait == 0 {
+		wait = triggerDebounce
+	}
+	if !s.sleep(ctx, wait) {
+		return
+	}
+	p := s.trig.Take()
+	s.takeCoreFacts(p)
+	if p.Hello || p.Issues {
+		s.readNext = true
+	}
+	if len(p.Rooms) == 0 {
+		return
+	}
+	s.refreshIdentity(ctx, false, identityEvery)
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var talk, rest []edges.Edge
+	for _, e := range s.pollRooms(pctx, p.Rooms...) {
+		// What waits for a quiet moment in the normal loop (a person's message that
+		// does not name the spot, while chat batching is on) waits here too.
+		if e.Kind == edges.Message && e.Human && (e.Mentioned || s.cfg.ChatBatch <= 0) {
+			talk = append(talk, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	if len(rest) > 0 {
+		s.hold(rest)
+		s.log.Info("held during the turn", "count", len(rest), "kinds", kindCounts(rest))
+	}
+	if len(talk) == 0 {
+		return
+	}
+	facts := make([]string, 0, len(talk))
+	for _, e := range talk {
+		facts = append(facts, e.Fact)
+	}
+	if !inj.Inject(prompt.Interjection(s.messengerName(), facts)) {
+		s.hold(talk) // the turn ended first: they wake the agent as usual
+		s.log.Info("the running turn did not take the message; held for the next wake", "count", len(talk))
+		return
+	}
+	s.log.Info("passed to the running turn", "count", len(talk), "mentioned", anyMentioned(talk))
+	s.rollDay()
+	s.wakes["interjected"]++
+}
+
 // turn runs one wake.
 func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	sess := s.led.LoadSession()
@@ -793,7 +892,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
-	res := s.turner.Run(ctx, text, resume)
+	res := s.run(ctx, text, resume)
 	stopTyping()
 	s.lastTurnEnd = s.now()
 

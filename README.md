@@ -121,8 +121,27 @@ token rotated: it is read once at start), when the process exited or crashed,
 and after 12 hours. A turn past its timeout is interrupted and the process is
 kept; one that does not stop within the grace, and one that keeps failing
 authentication, is killed. Shutdown closes stdin and waits for it to exit.
-A chat message that arrives mid-turn still waits for the next wake: the loop is
-turn by turn, and queueing it into the running process is a later step.
+
+### A message while a turn runs
+
+With the stream up and `--persistent`, a person's message in a room that
+arrives during a turn is written to the running process as one more user
+message instead of waiting for the turn to end. The turn runs in its own
+goroutine, so the supervisor keeps reading the stream and everything it owns
+stays on one goroutine. A machine's message, or a person's that does not name
+the spot while chat batching is on, is held for the next wake as before; the
+issues are not read mid-turn (what changed during a turn is held when it ends).
+
+What was measured against the CLI (2.1.309): a message written while a tool
+runs is taken at the next tool boundary and answered in the same turn, with a
+single `result`; one written after the last boundary runs as a turn of its own
+with a second `result`. Each message reports `command_lifecycle` (`queued` when
+read, `started` when taken, `completed` after the result). A turn is over when
+a result arrives and no message passed in is still `queued`; the usage of every
+result is summed into the turn. A CLI that reports no lifecycle is given two
+seconds after a result to begin the next turn (its `init`). A turn past its
+timeout is interrupted and what was passed in and has not begun is given up
+with it. Without `--persistent` nothing changes: a message during a turn waits.
 
 ## Names
 

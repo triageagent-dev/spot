@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"strconv"
+	"sync"
 )
 
 // Usage is a token count in the Anthropic usage shape.
@@ -113,6 +114,7 @@ const MaxLine = 32 << 20
 // Accumulator reduces stream-json lines to a Summary: one invocation of
 // `claude -p`, or one turn of a process that stays alive between turns.
 type Accumulator struct {
+	mu     sync.Mutex // a reader adds lines while the turn's owner may already read the summary
 	s      Summary
 	perMsg map[string]Usage
 }
@@ -128,12 +130,16 @@ func (a *Accumulator) Add(raw []byte) (result bool) {
 	if json.Unmarshal(raw, &l) != nil || l.Type == "" {
 		return false
 	}
+	a.mu.Lock()
 	a.s.apply(l, a.perMsg)
+	a.mu.Unlock()
 	return l.Type == "result"
 }
 
 // Summary is what the lines so far reported.
 func (a *Accumulator) Summary() Summary {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	s := a.s
 	s.AssistantUsage = Usage{}
 	for _, u := range a.perMsg {
@@ -209,14 +215,14 @@ func (s *Summary) apply(l line, perMsg map[string]Usage) {
 		s.ResultText = l.Result
 		s.Errors = l.Errors
 		s.TerminalReason = l.TerminalReason
-		s.NumTurns = l.NumTurns
+		s.NumTurns += l.NumTurns // a message passed to a running turn can end it with a second result
 		s.PermissionDenials = len(l.PermissionDenials)
 		if l.APIErrorStatus != nil {
 			s.APIErrorStatus = *l.APIErrorStatus
 		}
 		s.CostUSD = l.TotalCostUSD
 		if l.Usage != nil {
-			s.ResultUsage = *l.Usage
+			s.ResultUsage.add(*l.Usage) // each result's usage is its own: a Run with two results spent both
 		}
 	}
 }

@@ -118,6 +118,22 @@ func Turn(w Wake) string {
 
 // connectorsSection is the prompt's part about connectors; empty when there
 // are none.
+// Interjection is what a person's message becomes when it reaches a turn that
+// is already running: the same facts as a wake, said as an interruption.
+func Interjection(chatName string, facts []string) string {
+	var b strings.Builder
+	b.WriteString("Someone wrote to you while you were working")
+	if chatName != "" {
+		fmt.Fprintf(&b, " (in the messenger you appear as %s)", chatName)
+	}
+	b.WriteString(":\n")
+	for _, f := range facts {
+		fmt.Fprintf(&b, "- %s\n", f)
+	}
+	b.WriteString("Answer them in the room now, as in a live conversation: acknowledge first, and say what you found only once you know it. Then carry on with what you were doing unless what they said changes it. Do not start over, and do not repeat what you already did.\n")
+	return b.String()
+}
+
 func connectorsSection(cs []Connector) string {
 	if len(cs) == 0 {
 		return ""
