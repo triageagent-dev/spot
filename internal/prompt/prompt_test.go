@@ -15,7 +15,7 @@ func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
 		"example-spot", "`example`", "/state/next.json", "/state/notes/", "2m0s", "2h0m0s",
 		"get_triage_instructions", "get_tenant_situation", "search_memory", "search_corpus",
 		"verify_hypothesis", "comment_on_issue", "Close an issue with `resolve_issue` only",
-		"Two failed fixes", "say_in_workspace", "read_workspace_file", "Answer first", "## Finding out", "## Your notes to yourself", "spot-note,spot:example-spot", "## Learning", "Never call `approve_pattern`", "## Taking the initiative", "## Memory", "supersede_memory_item", "refute_memory_item", "get_memory_context", "inspect_service", "get_world_context", "Never say the core has nothing", "general knowledge", "mcp__ego__*", `room: "team"`, `room: "agents"`, "hop", "ServiceAccount",
+		"Two failed fixes", "say_in_workspace", "read_workspace_file", "Answer first", "## Finding out", "## Your status line", "set_workspace_status", "## Your notes to yourself", "spot-note,spot:example-spot", "## Learning", "Never call `approve_pattern`", "## Taking the initiative", "## Memory", "supersede_memory_item", "refute_memory_item", "get_memory_context", "inspect_service", "get_world_context", "Never say the core has nothing", "general knowledge", "mcp__ego__*", `room: "team"`, `room: "agents"`, "hop", "ServiceAccount",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("instruction lacks %q", want)
