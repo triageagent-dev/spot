@@ -337,9 +337,9 @@ func (s *Supervisor) refreshIdentity(ctx context.Context, force bool, maxAge tim
 		}
 		return
 	}
-	if id.AgentName != "" && id.AgentName != s.chatName {
-		s.log.Info("the messenger calls the spot", "name", id.AgentName)
-		s.chatName = id.AgentName
+	if id.SpotName != "" && id.SpotName != s.chatName {
+		s.log.Info("the messenger calls the spot", "name", id.SpotName)
+		s.chatName = id.SpotName
 	}
 }
 

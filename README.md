@@ -99,8 +99,8 @@ supervisor works without them.
 Two names meet. `--name` is the deployment's technical name (Deployment,
 volume, ServiceAccount, note tags, ego thread); people never see it. The name
 people see and write to in the messenger belongs to the workspace: its owner
-sets `agentName` on the workspace in the core (empty means
-`<workspace name>-spot`), and the spot reads it with `get_workspace_identity`
+sets `spotName` on the workspace in the core (empty means
+`<workspace name>-spot`), and the spot reads it with `get_spot_identity`
 at start, when the trigger stream reconnects, at most every five minutes while
 it works, and when a person writes an `@` it does not recognise. Every wake
 prompt says "In the messenger you appear as ...", and a message naming that

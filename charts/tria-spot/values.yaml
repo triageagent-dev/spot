@@ -11,7 +11,7 @@ spot:
   tenant: ""
   name: ""
   # The name the messenger shows for the spot. The workspace's owner sets it in
-  # the core and the spot reads it from there (get_workspace_identity), so this
+  # the core and the spot reads it from there (get_spot_identity), so this
   # is only the fallback for a core that cannot say, and until it has. The spot
   # also answers to name. Empty = name.
   chatName: ""

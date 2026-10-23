@@ -62,7 +62,7 @@ func (f *fakeCore) Identity(context.Context) (corecli.Identity, error) {
 	if f.identity == "" {
 		return corecli.Identity{}, corecli.ErrNoIdentityTool
 	}
-	return corecli.Identity{Workspace: "example", Name: "Example", AgentName: f.identity}, nil
+	return corecli.Identity{Workspace: "example", Name: "Example", SpotName: f.identity}, nil
 }
 
 func (f *fakeCore) Typing(_ context.Context, room string, on bool) error {
