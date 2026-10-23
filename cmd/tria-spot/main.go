@@ -24,6 +24,7 @@ import (
 	"github.com/triageagent-dev/tria-spot/internal/render"
 	"github.com/triageagent-dev/tria-spot/internal/runner"
 	"github.com/triageagent-dev/tria-spot/internal/supervisor"
+	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
 
 // Stamped by the Makefile.
@@ -145,7 +146,17 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	if err := supervisor.New(cfg, led, core, rn, log).Run(ctx); err != nil {
+	sup := supervisor.New(cfg, led, core, rn, log)
+	if cfg.CoreAPIURL != "" {
+		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
+		if err != nil {
+			log.Error("trigger stream", "err", err)
+			return 1
+		}
+		go tc.Run(ctx)
+		sup.SetTrigger(tc)
+	}
+	if err := sup.Run(ctx); err != nil {
 		log.Error("supervisor", "err", err)
 		return 1
 	}

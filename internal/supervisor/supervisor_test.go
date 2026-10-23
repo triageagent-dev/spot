@@ -20,6 +20,7 @@ import (
 	"github.com/triageagent-dev/tria-spot/internal/render"
 	"github.com/triageagent-dev/tria-spot/internal/runner"
 	"github.com/triageagent-dev/tria-spot/internal/stream"
+	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
 
 type fakeClock struct {
@@ -119,6 +120,8 @@ type harness struct {
 	logs   *safeBuf
 	// typingEvery, when set, is the renewal period of the typing indicator.
 	typingEvery time.Duration
+	// trig, when set, is the core's push channel the supervisor is given.
+	trig Trigger
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -179,6 +182,10 @@ func (h *harness) start() {
 	h.sup = New(h.cfg, led, h.core, rn, log)
 	h.sup.SetClock(h.clock.Now)
 	h.sup.typingEvery = h.typingEvery
+	if h.trig != nil {
+		h.sup.SetTrigger(h.trig)
+		h.sup.triggerWait = 10 * time.Millisecond
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan error, 1)
@@ -470,6 +477,84 @@ func TestLongRoomMessageIsFlaggedWhenCut(t *testing.T) {
 	in = h.file("stdin", 3)
 	if strings.Contains(in, long) || !strings.Contains(in, "message cut at 2500 characters") || !strings.Contains(in, "read_workspace_room") {
 		t.Errorf("a long message must be cut and flagged:\n%.400s", in)
+	}
+}
+
+// fakeTrigger is the core's stream: connected or not, and what it has said.
+type fakeTrigger struct {
+	mu        sync.Mutex
+	connected bool
+	pending   triggers.Pending
+	sig       chan struct{}
+}
+
+func newFakeTrigger(connected bool) *fakeTrigger {
+	return &fakeTrigger{connected: connected, sig: make(chan struct{}, 1)}
+}
+
+func (f *fakeTrigger) Connected() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connected
+}
+func (f *fakeTrigger) C() <-chan struct{} { return f.sig }
+func (f *fakeTrigger) Take() triggers.Pending {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := f.pending
+	f.pending = triggers.Pending{}
+	return p
+}
+func (f *fakeTrigger) say(p triggers.Pending) {
+	f.mu.Lock()
+	f.pending.Hello = f.pending.Hello || p.Hello
+	f.pending.Issues = f.pending.Issues || p.Issues
+	f.pending.Rooms = append(f.pending.Rooms, p.Rooms...)
+	f.mu.Unlock()
+	select {
+	case f.sig <- struct{}{}:
+	default:
+	}
+}
+
+func TestStreamWakesTheAgentWithoutPolling(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+
+	// A change nobody told the supervisor about is not seen: it does not poll.
+	h.core.setIssues(issue("a", "critical", 0))
+	time.Sleep(150 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("the supervisor read the core without being told")
+	}
+	// Told, it reads once and wakes the agent for the change.
+	trig.say(triggers.Pending{Issues: true})
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: edge") || !strings.Contains(in, "new issue") {
+		t.Fatalf("prompt:\n%s", in)
+	}
+	if got := h.status().Triggers; got != "stream" {
+		t.Fatalf("triggers = %q", got)
+	}
+}
+
+func TestSupervisorPollsAgainWhenTheStreamIsDown(t *testing.T) {
+	trig := newFakeTrigger(false)
+	h := newHarness(t, nil) // poll interval 5 ms
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.core.setIssues(issue("a", "critical", 0))
+	h.waitIdle(2) // found by polling, with nobody to tell it
+	if got := h.status().Triggers; got != "poll" {
+		t.Fatalf("triggers = %q", got)
 	}
 }
 

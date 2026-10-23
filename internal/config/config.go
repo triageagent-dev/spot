@@ -13,9 +13,13 @@ import (
 
 // Config is the supervisor's complete configuration.
 type Config struct {
-	Tenant           string
-	Name             string
-	CoreMCPURL       string
+	Tenant     string
+	Name       string
+	CoreMCPURL string
+	// CoreAPIURL is the core's HTTP API, for its trigger stream (a websocket
+	// the core writes to when something changed). Empty = no stream: the
+	// supervisor polls every PollInterval.
+	CoreAPIURL       string
 	CoreTokenFile    string
 	AnthropicKeyFile string
 	// AnthropicAuth is "key" (a static API key read through apiKeyHelper) or
@@ -94,6 +98,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.Tenant, "tenant", "", "tenant this spot works for (required)")
 	fs.StringVar(&c.Name, "name", "", "spot name; default <tenant>-spot")
 	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
+	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --anthropic-auth=key, rejected otherwise)")
 	fs.StringVar(&c.AnthropicAuth, "anthropic-auth", AuthKey, "how the CLI authenticates to the Anthropic API: key or federation")
@@ -113,7 +118,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
 	fs.Float64Var(&c.DailyCostCeilUSD, "daily-cost-ceiling-usd", 0, "dollars (the CLI's own estimate) per UTC day after which no wake starts; 0 disables it")
 	fs.Int64Var(&c.MaxContextTokens, "max-context-tokens", 0, "start a fresh conversation after a turn whose context passed this many tokens; 0 never rotates")
-	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns")
+	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
@@ -177,6 +182,9 @@ func (c *Config) Validate() error {
 	}
 	if c.DailyCostCeilUSD < 0 || c.MaxContextTokens < 0 {
 		errs = append(errs, errors.New("--daily-cost-ceiling-usd and --max-context-tokens cannot be negative"))
+	}
+	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
+		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))
 	}
 	req(c.CoreMCPURL, "core-mcp-url")
 	req(c.CoreTokenFile, "core-token-file")

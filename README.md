@@ -42,9 +42,14 @@ supervisor works without them.
 3. **The schedule** is clamped to `[--min-wake, --max-wake]` (2m to 2h). A
    missing or unreadable file means `--min-wake`; the supervisor logs why. The
    file is consumed, so a stale one is never read twice.
-4. **Between turns** the supervisor polls the core every `--poll-interval`
-   with `list_open_issues` for the tenant (no model involved) and wakes the
-   agent early on a new issue, a reopened issue, a severity change or a new
+4. **Between turns** the supervisor watches the core without a model. With
+   `--core-api-url` the core tells it: a websocket (`/v2/messenger/spot/ws`)
+   carries content-free frames (issues changed, a room has a message), and the
+   supervisor reads the core only then, after a 1.5 s pause so a burst is read
+   once. While the stream is down, or without the flag, it polls the core every
+   `--poll-interval` instead; `status.json` `triggers` says which (`stream` or
+   `poll`). Either way it reads `list_open_issues` for the tenant (no model
+   involved) and wakes the agent early on a new issue, a reopened issue, a severity change or a new
    comment. After each turn it compares the issue list with the one from
    before the turn: new issues, reopens and severity changes that landed
    during the turn are held like any edge; comment counts are re-baselined,
@@ -134,7 +139,8 @@ Flags only. No credential is a flag value or an environment variable.
 | `--max-turns` | `40` | CLI `--max-turns` per wake |
 | `--turn-timeout` | `20m` | wall-clock cap per wake |
 | `--daily-token-ceiling` | `2000000` | tokens per UTC day; `0` = none |
-| `--poll-interval` | `30s` | edge polling between turns |
+| `--core-api-url` | empty | the core's HTTP API; with it the core pushes triggers over a websocket and nothing polls while it is up |
+| `--poll-interval` | `30s` | edge polling between turns, or only while the trigger stream is down |
 | `--edge-cooldown` | `1m` | minimum gap between a turn's end and an edge wake |
 | `--permission-mode` | `auto` | `auto`, `dontAsk` or `acceptEdits` |
 | `--fallback-permission-mode` | `dontAsk` | used if the CLI does not start in auto |

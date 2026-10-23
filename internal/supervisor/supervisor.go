@@ -21,6 +21,7 @@ import (
 	"github.com/triageagent-dev/tria-spot/internal/prompt"
 	"github.com/triageagent-dev/tria-spot/internal/runner"
 	"github.com/triageagent-dev/tria-spot/internal/schedule"
+	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
 
 // Core is the supervisor's view of the core.
@@ -51,6 +52,9 @@ type Supervisor struct {
 	held     []heldEdge
 	rooms    map[string]*roomState
 	permMode string
+
+	trig        Trigger       // the core's push channel; nil = poll
+	triggerWait time.Duration // zero = triggerDebounce; tests shorten it
 
 	nextTick     time.Time
 	scheduledWhy string
@@ -90,8 +94,11 @@ type Status struct {
 	HeartbeatID string `json:"heartbeatId,omitempty"`
 	// HeldEdges is how many changes wait for the next wake; EdgeWakesHour how
 	// many early wakes ran in the last hour against the cap.
-	HeldEdges     int `json:"heldEdges,omitempty"`
-	EdgeWakesHour int `json:"edgeWakesLastHour,omitempty"`
+	// Triggers is how the core is watched: "stream" (it tells the spot) or
+	// "poll" (the spot asks every poll interval, as before the stream is up).
+	Triggers      string `json:"triggers,omitempty"`
+	HeldEdges     int    `json:"heldEdges,omitempty"`
+	EdgeWakesHour int    `json:"edgeWakesLastHour,omitempty"`
 }
 
 // Turn summarises the last turn.
@@ -161,6 +168,23 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 // SetClock replaces the clock, for tests.
 func (s *Supervisor) SetClock(f func() time.Time) { s.now = f }
 
+// Trigger is the core's push channel (internal/triggers.Client): while it is
+// connected the core says when to look, and the supervisor does not poll.
+type Trigger interface {
+	Connected() bool
+	C() <-chan struct{}
+	Take() triggers.Pending
+}
+
+// SetTrigger switches the supervisor from polling to the core's stream. It
+// still polls whenever the stream is down.
+func (s *Supervisor) SetTrigger(t Trigger) { s.trig = t }
+
+// triggerDebounce lets a burst finish before the core is read: the core
+// forwards at most one state change a second and drops the rest, so the read
+// after this wait sees them all.
+const triggerDebounce = 1500 * time.Millisecond
+
 // PermissionMode is the mode the next turn will use.
 func (s *Supervisor) PermissionMode() string { return s.permMode }
 
@@ -198,11 +222,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			}
 		}
 
-		if !s.sleep(ctx, s.untilNext()) {
+		read, alive := s.wait(ctx)
+		if !alive {
 			break
 		}
-		if es := s.poll(ctx); len(es) > 0 {
-			s.hold(es)
+		if read {
+			if es := s.poll(ctx); len(es) > 0 {
+				s.hold(es)
+			}
 		}
 		if pend = s.dueFromHeld(); pend == nil && len(s.held) > 0 {
 			s.setState(s.status.State) // the held count is visible while it waits
@@ -231,6 +258,50 @@ func (s *Supervisor) pauseForCeiling() {
 		"usedTokens", u.Tokens, "tokenCeiling", s.cfg.DailyTokenCeil, "costUsd", u.CostUSD, "costCeiling", s.cfg.DailyCostCeilUSD)
 	s.status.NextWake = &Next{At: until.Format(time.RFC3339), Why: s.scheduledWhy, Source: "ceiling"}
 	s.setState("paused-ceiling")
+}
+
+// wait sleeps until something needs a look and says whether to read the core
+// (read) and whether the supervisor is still running (alive). With the stream
+// up the core says when: a frame is what makes the supervisor read, and a
+// timer only wakes it for the schedule, for held edges to be judged again, and
+// to notice that the stream went down. Without the stream it sleeps the poll
+// interval and reads, as it always did.
+func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
+	if s.trig == nil || !s.trig.Connected() {
+		s.setTriggers("poll")
+		return true, s.sleep(ctx, s.untilNext())
+	}
+	s.setTriggers("stream")
+	d := s.untilNext()
+	if len(s.held) > 0 && d > time.Second {
+		d = time.Second // judged again soon; no read of the core
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false, false
+	case <-t.C:
+		return false, true
+	case <-s.trig.C():
+		wait := s.triggerWait
+		if wait == 0 {
+			wait = triggerDebounce
+		}
+		if !s.sleep(ctx, wait) {
+			return false, false
+		}
+		return !s.trig.Take().Empty(), true
+	}
+}
+
+func (s *Supervisor) setTriggers(mode string) {
+	if s.status.Triggers == mode {
+		return
+	}
+	s.status.Triggers = mode
+	s.log.Info("watching the core", "by", mode)
+	s.setState(s.status.State)
 }
 
 func (s *Supervisor) untilNext() time.Duration {

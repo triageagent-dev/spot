@@ -54,6 +54,9 @@ spec:
             - --tenant={{ $tenant }}
             - --name={{ $name }}
             - --core-mcp-url={{ required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl }}
+            {{- if .Values.core.apiUrl }}
+            - --core-api-url={{ .Values.core.apiUrl }}
+            {{- end }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
             - --anthropic-auth={{ $auth }}
             {{- if eq $auth "key" }}

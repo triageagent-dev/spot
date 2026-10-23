@@ -21,6 +21,11 @@ imagePullSecrets: []
 # identities; the one not in use needs no values and mounts nothing extra.
 core:
   mcpUrl: ""         # e.g. https://<core-service>.<namespace>.svc/mcp (required)
+  # The core's HTTP API, for its trigger stream: a websocket the core writes
+  # to when issues change or a room has a message, so the spot reads the core
+  # then and not on a timer (agent.pollInterval is only the fallback while the
+  # stream is down). Empty = poll only. Add its port to networkPolicy.core.ports.
+  apiUrl: ""         # e.g. http://<core-api-service>.<namespace>.svc:8080
   # serviceAccount: the spot's own ServiceAccount, presented as a projected
   #   token with audience core.audience; the core validates it by TokenReview and
   #   resolves the grants from a Role and RoleBinding in ITS OWN namespace. No
