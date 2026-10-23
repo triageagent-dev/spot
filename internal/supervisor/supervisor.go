@@ -557,11 +557,13 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 // mentioned reports whether a message names the spot: "@<name>" or the name
 // itself, case-insensitively.
 func (s *Supervisor) mentioned(text string) bool {
-	name := strings.ToLower(s.cfg.Name)
-	if name == "" {
-		return false
+	low := strings.ToLower(text)
+	for _, name := range []string{s.cfg.Name, s.cfg.ChatName} {
+		if name = strings.ToLower(name); name != "" && strings.Contains(low, name) {
+			return true
+		}
 	}
-	return strings.Contains(strings.ToLower(text), name)
+	return false
 }
 
 // badLocal mirrors the core's sanitiser for the spot's Matrix localpart.

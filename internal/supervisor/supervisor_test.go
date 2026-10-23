@@ -558,6 +558,16 @@ func TestSupervisorPollsAgainWhenTheStreamIsDown(t *testing.T) {
 	}
 }
 
+func TestAMessageNamingTheSpotByItsChatNameWakesIt(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = time.Hour; c.ChatName = "label-example-spot" })
+	defer h.stop()
+	h.post("team", say("alice", "alice", "@label-example-spot can you look at checkout?"))
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "checkout") {
+		t.Fatalf("a message naming the chat name must wake at once:\n%s", in)
+	}
+}
+
 func TestDailyCeilingStopsWakesUntilUTCMidnight(t *testing.T) {
 	h := newHarness(t, func(c *config.Config) { c.DailyTokenCeil = 200 })
 	h.clock.t = time.Date(2026, 10, 21, 23, 0, 0, 0, time.UTC)

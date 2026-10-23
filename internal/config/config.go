@@ -13,8 +13,12 @@ import (
 
 // Config is the supervisor's complete configuration.
 type Config struct {
-	Tenant     string
-	Name       string
+	Tenant string
+	Name   string
+	// ChatName is the name people see and write to in the messenger, when it
+	// is not Name: the core names a spot after its workspace's label. Empty =
+	// Name.
+	ChatName   string
 	CoreMCPURL string
 	// CoreAPIURL is the core's HTTP API, for its trigger stream (a websocket
 	// the core writes to when something changed). Empty = no stream: the
@@ -97,6 +101,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.SetOutput(out)
 	fs.StringVar(&c.Tenant, "tenant", "", "tenant this spot works for (required)")
 	fs.StringVar(&c.Name, "name", "", "spot name; default <tenant>-spot")
+	fs.StringVar(&c.ChatName, "chat-name", "", "the name the messenger shows for the spot, when it differs from --name (the core names a spot after its workspace's label); the spot answers to both; default --name")
 	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
 	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")

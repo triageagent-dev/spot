@@ -15,6 +15,7 @@ var instruction string
 // Params fill the placeholders in the system prompt.
 type Params struct {
 	Name     string
+	ChatName string // how the messenger shows the spot; empty = Name
 	Tenant   string
 	StateDir string
 	MinWake  time.Duration
@@ -23,7 +24,12 @@ type Params struct {
 
 // Instruction renders the system prompt.
 func Instruction(p Params) string {
+	chat := p.ChatName
+	if chat == "" {
+		chat = p.Name
+	}
 	return strings.NewReplacer(
+		"{{CHAT_NAME}}", chat,
 		"{{NAME}}", p.Name,
 		"{{TENANT}}", p.Tenant,
 		"{{STATE_DIR}}", strings.TrimRight(p.StateDir, "/"),

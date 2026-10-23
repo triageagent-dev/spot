@@ -23,10 +23,24 @@ func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
 	}
 }
 
+func TestInstructionSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
+	s := Instruction(Params{Name: "example-spot", ChatName: "label-example-spot", Tenant: "example", StateDir: "/state", MinWake: time.Minute, MaxWake: time.Hour})
+	for _, want := range []string{"people see you as `label-example-spot`", "`@label-example-spot`", "spot:example-spot"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("instruction lacks %q", want)
+		}
+	}
+	// without a chat name it is the spot's own name
+	s = Instruction(Params{Name: "example-spot", Tenant: "example", StateDir: "/state", MinWake: time.Minute, MaxWake: time.Hour})
+	if !strings.Contains(s, "people see you as `example-spot`") {
+		t.Error("the chat name does not default to the name")
+	}
+}
+
 func TestTemplateHoldsOnlyKnownPlaceholders(t *testing.T) {
 	// The template ships in the binary: deployment-specific values come from
 	// placeholders, never from the text.
-	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true}
+	known := map[string]bool{"{{NAME}}": true, "{{CHAT_NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true}
 	raw := Raw()
 	for {
 		i := strings.Index(raw, "{{")
