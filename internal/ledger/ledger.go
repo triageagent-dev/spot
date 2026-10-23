@@ -123,6 +123,7 @@ type Usage struct {
 	Date      string  `json:"date"` // UTC, 2006-01-02
 	Tokens    int64   `json:"tokens"`
 	CacheRead int64   `json:"cacheReadTokens"`
+	Output    int64   `json:"outputTokens"`
 	CostUSD   float64 `json:"costUsd"`
 	Turns     int     `json:"turns"`
 }
@@ -146,13 +147,15 @@ func (l *Ledger) usageLocked() Usage {
 }
 
 // AddUsage adds one turn's tokens (input + output + cache creation), cache
-// reads and estimated cost to today's counter and returns the new totals.
-func (l *Ledger) AddUsage(tokens, cacheRead int64, cost float64) (Usage, error) {
+// reads, the output part of tokens on its own, and estimated cost to today's
+// counter and returns the new totals.
+func (l *Ledger) AddUsage(tokens, cacheRead, output int64, cost float64) (Usage, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	u := l.usageLocked()
 	u.Tokens += tokens
 	u.CacheRead += cacheRead
+	u.Output += output
 	u.CostUSD += cost
 	u.Turns++
 	l.usage = u

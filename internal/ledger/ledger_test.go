@@ -19,10 +19,10 @@ func newL(t *testing.T, now time.Time) *Ledger {
 func TestUsageAccumulatesAndSurvivesRestart(t *testing.T) {
 	now := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
 	l := newL(t, now)
-	if _, err := l.AddUsage(1000, 50, 0.1); err != nil {
+	if _, err := l.AddUsage(1000, 50, 0, 0.1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.AddUsage(500, 0, 0.05); err != nil {
+	if _, err := l.AddUsage(500, 0, 0, 0.05); err != nil {
 		t.Fatal(err)
 	}
 	// A new Ledger over the same directory is a restart.
@@ -37,13 +37,13 @@ func TestUsageAccumulatesAndSurvivesRestart(t *testing.T) {
 func TestCeilingAndUTCRollover(t *testing.T) {
 	day1 := time.Date(2026, 10, 21, 23, 59, 0, 0, time.UTC)
 	l := newL(t, day1)
-	if _, err := l.AddUsage(900, 0, 0); err != nil {
+	if _, err := l.AddUsage(900, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if l.CeilingReached(1000) {
 		t.Fatal("900 of 1000 is not a reached ceiling")
 	}
-	if _, err := l.AddUsage(100, 0, 0); err != nil {
+	if _, err := l.AddUsage(100, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !l.CeilingReached(1000) {
@@ -86,7 +86,7 @@ func TestCostCeiling(t *testing.T) {
 	if l.CostCeilingReached(0) || l.CostCeilingReached(5) {
 		t.Fatal("nothing spent yet, and 0 means no ceiling")
 	}
-	if _, err := l.AddUsage(100, 0, 3.5); err != nil {
+	if _, err := l.AddUsage(100, 0, 0, 3.5); err != nil {
 		t.Fatal(err)
 	}
 	if l.CostCeilingReached(5) || !l.CostCeilingReached(3.5) || l.CostCeilingReached(0) {
@@ -97,7 +97,7 @@ func TestCostCeiling(t *testing.T) {
 func TestUsageIsHeldInMemoryNotReadFromTheFile(t *testing.T) {
 	now := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
 	l := newL(t, now)
-	if _, err := l.AddUsage(100, 0, 0); err != nil {
+	if _, err := l.AddUsage(100, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	// The agent rewrites the ledger file: nothing changes until a restart,
@@ -108,7 +108,7 @@ func TestUsageIsHeldInMemoryNotReadFromTheFile(t *testing.T) {
 	if u := l.Usage(); u.Tokens != 100 {
 		t.Fatalf("a rewritten file changed the in-memory count: %+v", u)
 	}
-	if _, err := l.AddUsage(1, 0, 0); err != nil {
+	if _, err := l.AddUsage(1, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	again, err := New(l.Dir())

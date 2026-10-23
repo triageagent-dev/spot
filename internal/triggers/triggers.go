@@ -57,11 +57,14 @@ type Stats struct {
 	ContextTokens int64            `json:"contextTokens,omitempty"`
 	Rotations     int64            `json:"rotations,omitempty"`
 	Tokens        int64            `json:"tokens,omitempty"`
-	Ceiling       int64            `json:"ceiling,omitempty"`
-	CostUSD       float64          `json:"costUsd,omitempty"`
-	NextWake      int64            `json:"nextWake,omitempty"`
-	Triggers      string           `json:"triggers,omitempty"`
-	Version       string           `json:"version,omitempty"`
+	// CacheReadTokens and OutputTokens are today's, beside Tokens (the paid count).
+	CacheReadTokens int64   `json:"cacheReadTokens,omitempty"`
+	OutputTokens    int64   `json:"outputTokens,omitempty"`
+	Ceiling         int64   `json:"ceiling,omitempty"`
+	CostUSD         float64 `json:"costUsd,omitempty"`
+	NextWake        int64   `json:"nextWake,omitempty"`
+	Triggers        string  `json:"triggers,omitempty"`
+	Version         string  `json:"version,omitempty"`
 }
 
 // Pending is what happened since the last Take.

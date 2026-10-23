@@ -808,7 +808,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 			costDelta = sum.CostUSD
 		}
 	}
-	if _, err := s.led.AddUsage(u.Billable(), u.CacheReadTokens, costDelta); err != nil {
+	if _, err := s.led.AddUsage(u.Billable(), u.CacheReadTokens, u.OutputTokens, costDelta); err != nil {
 		s.log.Error("saving usage", "err", err)
 	}
 	if s.trig != nil && (u.Billable() > 0 || u.CacheReadTokens > 0) {
@@ -882,7 +882,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		if maxTurns {
 			s.log.Warn("turn stopped at max-turns; the work may be unfinished", "tokens", u.Billable(), "numTurns", sum.NumTurns)
 		}
-		s.log.Info("turn done", "tokens", u.Billable(), "numTurns", sum.NumTurns, "seconds", int(res.Duration.Seconds()))
+		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheReadTokens, "out", u.OutputTokens, "numTurns", sum.NumTurns, "seconds", int(res.Duration.Seconds()))
 	}
 
 	w := schedule.Consume(s.led.AgentPath(ledger.NextFile), s.cfg.MinWake, s.cfg.MaxWake)
@@ -1133,7 +1133,7 @@ func (s *Supervisor) reportStats(force bool) {
 	st := triggers.Stats{
 		State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
 		EdgeWakesHour: int64(s.status.EdgeWakesHour), Rotations: s.rotations,
-		Tokens: u.Tokens, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
+		Tokens: u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
 	}
 	for k, v := range s.wakes {
 		st.Wakes[k] = v

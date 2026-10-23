@@ -607,7 +607,7 @@ func TestTurnsAreReportedToTheCoreWithTheirCounts(t *testing.T) {
 		trig.mu.Lock()
 		defer trig.mu.Unlock()
 		for _, s := range trig.stats {
-			if s.Turns == 1 && s.Wakes["startup"] == 1 && s.Triggers == "stream" {
+			if s.Turns == 1 && s.Wakes["startup"] == 1 && s.Triggers == "stream" && s.Tokens == 220 && s.OutputTokens == 120 {
 				return true
 			}
 		}
