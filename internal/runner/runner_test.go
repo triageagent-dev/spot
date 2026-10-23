@@ -43,7 +43,7 @@ func TestBuildArgs(t *testing.T) {
 
 func TestAllowedToolsAreScoped(t *testing.T) {
 	allowed := strings.Join(DefaultAllowed("/state"), ",")
-	for _, want := range []string{"Edit(//state/notes/**)", "Write(//state/next.json)", "mcp__core__list_open_issues", "mcp__core__say_in_workspace", "Bash(kubectl *)"} {
+	for _, want := range []string{"Edit(//state/notes/**)", "Write(//state/next.json)", "mcp__core__list_open_issues", "mcp__core__say_in_workspace"} {
 		if !strings.Contains(allowed, want) {
 			t.Errorf("allowed tools lack %q: %s", want, allowed)
 		}
@@ -57,6 +57,9 @@ func TestAllowedToolsAreScoped(t *testing.T) {
 			strings.HasPrefix(r, "Bash(echo"), strings.HasPrefix(r, "Bash(mkdir"), strings.HasPrefix(r, "Bash(sort"):
 			t.Errorf("too broad: %s", r)
 		}
+	}
+	if strings.Contains(allowed, "kubectl") {
+		t.Errorf("kubectl is not a default tool; a cluster is reached through connectors: %s", allowed)
 	}
 	dis := strings.Join(DefaultDisallowed(), ",")
 	for _, want := range []string{"mcp__core__resolve_issue", "mcp__core__forget_issue", "mcp__core__run_rsi", "Task", "Agent", "WebFetch"} {

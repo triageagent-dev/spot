@@ -1,8 +1,9 @@
 # tria-spot
 
 The Tria spot for one tenant (ADR-095). It is Claude Code in a pod: an agent
-that watches the tenant's cluster through the core's MCP tools and `kubectl`,
-fixes what its ServiceAccount lets it fix, and tells the team what it saw and
+that watches the tenant's cluster through the core's MCP tools and its
+connectors (MCP servers that hold their own credentials), fixes what they let
+it fix, and tells the team what it saw and
 did. The component is a small Go supervisor that wakes the agent in turns; the
 agent owns the loop and does the triage. The core gets no Kubernetes client.
 
@@ -36,7 +37,7 @@ supervisor works without them.
 2. **A turn** is `claude -p` with the prompt on stdin: why it woke (`startup`,
    `tick`, `edge`, `human`), the facts behind it, the token budget left, and
    the path to write `next.json`. The agent looks with the core's tools first,
-   then `kubectl` reads, verifies its hypothesis before any write, records
+   then the connectors' reads, verifies its hypothesis before any write, records
    what it did on the issue, and ends by writing
    `/state/next.json`: `{"after":"15m","why":"check the rollout"}`.
 3. **The schedule** is clamped to `[--min-wake, --max-wake]` (2m to 2h). A
@@ -214,7 +215,8 @@ Flags only. No credential is a flag value or an environment variable.
 | `--chat-batch` | `10m` | how long a room message that does not name the spot waits before it wakes a turn; `0` wakes at once |
 | `--max-edge-wakes-per-hour` | `12` | cap on early wakes per hour; `0` = no cap |
 | `--heartbeat-id` | `system2-heartbeat-<tenant>` | memory cell id of the heartbeat |
-| `--kubectl-writes-per-hour` | `20` | PreToolUse hook cap |
+| `--local-kubectl` | off | let the spot run `kubectl` in its own pod, bounded by the pod's ServiceAccount; off = a cluster is reached through connectors only |
+| `--kubectl-writes-per-hour` | `20` | PreToolUse hook cap on local kubectl |
 | `--hook-bin` | this executable | binary the hook setting runs |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
@@ -390,7 +392,7 @@ for `auto` and the CLI reports anything else, it logs an error, records it in
 `status.json` (`fellBack`) and uses `--fallback-permission-mode` (`dontAsk`) for
 all later turns. In `dontAsk`, only `--allowedTools` run, which is why that
 list is kept (reads, edits under `/state/notes` and `next.json`, the core
-tools by name, `kubectl`, `jq` and a few read-only text tools; no bare
+tools by name, the connectors' tools by name, `jq` and a few read-only text tools (`kubectl` only with `--local-kubectl`); no bare
 `Bash`, no `cat`, nothing that writes a file), and the hook and RBAC carry
 the rest. `--permission-prompts none` is always passed so nothing waits for an
 answer.

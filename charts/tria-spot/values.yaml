@@ -127,7 +127,8 @@ agent:
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
   dailyCostCeilingUSD: 0      # dollars per UTC day (the CLI's own estimate); 0 = no ceiling
   maxContextTokens: 0         # start a fresh conversation after a turn whose context passed this; 0 = never
-  kubectlWritesPerHour: 20    # PreToolUse hook cap; best effort, RBAC is the boundary
+  localKubectl: false         # true lets the spot run kubectl in its own pod, bounded by rbac.read / actNamespaces; false = a cluster is reached through connectors only
+  kubectlWritesPerHour: 20    # PreToolUse hook cap on local kubectl; best effort, RBAC is the boundary
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
   # text at any level. true lets debug logs include it (and the raw CLI lines).

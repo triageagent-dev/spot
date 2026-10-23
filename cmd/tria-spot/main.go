@@ -122,6 +122,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
+	if cfg.LocalKubectl {
+		allowed = append(allowed, runner.LocalKubectlRule)
+		log.Info("local kubectl is on; the pod's ServiceAccount is the bound")
+	}
 	if cfg.EgoMCPURL != "" {
 		allowed = append(allowed, runner.EgoAllowed()...)
 	}
@@ -132,6 +136,9 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
 	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)
+	if !cfg.LocalKubectl {
+		disallowed = append(disallowed, runner.LocalKubectlRule)
+	}
 	if cfg.CoreTools == "all" {
 		allowed = append(allowed, runner.CoreAllTool)
 		log.Info("core tools: all of them; the core's Role is the bound")
