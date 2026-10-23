@@ -51,6 +51,18 @@ type fakeCore struct {
 	typing     []string // "room|on" per call
 	typingErr  error
 	late       func() []corecli.Issue // extra issues, for changes that land during a turn
+	identity   string                 // the messenger name the core gives; empty = the core has no such tool
+	identities int                    // how many times it was read
+}
+
+func (f *fakeCore) Identity(context.Context) (corecli.Identity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.identities++
+	if f.identity == "" {
+		return corecli.Identity{}, corecli.ErrNoIdentityTool
+	}
+	return corecli.Identity{Workspace: "example", Name: "Example", AgentName: f.identity}, nil
 }
 
 func (f *fakeCore) Typing(_ context.Context, room string, on bool) error {
@@ -565,6 +577,46 @@ func TestAMessageNamingTheSpotByItsChatNameWakesIt(t *testing.T) {
 	h.waitIdle(2)
 	if in := h.file("stdin", 2); !strings.Contains(in, "checkout") {
 		t.Fatalf("a message naming the chat name must wake at once:\n%s", in)
+	}
+}
+
+func TestTheCoreNamesTheSpotAndARenameIsTakenWithoutARestart(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = time.Hour })
+	defer h.stop()
+	h.core.mu.Lock()
+	h.core.identity = "Scout"
+	h.core.mu.Unlock()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(h.logs.String())
+		}
+	})
+	h.clock.Advance(identityEvery + time.Minute)
+	h.post("team", say("alice", "alice", "@Scout can you look at checkout?"))
+	h.waitIdle(2)
+	in := h.file("stdin", 2)
+	if !strings.Contains(in, "In the messenger you appear as Scout") || !strings.Contains(in, "checkout") {
+		t.Fatalf("a message naming the core's name must wake the spot, and the prompt carry the name:\n%s", in)
+	}
+	// the owner renames it; the next read after the interval takes it
+	h.core.mu.Lock()
+	h.core.identity = "Ranger"
+	h.core.mu.Unlock()
+	h.clock.Advance(identityEvery + time.Minute)
+	h.post("team", say("alice", "alice", "@Ranger and now?"))
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "In the messenger you appear as Ranger") {
+		t.Fatalf("the rename was not taken:\n%s", in)
+	}
+}
+
+func TestACoreWithoutTheIdentityToolLeavesTheConfiguredName(t *testing.T) {
+	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = time.Hour; c.ChatName = "label-example-spot" })
+	defer h.stop()
+	h.post("team", say("alice", "alice", "@label-example-spot hello"))
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "In the messenger you appear as label-example-spot") {
+		t.Fatalf("the configured chat name must stand:\n%s", in)
 	}
 }
 

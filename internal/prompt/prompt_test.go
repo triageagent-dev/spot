@@ -23,24 +23,21 @@ func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
 	}
 }
 
-func TestInstructionSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
-	s := Instruction(Params{Name: "example-spot", ChatName: "label-example-spot", Tenant: "example", StateDir: "/state", MinWake: time.Minute, MaxWake: time.Hour})
-	for _, want := range []string{"people see you as `label-example-spot`", "`@label-example-spot`", "spot:example-spot"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("instruction lacks %q", want)
-		}
+func TestWakePromptSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
+	now := time.Date(2026, 10, 23, 8, 0, 0, 0, time.UTC)
+	p := Turn(Wake{Reason: Human, Now: now, ChatName: "Scout", StateDir: "/state"})
+	if !strings.Contains(p, "In the messenger you appear as Scout") {
+		t.Errorf("wake prompt lacks the messenger name:\n%s", p)
 	}
-	// without a chat name it is the spot's own name
-	s = Instruction(Params{Name: "example-spot", Tenant: "example", StateDir: "/state", MinWake: time.Minute, MaxWake: time.Hour})
-	if !strings.Contains(s, "people see you as `example-spot`") {
-		t.Error("the chat name does not default to the name")
+	if p := Turn(Wake{Reason: Human, Now: now, StateDir: "/state"}); strings.Contains(p, "In the messenger you appear as") {
+		t.Errorf("an unknown name was stated:\n%s", p)
 	}
 }
 
 func TestTemplateHoldsOnlyKnownPlaceholders(t *testing.T) {
 	// The template ships in the binary: deployment-specific values come from
 	// placeholders, never from the text.
-	known := map[string]bool{"{{NAME}}": true, "{{CHAT_NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true}
+	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true}
 	raw := Raw()
 	for {
 		i := strings.Index(raw, "{{")

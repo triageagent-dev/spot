@@ -112,7 +112,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
 		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr, OtelTokenFile: cfg.OtelTokenFile,
 		Instruction: prompt.Instruction(prompt.Params{
-			Name: cfg.Name, ChatName: cfg.ChatName, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 		}),
 	})
 	if err != nil {

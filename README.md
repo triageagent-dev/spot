@@ -94,6 +94,19 @@ supervisor works without them.
    `status.json` and exits. The next start tells the agent its last turn was
    cut off. A killed pod resumes the same conversation from `/state`.
 
+## Names
+
+Two names meet. `--name` is the deployment's technical name (Deployment,
+volume, ServiceAccount, note tags, ego thread); people never see it. The name
+people see and write to in the messenger belongs to the workspace: its owner
+sets `agentName` on the workspace in the core (empty means
+`<workspace name>-spot`), and the spot reads it with `get_workspace_identity`
+at start, when the trigger stream reconnects, at most every five minutes while
+it works, and when a person writes an `@` it does not recognise. Every wake
+prompt says "In the messenger you appear as ...", and a message naming that
+name, the technical name or `--chat-name` (the fallback for a core that cannot
+say) wakes the spot at once. A rename needs no restart.
+
 ## Live conversation
 
 The messenger is a conversation, so the spot answers first and works after.
@@ -140,6 +153,7 @@ Flags only. No credential is a flag value or an environment variable.
 | `--turn-timeout` | `20m` | wall-clock cap per wake |
 | `--daily-token-ceiling` | `2000000` | tokens per UTC day; `0` = none |
 | `--core-api-url` | empty | the core's HTTP API; with it the core pushes triggers over a websocket and nothing polls while it is up |
+| `--chat-name` | empty | fallback for the name the messenger shows, used until the core says (the workspace's owner sets it in the core) |
 | `--poll-interval` | `30s` | edge polling between turns, or only while the trigger stream is down |
 | `--edge-cooldown` | `1m` | minimum gap between a turn's end and an edge wake |
 | `--permission-mode` | `auto` | `auto`, `dontAsk` or `acceptEdits` |

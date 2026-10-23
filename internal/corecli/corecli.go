@@ -246,6 +246,34 @@ func (c *Client) Typing(ctx context.Context, room string, on bool) error {
 	return err
 }
 
+// ErrNoIdentityTool means the core predates get_workspace_identity.
+var ErrNoIdentityTool = errors.New("the core offers no get_workspace_identity tool")
+
+// Identity is who the spot is in its workspace's messenger.
+type Identity struct {
+	Workspace string `json:"workspace"` // the workspace's id
+	Name      string `json:"name"`      // the workspace's display name
+	AgentName string `json:"agentName"` // the name people see and write to
+}
+
+// Identity reads the spot's name in the messenger (get_workspace_identity).
+// The workspace's owner sets it and can change it, so it is read again now
+// and then.
+func (c *Client) Identity(ctx context.Context) (Identity, error) {
+	if !c.HasTool(ctx, "get_workspace_identity") {
+		return Identity{}, ErrNoIdentityTool
+	}
+	text, err := c.call(ctx, "get_workspace_identity", map[string]any{"tenant": c.tenant})
+	if err != nil {
+		return Identity{}, err
+	}
+	var id Identity
+	if err := json.Unmarshal([]byte(text), &id); err != nil {
+		return Identity{}, fmt.Errorf("get_workspace_identity: unexpected reply: %w", err)
+	}
+	return id, nil
+}
+
 // ParseRoom decodes a read_workspace_room reply. Exposed for tests.
 func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 	var raw []map[string]any

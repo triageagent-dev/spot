@@ -30,6 +30,7 @@ type Core interface {
 	Heartbeat(ctx context.Context, id, title, content string, staleAfter time.Duration) error
 	RoomMessages(ctx context.Context, room, since string) ([]corecli.RoomMessage, string, error)
 	Typing(ctx context.Context, room string, on bool) error
+	Identity(ctx context.Context) (corecli.Identity, error)
 }
 
 // Turner runs one CLI turn.
@@ -54,6 +55,8 @@ type Supervisor struct {
 	permMode string
 
 	trig        Trigger       // the core's push channel; nil = poll
+	chatName    string        // what the core says the messenger calls the spot; empty = not known
+	identityAt  time.Time     // when it was last read
 	triggerWait time.Duration // zero = triggerDebounce; tests shorten it
 
 	nextTick     time.Time
@@ -206,6 +209,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.status.SessionID = sess.ID
 	s.setState("starting")
 
+	s.refreshIdentity(ctx, true, 0)
 	pend := &pending{reason: prompt.Startup}
 	for ctx.Err() == nil {
 		if pend == nil && !s.nextTick.IsZero() && !s.now().Before(s.nextTick) {
@@ -291,7 +295,51 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 		if !s.sleep(ctx, wait) {
 			return false, false
 		}
-		return !s.trig.Take().Empty(), true
+		p := s.trig.Take()
+		if p.Hello {
+			s.refreshIdentity(ctx, true, 0) // a reconnect: a rename may have happened meanwhile
+		}
+		return !p.Empty(), true
+	}
+}
+
+// identityEvery is how long the name the core gave the spot is trusted before
+// it is read again: the workspace's owner can change it at any time.
+const identityEvery = 5 * time.Minute
+
+// identityGap is the least time between two reads of the name that a message
+// can cause.
+const identityGap = 20 * time.Second
+
+// messengerName is what the messenger calls the spot: what the core last said,
+// else the configured chat name; empty when neither is known.
+func (s *Supervisor) messengerName() string {
+	if s.chatName != "" {
+		return s.chatName
+	}
+	return s.cfg.ChatName
+}
+
+// refreshIdentity reads the spot's name from the core, when forced or when the
+// last read is old. A core without the tool, or one that cannot be reached, is
+// not an error: the configured chat name stands.
+func (s *Supervisor) refreshIdentity(ctx context.Context, force bool, maxAge time.Duration) {
+	if !force && s.now().Sub(s.identityAt) < maxAge {
+		return
+	}
+	s.identityAt = s.now()
+	ictx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	id, err := s.core.Identity(ictx)
+	if err != nil {
+		if !errors.Is(err, corecli.ErrNoIdentityTool) && ctx.Err() == nil {
+			s.log.Debug("reading the messenger name", "err", err)
+		}
+		return
+	}
+	if id.AgentName != "" && id.AgentName != s.chatName {
+		s.log.Info("the messenger calls the spot", "name", id.AgentName)
+		s.chatName = id.AgentName
 	}
 }
 
@@ -450,6 +498,8 @@ func (s *Supervisor) fromHeld() *pending {
 
 // poll is the model-free check of the core. It returns the new edges.
 func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
+	// Whether a message names the spot depends on what it is called now.
+	s.refreshIdentity(ctx, false, identityEvery)
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var out []edges.Edge
@@ -549,7 +599,14 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			// read_workspace_file if it matters.
 			fact += fmt.Sprintf(" [attached file, %s: read_workspace_file with message_id %q]", m.File, m.ID)
 		}
-		out = append(out, edges.Edge{Kind: edges.Message, Human: human, Room: room, Mentioned: s.mentioned(m.Text), Fact: fact})
+		mentioned := s.mentioned(m.Text)
+		if !mentioned && human && strings.Contains(m.Text, "@") {
+			// Someone is addressing somebody, and the name they used may be
+			// the spot's new one: look again, at most every few seconds.
+			s.refreshIdentity(ctx, false, identityGap)
+			mentioned = s.mentioned(m.Text)
+		}
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human, Room: room, Mentioned: mentioned, Fact: fact})
 	}
 	return out, moved
 }
@@ -558,7 +615,7 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 // itself, case-insensitively.
 func (s *Supervisor) mentioned(text string) bool {
 	low := strings.ToLower(text)
-	for _, name := range []string{s.cfg.Name, s.cfg.ChatName} {
+	for _, name := range []string{s.cfg.Name, s.cfg.ChatName, s.chatName} {
 		if name = strings.ToLower(name); name != "" && strings.Contains(low, name) {
 			return true
 		}
@@ -657,8 +714,9 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.status.HeldEdges = 0
 	}
 	used := s.led.Usage().Tokens
+	s.refreshIdentity(ctx, false, identityEvery)
 	text := prompt.Turn(prompt.Wake{
-		Reason: p.reason, Now: s.now(), Facts: p.facts, ScheduledBy: p.scheduledBy,
+		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Resumed: resume != "", Interrupted: interrupted, Note: p.note,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil, StateDir: s.cfg.StateDir,
 	})

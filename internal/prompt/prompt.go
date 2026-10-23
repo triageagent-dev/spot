@@ -15,7 +15,6 @@ var instruction string
 // Params fill the placeholders in the system prompt.
 type Params struct {
 	Name     string
-	ChatName string // how the messenger shows the spot; empty = Name
 	Tenant   string
 	StateDir string
 	MinWake  time.Duration
@@ -24,12 +23,7 @@ type Params struct {
 
 // Instruction renders the system prompt.
 func Instruction(p Params) string {
-	chat := p.ChatName
-	if chat == "" {
-		chat = p.Name
-	}
 	return strings.NewReplacer(
-		"{{CHAT_NAME}}", chat,
 		"{{NAME}}", p.Name,
 		"{{TENANT}}", p.Tenant,
 		"{{STATE_DIR}}", strings.TrimRight(p.StateDir, "/"),
@@ -57,6 +51,7 @@ type Wake struct {
 	Now         time.Time
 	Facts       []string // edges or messages that caused it
 	ScheduledBy string   // the "why" the agent left for itself (tick)
+	ChatName    string   // what the messenger calls the spot now; empty = unknown
 	Resumed     bool     // a conversation is being resumed
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
@@ -69,6 +64,9 @@ type Wake struct {
 func Turn(w Wake) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Wake reason: %s\nTime (UTC): %s\n", w.Reason, w.Now.UTC().Format(time.RFC3339))
+	if w.ChatName != "" {
+		fmt.Fprintf(&b, "In the messenger you appear as %s: people write to you by that name.\n", w.ChatName)
+	}
 	switch w.Reason {
 	case Startup:
 		if w.Resumed {
