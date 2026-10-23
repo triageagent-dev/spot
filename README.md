@@ -401,6 +401,20 @@ supervisor's `--daily-token-ceiling` and `--daily-cost-ceiling-usd`, and
   turn ends with a context larger than this, the next wake starts a fresh
   conversation and the agent carries on from its notes. `status.json` shows
   each turn's `contextTokens`.
+- **The core's cap.** The supervisor's ceilings are the spot's own. The core
+  keeps one it enforces (policy `budgets.spotTenantDailyTokens` over
+  `budgets.spotDailyDefaultTokens`, tokens per workspace per UTC day, new input
+  plus output). After every turn the supervisor sends the core a `turn` frame on
+  the trigger stream (model, input with cache reads and writes included, cached,
+  output, duration, failed): the core books it in its usage ring as kind `spot`,
+  so the TUI usage panel shows it, and answers with the budget. Over the cap the
+  core refuses `say_in_workspace` and `set_spot_status`, and the supervisor
+  pauses all wakes until the budget lifts or UTC midnight. A turn sent while the
+  stream is down waits for the next connection (the last 100 are kept).
+- **Stats.** A `stats` frame (state, turns and wakes by reason today, failures in
+  a row, context size, rotations, own token and cost counts, next wake) goes to
+  the core after each turn, on a change of trigger mode and every two minutes,
+  for the TUI's workspace panel. Counts and labels only, never content.
 
 ## Logs
 

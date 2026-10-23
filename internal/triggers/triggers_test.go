@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -134,5 +135,61 @@ func TestNewRefusesAnythingButHTTP(t *testing.T) {
 		if _, err := New(u, "t", "f", quiet()); err == nil {
 			t.Errorf("%q accepted", u)
 		}
+	}
+}
+
+func TestStreamCarriesTheCoresFactsDownAndTheSpotsReportsUp(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	conns := make(chan *websocket.Conn, 2)
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conns <- conn
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"hello":true,"name":"example-spot","budget":{"spent":10,"cap":100,"remaining":90,"blocked":false}}`))
+		for {
+			_, b, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			got = append(got, string(b))
+			mu.Unlock()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(srv.URL, "example", tokenFile(t, "tok"), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A turn reported while the stream is down is not lost: it goes first on connect.
+	c.ReportTurn(Turn{Model: "m", Input: 900, Cached: 600, Output: 100, DurationMs: 1500})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	wait(t, "hello", c.Connected)
+	p := c.Take()
+	if p.Name != "example-spot" || !p.Budget || p.Empty() {
+		t.Fatalf("pending %+v", p)
+	}
+	if b, ok := c.Budget(); !ok || b.Spent != 10 || b.Cap != 100 || b.Blocked {
+		t.Fatalf("budget %+v %v", b, ok)
+	}
+	// Facts alone are not a reason to read the core.
+	if (Pending{Name: "x", Budget: true}).Wake() {
+		t.Fatal("a name and a budget must not wake the supervisor")
+	}
+	c.ReportStats(Stats{State: "idle", Turns: 3, Wakes: map[string]int64{"chat": 2}})
+	wait(t, "both reports", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 })
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(got[0], `"turn":{"model":"m","input":900,"cached":600,"output":100,"durationMs":1500}`) ||
+		!strings.Contains(got[1], `"stats":{"state":"idle","turns":3,"wakes":{"chat":2}}`) {
+		t.Fatalf("frames %v", got)
 	}
 }

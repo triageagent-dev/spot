@@ -65,6 +65,13 @@ type Supervisor struct {
 	failures     int
 	edgeWakes    []time.Time // early wakes in the last hour
 	status       Status
+
+	// What the core is told about how the spot is doing (counted per UTC day).
+	statsDay  string
+	wakes     map[string]int64
+	rotations int64
+	statsAt   time.Time
+	coreHeld  bool // the core's cap holds the spot back
 }
 
 type heldEdge struct {
@@ -177,6 +184,12 @@ type Trigger interface {
 	Connected() bool
 	C() <-chan struct{}
 	Take() triggers.Pending
+	// Budget is the spot's token budget as the core last said it.
+	Budget() (triggers.Budget, bool)
+	// ReportTurn and ReportStats tell the core what a turn cost and how the
+	// spot is doing.
+	ReportTurn(triggers.Turn)
+	ReportStats(triggers.Stats)
 }
 
 // SetTrigger switches the supervisor from polling to the core's stream. It
@@ -244,17 +257,33 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return nil
 }
 
-// paused reports whether the daily ceiling holds the agent back.
+// paused reports whether the daily ceiling, or the core's cap on the spot,
+// holds the agent back.
 func (s *Supervisor) paused() bool {
-	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD)
+	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD) || s.coreBlocked()
+}
+
+// coreBlocked is the core refusing the spot until UTC midnight: its own cap,
+// which it holds on everything the spot does through it.
+func (s *Supervisor) coreBlocked() bool {
+	if s.trig == nil {
+		return false
+	}
+	b, ok := s.trig.Budget()
+	return ok && b.Blocked
 }
 
 func (s *Supervisor) pauseForCeiling() {
 	until := ledger.NextUTCMidnight(s.now())
 	s.nextTick = until
 	kind := "token"
-	if !s.led.CeilingReached(s.cfg.DailyTokenCeil) {
+	switch {
+	case s.led.CeilingReached(s.cfg.DailyTokenCeil):
+	case s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD):
 		kind = "cost"
+	default:
+		kind = "core"
+		s.coreHeld = true
 	}
 	s.scheduledWhy = "the daily " + kind + " ceiling was reached; resumed after UTC midnight"
 	u := s.led.Usage()
@@ -280,6 +309,11 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 	if len(s.held) > 0 && d > time.Second {
 		d = time.Second // judged again soon; no read of the core
 	}
+	// A spot that sleeps for hours still shows signs of life.
+	s.reportStats(false)
+	if d > statsEvery {
+		d = statsEvery
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -296,11 +330,37 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 			return false, false
 		}
 		p := s.trig.Take()
-		if p.Hello {
-			s.refreshIdentity(ctx, true, 0) // a reconnect: a rename may have happened meanwhile
+		s.takeCoreFacts(p)
+		if p.Hello && p.Name == "" {
+			s.refreshIdentity(ctx, true, 0) // an older core does not send the name: ask
 		}
-		return !p.Empty(), true
+		return p.Wake(), true
 	}
+}
+
+// statsEvery is how often the core hears from the spot while it sleeps.
+const statsEvery = 2 * time.Minute
+
+// takeCoreFacts applies what the core said about the spot itself: its name, and
+// its budget. A spot the core had held back wakes at once when the cap lifts,
+// instead of at midnight.
+func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
+	if p.Name != "" && p.Name != s.chatName {
+		s.log.Info("the messenger calls the spot", "name", p.Name)
+		s.chatName = p.Name
+	}
+	if !p.Budget {
+		return
+	}
+	held := s.coreBlocked()
+	if held != s.coreHeld {
+		b, _ := s.trig.Budget()
+		s.log.Info("the core's cap on the spot changed", "blocked", held, "spent", b.Spent, "cap", b.Cap)
+	}
+	if s.coreHeld && !held {
+		s.nextTick = s.now()
+	}
+	s.coreHeld = held
 }
 
 // identityEvery is how long the name the core gave the spot is trusted before
@@ -350,6 +410,7 @@ func (s *Supervisor) setTriggers(mode string) {
 	s.status.Triggers = mode
 	s.log.Info("watching the core", "by", mode)
 	s.setState(s.status.State)
+	s.reportStats(true)
 }
 
 func (s *Supervisor) untilNext() time.Duration {
@@ -727,6 +788,8 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 	s.setState("running")
 	s.log.Info("turn start", "reason", p.reason, "resume", resume != "", "facts", len(p.facts))
+	s.rollDay()
+	s.wakes[string(p.reason)]++
 
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
@@ -747,6 +810,15 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 	if _, err := s.led.AddUsage(u.Billable(), u.CacheReadTokens, costDelta); err != nil {
 		s.log.Error("saving usage", "err", err)
+	}
+	if s.trig != nil && (u.Billable() > 0 || u.CacheReadTokens > 0) {
+		// What the core is told is the spot's own count of this turn: the core
+		// books it under the spot's kind and answers with the budget after it.
+		s.trig.ReportTurn(triggers.Turn{
+			Model: modelLabel(sum.Model), Input: u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens,
+			Cached: u.CacheReadTokens, Output: u.OutputTokens, DurationMs: res.Duration.Milliseconds(),
+			Failed: res.Err != nil || sum.IsError || !sum.GotResult,
+		})
 	}
 
 	// The conversation to resume next time.
@@ -774,6 +846,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// carries on from the agent's own notes.
 	if !failed && s.cfg.MaxContextTokens > 0 && sum.LastContext > s.cfg.MaxContextTokens {
 		s.log.Info("conversation rotated: the next wake starts a fresh one", "contextTokens", sum.LastContext, "limit", s.cfg.MaxContextTokens)
+		s.rotations++
 		sess = ledger.Session{}
 	}
 	if err := s.led.SaveSession(sess); err != nil {
@@ -841,6 +914,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Warn("heartbeat not refreshed: the turn failed, so reflection stays the floor")
 	}
 	s.setState("idle")
+	s.reportStats(true) // the turn is counted: the core hears it now, not at the next heartbeat
 }
 
 // typingEvery is how often the indicator is renewed; the core clears it after
@@ -1027,6 +1101,54 @@ func ceilText(c int64) string {
 	return fmt.Sprint(c)
 }
 
+// modelLabel is the model id the CLI reported, without a context-window suffix
+// such as "[1m]"; "claude" when it reported none.
+func modelLabel(m string) string {
+	if i := strings.IndexByte(m, '['); i >= 0 {
+		m = m[:i]
+	}
+	if m = strings.TrimSpace(m); m == "" {
+		return "claude"
+	}
+	return m
+}
+
+// rollDay starts the day's counts afresh at UTC midnight.
+func (s *Supervisor) rollDay() {
+	day := s.now().UTC().Format("2006-01-02")
+	if s.wakes == nil || day != s.statsDay {
+		s.statsDay, s.wakes, s.rotations = day, map[string]int64{}, 0
+	}
+}
+
+// reportStats tells the core how the spot is doing: counts and labels, no
+// content. At most every few seconds unless forced.
+func (s *Supervisor) reportStats(force bool) {
+	if s.trig == nil || (!force && s.now().Sub(s.statsAt) < 5*time.Second) {
+		return
+	}
+	s.statsAt = s.now()
+	s.rollDay()
+	u := s.led.Usage()
+	st := triggers.Stats{
+		State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
+		EdgeWakesHour: int64(s.status.EdgeWakesHour), Rotations: s.rotations,
+		Tokens: u.Tokens, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
+	}
+	for k, v := range s.wakes {
+		st.Wakes[k] = v
+	}
+	if t := s.status.LastTurn; t != nil {
+		st.ContextTokens = t.ContextTokens
+	}
+	if n := s.status.NextWake; n != nil {
+		if at, err := time.Parse(time.RFC3339, n.At); err == nil {
+			st.NextWake = at.UnixMilli()
+		}
+	}
+	s.trig.ReportStats(st)
+}
+
 func (s *Supervisor) setState(state string) {
 	s.status.State = state
 	s.status.UpdatedAt = s.now().UTC().Format(time.RFC3339)
@@ -1035,4 +1157,5 @@ func (s *Supervisor) setState(state string) {
 	if err := s.led.WriteStatus(s.status); err != nil {
 		s.log.Error("writing status", "err", err)
 	}
+	s.reportStats(false)
 }

@@ -1,9 +1,10 @@
-// Package triggers is the supervisor's push channel from the core: a
-// websocket the core holds open and writes to when something changed, so the
-// supervisor reads the core only then, instead of on a timer. The frames carry
-// no content (no issue text, no message): they say that issues changed or a
-// room has a new message, and the supervisor reads the rest with its own
-// permissions.
+// Package triggers is the supervisor's channel to the core: a websocket the
+// core holds open and writes to when something changed, so the supervisor reads
+// the core only then, instead of on a timer. The frames carry no content (no
+// issue text, no message): they say that issues changed or a room has a new
+// message, and the supervisor reads the rest with its own permissions. The core
+// also tells the spot its name and its token budget over it, and the supervisor
+// reports back what each turn cost and how it is doing: counts and labels only.
 package triggers
 
 import (
@@ -26,15 +27,63 @@ import (
 // Path is the core's agent stream.
 const Path = "/v2/messenger/spot/ws"
 
+// Budget is the spot's daily token budget as the core holds it. Cap 0 is none;
+// Blocked is the core refusing the spot until 00:00 UTC.
+type Budget struct {
+	Spent     int64 `json:"spent"`
+	Cap       int64 `json:"cap"`
+	Remaining int64 `json:"remaining"`
+	Blocked   bool  `json:"blocked"`
+}
+
+// Turn is what one turn cost. Input includes the cached part and the cache
+// writes.
+type Turn struct {
+	Model      string `json:"model"`
+	Input      int64  `json:"input"`
+	Cached     int64  `json:"cached"`
+	Output     int64  `json:"output"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
+}
+
+// Stats is how the spot is doing, a snapshot the core keeps for its clients.
+type Stats struct {
+	State         string           `json:"state,omitempty"`
+	Turns         int64            `json:"turns,omitempty"`
+	Failures      int64            `json:"failures,omitempty"`
+	Wakes         map[string]int64 `json:"wakes,omitempty"`
+	EdgeWakesHour int64            `json:"edgeWakesHour,omitempty"`
+	ContextTokens int64            `json:"contextTokens,omitempty"`
+	Rotations     int64            `json:"rotations,omitempty"`
+	Tokens        int64            `json:"tokens,omitempty"`
+	Ceiling       int64            `json:"ceiling,omitempty"`
+	CostUSD       float64          `json:"costUsd,omitempty"`
+	NextWake      int64            `json:"nextWake,omitempty"`
+	Triggers      string           `json:"triggers,omitempty"`
+	Version       string           `json:"version,omitempty"`
+}
+
 // Pending is what happened since the last Take.
 type Pending struct {
 	Hello  bool     // the stream (re)connected: everything may have changed
 	Issues bool     // the core's issues or state changed
 	Rooms  []string // rooms with a new message
+	Name   string   // the core named the spot (again)
+	Budget bool     // the core sent the spot's budget (again); read it with Budget()
 }
 
 // Empty reports whether nothing happened.
-func (p Pending) Empty() bool { return !p.Hello && !p.Issues && len(p.Rooms) == 0 }
+func (p Pending) Empty() bool {
+	return !p.Hello && !p.Issues && len(p.Rooms) == 0 && p.Name == "" && !p.Budget
+}
+
+// Wake reports whether the core's issues or rooms may have changed, which is
+// what makes the supervisor read the core.
+func (p Pending) Wake() bool { return p.Hello || p.Issues || len(p.Rooms) > 0 }
+
+// maxOutbox bounds the turns kept while the stream is down.
+const maxOutbox = 100
 
 // Client keeps the stream open and remembers what it was told.
 type Client struct {
@@ -47,6 +96,11 @@ type Client struct {
 
 	mu      sync.Mutex
 	pending Pending
+	budget  *Budget
+	outbox  []Turn // reported turns the core has not taken yet
+
+	wmu  sync.Mutex // one writer at a time
+	conn *websocket.Conn
 }
 
 // New builds a client for a core API base URL (http:// or https://) and a
@@ -87,8 +141,73 @@ func (c *Client) Take() Pending {
 	return p
 }
 
+// Budget is the last budget the core sent, false before any.
+func (c *Client) Budget() (Budget, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.budget == nil {
+		return Budget{}, false
+	}
+	return *c.budget, true
+}
+
+// ReportTurn tells the core what a turn cost. A turn the stream cannot take
+// now waits for the next connection (the last maxOutbox are kept).
+func (c *Client) ReportTurn(t Turn) {
+	c.mu.Lock()
+	c.outbox = append(c.outbox, t)
+	if len(c.outbox) > maxOutbox {
+		c.outbox = c.outbox[len(c.outbox)-maxOutbox:]
+	}
+	c.mu.Unlock()
+	c.flush()
+}
+
+// ReportStats sends the supervisor's snapshot; it is dropped while the stream
+// is down, the next one replaces it.
+func (c *Client) ReportStats(s Stats) { _ = c.send(map[string]any{"stats": s}) }
+
+func (c *Client) send(v any) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if c.conn == nil {
+		return errors.New("the stream is down")
+	}
+	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return c.conn.WriteJSON(v)
+}
+
+// flush sends the waiting turns in order and keeps the ones that fail.
+func (c *Client) flush() {
+	for {
+		c.mu.Lock()
+		if len(c.outbox) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		t := c.outbox[0]
+		c.mu.Unlock()
+		if c.send(map[string]any{"turn": t}) != nil {
+			return
+		}
+		c.mu.Lock()
+		if len(c.outbox) > 0 {
+			c.outbox = c.outbox[1:]
+		}
+		c.mu.Unlock()
+	}
+}
+
 func (c *Client) add(f frame) {
 	c.mu.Lock()
+	if f.Name != "" {
+		c.pending.Name = f.Name
+	}
+	if f.Budget != nil {
+		b := *f.Budget
+		c.budget = &b
+		c.pending.Budget = true
+	}
 	c.pending.Hello = c.pending.Hello || f.Hello
 	c.pending.Issues = c.pending.Issues || f.Issues
 	for _, r := range f.Rooms {
@@ -111,6 +230,8 @@ type frame struct {
 	Hello  bool     `json:"hello"`
 	Issues bool     `json:"issues"`
 	Rooms  []string `json:"rooms"`
+	Name   string   `json:"name"`
+	Budget *Budget  `json:"budget"`
 }
 
 const (
@@ -165,6 +286,15 @@ func (c *Client) once(ctx context.Context) (up bool, err error) {
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	c.wmu.Lock()
+	c.conn = conn
+	c.wmu.Unlock()
+	defer func() {
+		c.wmu.Lock()
+		c.conn = nil
+		c.wmu.Unlock()
+	}()
+	c.flush()
 	_ = conn.SetReadDeadline(time.Now().Add(readIdle))
 	conn.SetPingHandler(func(string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(readIdle))

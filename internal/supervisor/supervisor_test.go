@@ -498,6 +498,34 @@ type fakeTrigger struct {
 	connected bool
 	pending   triggers.Pending
 	sig       chan struct{}
+	budget    *triggers.Budget
+	turns     []triggers.Turn
+	stats     []triggers.Stats
+}
+
+func (f *fakeTrigger) Budget() (triggers.Budget, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.budget == nil {
+		return triggers.Budget{}, false
+	}
+	return *f.budget, true
+}
+func (f *fakeTrigger) ReportTurn(t triggers.Turn) {
+	f.mu.Lock()
+	f.turns = append(f.turns, t)
+	f.mu.Unlock()
+}
+func (f *fakeTrigger) ReportStats(s triggers.Stats) {
+	f.mu.Lock()
+	f.stats = append(f.stats, s)
+	f.mu.Unlock()
+}
+func (f *fakeTrigger) setBudget(b triggers.Budget) {
+	f.mu.Lock()
+	f.budget = &b
+	f.mu.Unlock()
+	f.say(triggers.Pending{Budget: true})
 }
 
 func newFakeTrigger(connected bool) *fakeTrigger {
@@ -522,6 +550,10 @@ func (f *fakeTrigger) say(p triggers.Pending) {
 	f.pending.Hello = f.pending.Hello || p.Hello
 	f.pending.Issues = f.pending.Issues || p.Issues
 	f.pending.Rooms = append(f.pending.Rooms, p.Rooms...)
+	f.pending.Budget = f.pending.Budget || p.Budget
+	if p.Name != "" {
+		f.pending.Name = p.Name
+	}
 	f.mu.Unlock()
 	select {
 	case f.sig <- struct{}{}:
@@ -553,6 +585,53 @@ func TestStreamWakesTheAgentWithoutPolling(t *testing.T) {
 	if got := h.status().Triggers; got != "stream" {
 		t.Fatalf("triggers = %q", got)
 	}
+}
+
+func TestTurnsAreReportedToTheCoreWithTheirCounts(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("tokens", "100 120")
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.waitFor("turn report", func() bool { trig.mu.Lock(); defer trig.mu.Unlock(); return len(trig.turns) == 1 })
+	trig.mu.Lock()
+	tr := trig.turns[0]
+	trig.mu.Unlock()
+	if tr.Input != 100 || tr.Output != 120 || tr.Cached != 0 || tr.Model == "" || tr.Failed {
+		t.Fatalf("turn %+v", tr)
+	}
+	h.waitFor("stats", func() bool {
+		trig.mu.Lock()
+		defer trig.mu.Unlock()
+		for _, s := range trig.stats {
+			if s.Turns == 1 && s.Wakes["startup"] == 1 && s.Triggers == "stream" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestTheCoresCapHoldsTheSpotBackUntilItLifts(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	trig.mu.Lock()
+	trig.budget = &triggers.Budget{Spent: 1000, Cap: 1000, Blocked: true}
+	trig.mu.Unlock()
+	h.start()
+	defer h.stop()
+	h.waitFor("pause", func() bool { return h.status().State == "paused-ceiling" })
+	if h.turns() != 0 {
+		t.Fatalf("woke past the core's cap")
+	}
+	// The cap lifts (the operator raised it): the spot wakes at once, not at midnight.
+	trig.setBudget(triggers.Budget{Spent: 1000, Cap: 2000, Remaining: 1000})
+	h.waitIdle(1)
 }
 
 func TestSupervisorPollsAgainWhenTheStreamIsDown(t *testing.T) {
