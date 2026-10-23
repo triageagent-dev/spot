@@ -87,6 +87,9 @@ spec:
             - --core-tools={{ .Values.agent.coreTools }}
             - --chat-batch={{ .Values.agent.chatBatch }}
             - --max-edge-wakes-per-hour={{ int .Values.agent.maxEdgeWakesPerHour }}
+            {{- if .Values.agent.persistent }}
+            - --persistent
+            {{- end }}
             - --max-turns={{ .Values.agent.maxTurns }}
             - --turn-timeout={{ .Values.agent.turnTimeout }}
             - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}

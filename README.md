@@ -94,6 +94,36 @@ supervisor works without them.
    `status.json` and exits. The next start tells the agent its last turn was
    cut off. A killed pod resumes the same conversation from `/state`.
 
+## One process between turns
+
+By default each wake starts `claude -p`, resumes the session and exits. With
+`--persistent` (`agent.persistent`) the supervisor starts one process with
+`--input-format stream-json` and writes every turn to its stdin as a user
+message (`{"type":"user","message":{"role":"user","content":...},"parent_tool_use_id":null,"uuid":...}`),
+reading the stream until that turn's `result`. The supervisor itself is
+unchanged: it still decides when a turn runs, what it says, when the context
+is rotated and what a turn may spend.
+
+What was measured against the CLI (2.1.309), and what the code relies on:
+
+- `system/init` is written at the start of every turn, not once; the
+  permission mode and MCP server status checks work per turn as before.
+- `result.usage` is that turn's own usage; `total_cost_usd` is cumulative.
+- An interrupt (`{"type":"control_request","request_id":...,"request":{"subtype":"interrupt"}}`)
+  is answered with a `control_response` and then a `result` with subtype
+  `error_during_execution` and every count zero although the model had
+  answered; the runner then counts the assistant messages' usage instead.
+
+The process is replaced, and the session resumed, when a fresh conversation is
+asked for (a rotation), when another session is asked for, when the arguments
+change (the permission-mode fallback), when the MCP file changes (the core
+token rotated: it is read once at start), when the process exited or crashed,
+and after 12 hours. A turn past its timeout is interrupted and the process is
+kept; one that does not stop within the grace, and one that keeps failing
+authentication, is killed. Shutdown closes stdin and waits for it to exit.
+A chat message that arrives mid-turn still waits for the next wake: the loop is
+turn by turn, and queueing it into the running process is a later step.
+
 ## Names
 
 Two names meet. `--name` is the deployment's technical name (Deployment,
@@ -137,6 +167,8 @@ Flags only. No credential is a flag value or an environment variable.
 | `--name` | `<tenant>-spot` | spot name (messenger name, machine identity) |
 | `--core-mcp-url` | required | the core's `/mcp` (streamable HTTP) |
 | `--core-token-file` | required | file holding the core bearer token |
+| `--connectors-file` | none | JSON list of connectors, more MCP servers with the tools the spot may call (see Connectors) |
+| `--persistent` | off | keep one `claude` process alive between turns (see One process between turns) |
 | `--anthropic-auth` | `key` | `key` or `federation` (see How credentials flow) |
 | `--anthropic-key-file` | required with `key` | file holding the Anthropic API key; rejected with `federation` |
 | `--anthropic-identity-token-file` | required with `federation` | the projected identity token (a JWT), re-read on every exchange |

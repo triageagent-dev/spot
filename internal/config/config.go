@@ -27,8 +27,11 @@ type Config struct {
 	CoreTokenFile string
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
-	ConnectorsFile   string
-	Connectors       []Connector
+	ConnectorsFile string
+	Connectors     []Connector
+	// Persistent keeps one CLI process alive between turns (stream-json
+	// input) instead of starting one per turn.
+	Persistent       bool
 	AnthropicKeyFile string
 	// AnthropicAuth is "key" (a static API key read through apiKeyHelper) or
 	// "federation" (Workload Identity Federation: a projected identity token is
@@ -109,6 +112,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
 	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
+	fs.BoolVar(&c.Persistent, "persistent", false, "keep one claude process alive between turns, feeding it each turn over stdin (stream-json), instead of starting one per turn: no start-up per wake, an interrupt for a turn past its timeout; the process is replaced when the session, the permission mode or the MCP file changes")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --anthropic-auth=key, rejected otherwise)")
 	fs.StringVar(&c.AnthropicAuth, "anthropic-auth", AuthKey, "how the CLI authenticates to the Anthropic API: key or federation")

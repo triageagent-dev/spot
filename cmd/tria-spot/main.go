@@ -141,13 +141,20 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, ToolDetails: cfg.OtelToolDetails}
 		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
 	}
-	rn := runner.New(runner.Options{
+	ropts := runner.Options{
 		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
 		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
 		AllowedTools: allowed, DisallowedTools: disallowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
 		CoreMCPURL: cfg.CoreMCPURL, CoreTokenFile: cfg.CoreTokenFile,
 		EgoMCPURL: cfg.EgoMCPURL, EgoTokenFile: cfg.OtelTokenFile, Connectors: servers,
-	})
+	}
+	var rn supervisor.Turner = runner.New(ropts)
+	if cfg.Persistent {
+		pr := runner.NewPersistent(ropts)
+		defer pr.Close()
+		rn = pr
+		log.Info("one claude process is kept alive between turns")
+	}
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
 

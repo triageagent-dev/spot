@@ -333,6 +333,19 @@ func (r *Runner) env(o Options) []string {
 	return ScrubEnv(os.Environ(), append(extra, o.Env...)...)
 }
 
+// writeMCP renders the MCP file with the core token the file holds now.
+func writeMCP(o Options) error {
+	if o.CoreTokenFile == "" {
+		return nil
+	}
+	var extra []render.Server
+	if o.EgoMCPURL != "" {
+		extra = append(extra, render.Server{Name: render.EgoServerName, URL: o.EgoMCPURL, TokenFile: o.EgoTokenFile})
+	}
+	extra = append(extra, o.Connectors...)
+	return render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile, extra...)
+}
+
 // Run executes one turn with prompt on stdin, resuming resume if not empty.
 func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	start := time.Now()
@@ -345,16 +358,9 @@ func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 		}
 	}
 	// The token the file holds now, every turn.
-	if o.CoreTokenFile != "" {
-		var extra []render.Server
-		if o.EgoMCPURL != "" {
-			extra = append(extra, render.Server{Name: render.EgoServerName, URL: o.EgoMCPURL, TokenFile: o.EgoTokenFile})
-		}
-		extra = append(extra, o.Connectors...)
-		if err := render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile, extra...); err != nil {
-			res.Err = err
-			return res
-		}
+	if err := writeMCP(o); err != nil {
+		res.Err = err
+		return res
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, o.Timeout)

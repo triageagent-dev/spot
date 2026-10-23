@@ -29,6 +29,8 @@ type Usage struct {
 // input rate.
 func (u Usage) Billable() int64 { return u.InputTokens + u.OutputTokens + u.CacheCreationTokens }
 
+func (u Usage) zero() bool { return u == Usage{} }
+
 func (u *Usage) add(o Usage) {
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
@@ -73,9 +75,11 @@ type Summary struct {
 }
 
 // Tokens returns the invocation's usage: the result's if there was one, else
-// the sum over assistant messages.
+// the sum over assistant messages. An interrupted turn still writes a result,
+// but with every count zero although the model had answered; its assistant
+// messages are the truth then.
 func (s Summary) Tokens() Usage {
-	if s.GotResult {
+	if s.GotResult && !(s.ResultUsage.zero() && !s.AssistantUsage.zero()) {
 		return s.ResultUsage
 	}
 	return s.AssistantUsage
@@ -106,36 +110,71 @@ type line struct {
 // MaxLine bounds one stream line; tool results can be large.
 const MaxLine = 32 << 20
 
+// Accumulator reduces stream-json lines to a Summary: one invocation of
+// `claude -p`, or one turn of a process that stays alive between turns.
+type Accumulator struct {
+	s      Summary
+	perMsg map[string]Usage
+}
+
+// NewAccumulator returns an empty Accumulator.
+func NewAccumulator() *Accumulator { return &Accumulator{perMsg: map[string]Usage{}} }
+
+// Add reads one line. It reports whether the line was a result message, which
+// ends the turn. Lines that are not JSON objects are skipped: the CLI may
+// print a banner or a warning, and a parse error must not lose the result.
+func (a *Accumulator) Add(raw []byte) (result bool) {
+	var l line
+	if json.Unmarshal(raw, &l) != nil || l.Type == "" {
+		return false
+	}
+	a.s.apply(l, a.perMsg)
+	return l.Type == "result"
+}
+
+// Summary is what the lines so far reported.
+func (a *Accumulator) Summary() Summary {
+	s := a.s
+	s.AssistantUsage = Usage{}
+	for _, u := range a.perMsg {
+		s.AssistantUsage.add(u)
+	}
+	return s
+}
+
 // Parse reads r to EOF. Lines that are not JSON objects are skipped: the CLI
 // may print a banner or a warning, and a parse error must not lose the
 // result. onLine, if not nil, sees every raw line (for debug logging).
 func Parse(r io.Reader, onLine func([]byte)) (Summary, error) {
-	var s Summary
-	perMsg := map[string]Usage{}
-	br := bufio.NewReaderSize(r, 1<<20)
+	acc := NewAccumulator()
+	lr := NewLineReader(r)
 	for {
-		raw, err := readLine(br)
+		raw, err := lr.Next()
 		if len(raw) > 0 {
 			if onLine != nil {
 				onLine(raw)
 			}
-			var l line
-			if json.Unmarshal(raw, &l) == nil && l.Type != "" {
-				s.apply(l, perMsg)
-			}
+			acc.Add(raw)
 		}
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return s, err
+			return acc.Summary(), err
 		}
 	}
-	for _, u := range perMsg {
-		s.AssistantUsage.add(u)
-	}
-	return s, nil
+	return acc.Summary(), nil
 }
+
+// LineReader reads stream-json lines of any length up to MaxLine.
+type LineReader struct{ br *bufio.Reader }
+
+// NewLineReader wraps r.
+func NewLineReader(r io.Reader) *LineReader { return &LineReader{br: bufio.NewReaderSize(r, 1<<20)} }
+
+// Next returns one line without its newline and the read error, if any, with
+// the final partial line.
+func (l *LineReader) Next() ([]byte, error) { return readLine(l.br) }
 
 func (s *Summary) apply(l line, perMsg map[string]Usage) {
 	if l.SessionID != "" {

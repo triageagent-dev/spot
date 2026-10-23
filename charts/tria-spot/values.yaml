@@ -119,6 +119,7 @@ agent:
   edgeCooldown: 1m
   chatBatch: 10m              # how long a person's message that does not name the spot waits; 0s = every message wakes it
   maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
+  persistent: false           # keep one claude process alive between turns (stream-json over stdin) instead of one per turn
   maxTurns: 40
   turnTimeout: 20m
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling

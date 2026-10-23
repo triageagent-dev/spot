@@ -13,6 +13,8 @@ anthropic:
     ruleId: fdrl_example
     organizationId: 00000000-0000-0000-0000-000000000000
     serviceAccountId: svac_example
+agent:
+  persistent: true
 rbac:
   read:
     enabled: false
