@@ -155,7 +155,7 @@ func newHarness(t *testing.T, mut func(*config.Config)) *harness {
 		CoreTokenFile: tok, AnthropicKeyFile: key, StateDir: h.state, RunDir: h.run, ClaudeBin: bin,
 		MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour, MaxTurns: 7, TurnTimeout: 20 * time.Second,
 		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0, PermissionMode: "auto", FallbackPermMode: "dontAsk",
-		AnthropicAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", KubectlWritesHr: 5, HookBin: "/bin/tria-spot", LogLevel: "debug",
+		AnthropicAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", HookBin: "/bin/tria-spot", LogLevel: "debug",
 	}
 	if mut != nil {
 		mut(&h.cfg)
@@ -176,7 +176,7 @@ func (h *harness) start() {
 	h.t.Helper()
 	in := render.Input{RunDir: h.run, StateDir: h.state, CoreMCPURL: h.cfg.CoreMCPURL,
 		CoreTokenFile: h.cfg.CoreTokenFile, AnthropicKeyFile: h.cfg.AnthropicKeyFile, HookBin: h.cfg.HookBin,
-		KubectlWritesHr: h.cfg.KubectlWritesHr, Instruction: "system prompt"}
+		Instruction: "system prompt"}
 	if h.cfg.AnthropicAuth == config.AuthFederation {
 		in.AnthropicKeyFile = ""
 		in.Federation = &render.Federation{IdentityTokenFile: h.cfg.IdentityTokenFile, RuleID: "fdrl_example",

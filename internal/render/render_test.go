@@ -19,7 +19,7 @@ func setup(t *testing.T) (Input, string) {
 	return Input{
 		RunDir: run, StateDir: filepath.Join(d, "state"),
 		CoreMCPURL: "https://core.example.invalid/mcp", CoreTokenFile: tok, AnthropicKeyFile: key,
-		HookBin: "/usr/local/bin/tria-spot", KubectlWritesHr: 7, Instruction: "hello",
+		HookBin: "/usr/local/bin/tria-spot", Instruction: "hello",
 	}, d
 }
 
@@ -86,11 +86,8 @@ func TestRenderMCPAndSettingsContent(t *testing.T) {
 	if st["apiKeyHelper"] != p.KeyHelper {
 		t.Fatalf("apiKeyHelper = %v", st["apiKeyHelper"])
 	}
-	if !strings.Contains(string(sb), `"matcher": "Bash"`) || !strings.Contains(string(sb), "--kubectl-writes-per-hour") {
+	if !strings.Contains(string(sb), `"matcher": "Bash"`) {
 		t.Fatalf("hook not configured: %s", sb)
-	}
-	if strings.Contains(string(sb), "7\n") || !strings.Contains(string(sb), `"7"`) {
-		t.Fatalf("writes cap not rendered as an arg: %s", sb)
 	}
 }
 

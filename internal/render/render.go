@@ -30,10 +30,9 @@ type Input struct {
 	CoreTokenFile    string
 	AnthropicKeyFile string // key mode
 	// Federation mode: set Federation and leave AnthropicKeyFile empty.
-	Federation      *Federation
-	HookBin         string // absolute path of the tria-spot binary
-	KubectlWritesHr int
-	Instruction     string // the rendered system prompt
+	Federation  *Federation
+	HookBin     string // absolute path of the tria-spot binary
+	Instruction string // the rendered system prompt
 	// OtelTokenFile, when set, makes the CLI send its traces with a bearer
 	// token read from this file by a rendered helper (otelHeadersHelper).
 	OtelTokenFile string
@@ -178,7 +177,6 @@ func Settings(in Input, helperPath string) map[string]any {
 		"args": []string{
 			"hook", "pretool",
 			"--state-dir", in.StateDir,
-			"--kubectl-writes-per-hour", fmt.Sprint(in.KubectlWritesHr),
 		},
 		"timeout": 20,
 	}

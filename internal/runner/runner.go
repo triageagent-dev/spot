@@ -212,8 +212,8 @@ var CoreToolsDenied = []string{
 // DefaultAllowed is the --allowedTools list: reads, the notes directory and
 // next.json, the core tools the loop uses and the shell tools an
 // investigation needs. A cluster is reached through a connector (an MCP
-// server that holds its own credential), never through a shell: kubectl is
-// not here, see LocalKubectlRule. No tool that writes an arbitrary path is here:
+// server that holds its own credential), never through a shell: the image has
+// no kubectl. No tool that writes an arbitrary path is here:
 // echo, mkdir, sort and uniq can write files, so the agent keeps its notes
 // with Edit and Write.
 func DefaultAllowed(stateDir string) []string {
@@ -231,11 +231,6 @@ func DefaultAllowed(stateDir string) []string {
 		"Bash(wc *)", "Bash(date *)",
 	)
 }
-
-// LocalKubectlRule is the one rule that lets the spot run kubectl in its own
-// pod, bounded by the pod's ServiceAccount (--local-kubectl). Off by default:
-// a spot works on a cluster through its connectors.
-const LocalKubectlRule = "Bash(kubectl *)"
 
 // DefaultDisallowed is the --disallowedTools list: the web, subagents (their
 // usage is not in the result the ledger counts) and the core tools the spot
@@ -338,7 +333,7 @@ func (r *Runner) env(o Options) []string {
 		"DISABLE_ERROR_REPORTING=1",
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
 	}
-	// The image carries the CLI, kubectl and jq as ko kodata. Put that
+	// The image carries the CLI and jq as ko kodata. Put that
 	// directory first on the CLI's PATH so the agent's shell finds them.
 	if o.Telemetry != nil {
 		extra = append(extra, o.Telemetry.Env()...)

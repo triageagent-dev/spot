@@ -36,20 +36,19 @@ test: ## go test with the race detector
 build: ## Build bin/tria-spot
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/tria-spot
 
-# The image is built with ko only. The Claude Code CLI, kubectl and jq are
-# fetched into kodata, each checked against a pinned digest, and ko adds them
-# to the image under /var/run/ko (KO_DATA_PATH). README.md says where each pin
-# came from. All three are linux/amd64.
+# The image is built with ko only. The Claude Code CLI and jq are fetched into
+# kodata, each checked against a pinned digest, and ko adds them to the image
+# under /var/run/ko (KO_DATA_PATH). README.md says where each pin came from.
+# Both are linux/amd64. There is no kubectl in the image: a cluster is reached
+# through connectors.
 KODATA                ?= cmd/tria-spot/kodata
 CLAUDE_CODE_VERSION   ?= 2.1.304
 CLAUDE_CODE_INTEGRITY ?= sha512-yZ/zZk3y7e0zbkMs740y9Z+bs40MmWApwM9qHQ8Adis01SycQlyaZnHYhB/+UOeFJcL+hzbiIGCIyuTKyL2U7Q==
-KUBECTL_VERSION       ?= v1.37.1
-KUBECTL_SHA256        ?= 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
 JQ_VERSION            ?= 1.7.1
 JQ_SHA256             ?= 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
 
 .PHONY: kodata
-kodata: ## Fetch and verify the CLI, kubectl and jq into cmd/tria-spot/kodata
+kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	@mkdir -p $(KODATA)
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	 (cd "$$tmp" && npm pack "@anthropic-ai/claude-code-linux-x64@$(CLAUDE_CODE_VERSION)" --silent >/dev/null); \
@@ -57,13 +56,10 @@ kodata: ## Fetch and verify the CLI, kubectl and jq into cmd/tria-spot/kodata
 	 [ "$$got" = "$(CLAUDE_CODE_INTEGRITY)" ] || { echo "claude-code tarball digest $$got != pinned $(CLAUDE_CODE_INTEGRITY)"; exit 1; }; \
 	 tar -xzf "$$tmp"/*.tgz -C "$$tmp" package/claude; \
 	 install -m 0755 "$$tmp/package/claude" $(KODATA)/claude; \
-	 curl -fsSL -o "$$tmp/kubectl" "https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/linux/amd64/kubectl"; \
-	 echo "$(KUBECTL_SHA256)  $$tmp/kubectl" | shasum -a 256 -c -; \
-	 install -m 0755 "$$tmp/kubectl" $(KODATA)/kubectl; \
 	 curl -fsSL -o "$$tmp/jq" "https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-linux-amd64"; \
 	 echo "$(JQ_SHA256)  $$tmp/jq" | shasum -a 256 -c -; \
 	 install -m 0755 "$$tmp/jq" $(KODATA)/jq
-	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), kubectl $(KUBECTL_VERSION), jq $(JQ_VERSION)"
+	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), jq $(JQ_VERSION)"
 
 .PHONY: image
 image: kodata ## Build the image as an OCI layout in bin/image (pushes nothing)

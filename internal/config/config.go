@@ -88,8 +88,6 @@ type Config struct {
 	ExtraAllowed     string // comma-separated extra --allowedTools rules
 	ExtraDisallowed  string // comma-separated extra --disallowedTools rules
 	HeartbeatID      string
-	KubectlWritesHr  int
-	LocalKubectl     bool
 	HookBin          string // path of this binary, for the PreToolUse hook; default os.Executable
 }
 
@@ -156,8 +154,6 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.ExtraAllowed, "allowed-tools", "", "extra comma-separated --allowedTools rules")
 	fs.StringVar(&c.ExtraDisallowed, "disallowed-tools", "", "extra comma-separated --disallowedTools rules")
 	fs.StringVar(&c.HeartbeatID, "heartbeat-id", "", "memory cell id of the heartbeat; default system2-heartbeat-<tenant>")
-	fs.BoolVar(&c.LocalKubectl, "local-kubectl", false, "let the spot run kubectl in its own pod, bounded by the pod's ServiceAccount; off = a cluster is reached through connectors only")
-	fs.IntVar(&c.KubectlWritesHr, "kubectl-writes-per-hour", 20, "hook cap on mutating kubectl commands per hour")
 	fs.StringVar(&c.HookBin, "hook-bin", "", "path of the binary the PreToolUse hook runs; default this executable")
 	if err := fs.Parse(args); err != nil {
 		return c, err

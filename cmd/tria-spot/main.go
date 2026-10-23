@@ -1,6 +1,6 @@
 // Command tria-spot is the supervisor and container entrypoint of the Tria
 // spot (ADR-095): it wakes a Claude Code agent in turns, gives it the core's
-// MCP tools and a kubectl bounded by RBAC, and keeps its schedule, budget and
+// MCP tools and its connectors, and keeps its schedule, budget and
 // heartbeat. `tria-spot hook pretool` is the Claude Code PreToolUse hook.
 package main
 
@@ -63,18 +63,17 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 
 func hookCmd(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) == 0 || args[0] != "pretool" {
-		fmt.Fprintln(errOut, "usage: tria-spot hook pretool [--state-dir DIR] [--kubectl-writes-per-hour N]")
+		fmt.Fprintln(errOut, "usage: tria-spot hook pretool [--state-dir DIR]")
 		return 2
 	}
 	fs := flag.NewFlagSet("hook pretool", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	state := fs.String("state-dir", config.DefaultStateDir, "state directory (audit log and write counter)")
-	writesCap := fs.Int("kubectl-writes-per-hour", 20, "cap on mutating kubectl commands per hour; 0 = no cap")
+	state := fs.String("state-dir", config.DefaultStateDir, "state directory (audit log)")
 	if err := fs.Parse(args[1:]); err != nil {
 		// A broken hook invocation must not block the agent's tools.
 		return 0
 	}
-	return hook.Run(in, out, errOut, hook.Options{StateDir: *state, MaxPerHour: *writesCap})
+	return hook.Run(in, out, errOut, hook.Options{StateDir: *state})
 }
 
 func supervise(cfg config.Config, errOut io.Writer) int {
@@ -110,7 +109,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	paths, err := render.Render(render.Input{
 		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
-		HookBin: hookBin, KubectlWritesHr: cfg.KubectlWritesHr, OtelTokenFile: cfg.OtelTokenFile,
+		HookBin: hookBin, OtelTokenFile: cfg.OtelTokenFile,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 			Connectors: promptConnectors(cfg.Connectors),
@@ -122,10 +121,6 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
-	if cfg.LocalKubectl {
-		allowed = append(allowed, runner.LocalKubectlRule)
-		log.Info("local kubectl is on; the pod's ServiceAccount is the bound")
-	}
 	if cfg.EgoMCPURL != "" {
 		allowed = append(allowed, runner.EgoAllowed()...)
 	}
@@ -136,9 +131,6 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
 	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)
-	if !cfg.LocalKubectl {
-		disallowed = append(disallowed, runner.LocalKubectlRule)
-	}
 	if cfg.CoreTools == "all" {
 		allowed = append(allowed, runner.CoreAllTool)
 		log.Info("core tools: all of them; the core's Role is the bound")
@@ -196,7 +188,7 @@ func appendRules(base []string, extra string) []string {
 }
 
 // reapOrphans makes the supervisor reap re-parented children when it is PID 1
-// in the container: a kubectl or shell the CLI left behind after a kill would
+// in the container: a shell the CLI left behind after a kill would
 // otherwise stay a zombie. Only children the runner is not waiting on are
 // reaped here; exec.Cmd.Wait collects its own.
 func reapOrphans() {

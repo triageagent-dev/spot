@@ -22,16 +22,17 @@ func TestVersionAndUsage(t *testing.T) {
 	}
 }
 
-func TestHookSubcommandDeniesOverTheCap(t *testing.T) {
+func TestHookSubcommandAuditsAndAllows(t *testing.T) {
 	dir := t.TempDir()
-	ev := `{"session_id":"s","tool_name":"Bash","tool_input":{"command":"kubectl delete pod x"}}`
-	args := []string{"hook", "pretool", "--state-dir", dir, "--kubectl-writes-per-hour", "1"}
+	ev := `{"session_id":"s","tool_name":"Bash","tool_input":{"command":"ls /state"}}`
+	args := []string{"hook", "pretool", "--state-dir", dir}
 	var out, errOut bytes.Buffer
 	if code := run(args, strings.NewReader(ev), &out, &errOut); code != 0 || out.Len() != 0 {
-		t.Fatalf("first write: code %d out %q", code, out.String())
+		t.Fatalf("code %d out %q", code, out.String())
 	}
-	if code := run(args, strings.NewReader(ev), &out, &errOut); code != 0 || !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("second write must be denied: code %d out %q", code, out.String())
+	b, err := os.ReadFile(filepath.Join(dir, "supervisor", "audit.log"))
+	if err != nil || !strings.Contains(string(b), "ls /state") {
+		t.Fatalf("not audited: %v %s", err, b)
 	}
 }
 

@@ -118,10 +118,6 @@ spec:
             - --otel-tool-details
             {{- end }}
             {{- end }}
-            {{- if .Values.agent.localKubectl }}
-            - --local-kubectl
-            {{- end }}
-            - --kubectl-writes-per-hour={{ .Values.agent.kubectlWritesPerHour }}
             - --log-level={{ .Values.agent.logLevel }}
             {{- if .Values.agent.logContent }}
             - --log-content
