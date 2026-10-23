@@ -101,7 +101,13 @@ spec:
             {{- end }}
             {{- if .Values.telemetry.enabled }}
             - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
+            {{- if .Values.telemetry.tenant }}
             - --otel-tenant={{ .Values.telemetry.tenant }}
+            {{- end }}
+            {{- if .Values.telemetry.tenantName }}
+            - --otel-tenant-name={{ .Values.telemetry.tenantName | quote }}
+            {{- end }}
+            - --otel-tenant-attr={{ .Values.telemetry.tenantAttr }}
             {{- if .Values.telemetry.mcpUrl }}
             - --ego-mcp-url={{ .Values.telemetry.mcpUrl }}
             {{- end }}

@@ -170,14 +170,25 @@ func TestTelemetryAndBudgetFlags(t *testing.T) {
 	}
 }
 
-func TestOtelTenantDefaultsToOneTenantForEverySpot(t *testing.T) {
+func TestEachSpotIsItsOwnTenantInEgo(t *testing.T) {
 	c, err := Parse(required, io.Discard)
-	if err != nil || c.OtelTenant != "tria-spot" {
-		t.Fatalf("default ego tenant = %q, %v", c.OtelTenant, err)
+	if err != nil || c.OtelTenant != c.Name || c.OtelTenantName != c.Name || c.OtelTenantAttr != "triage.tenant" {
+		t.Fatalf("defaults: label %q name %q attr %q, %v", c.OtelTenant, c.OtelTenantName, c.OtelTenantAttr, err)
 	}
-	c, err = Parse(append(append([]string{}, required...), "--otel-tenant", "example"), io.Discard)
-	if err != nil || c.OtelTenant != "example" {
-		t.Fatalf("override = %q, %v", c.OtelTenant, err)
+	with := func(extra ...string) (Config, error) {
+		return Parse(append(append(append([]string{}, required...), "--otel-endpoint", "http://ego.example.svc:4318"), extra...), io.Discard)
+	}
+	c, err = with("--otel-tenant", "example", "--otel-tenant-name", "Example workspace")
+	if err != nil || c.OtelTenant != "example" || c.OtelTenantName != "Example workspace" {
+		t.Fatalf("override = %q %q, %v", c.OtelTenant, c.OtelTenantName, err)
+	}
+	for _, bad := range [][]string{
+		{"--otel-tenant", "a b"}, {"--otel-tenant", "a,b"}, {"--otel-tenant", "a|b"},
+		{"--otel-tenant-name", strings.Repeat("x", 81)}, {"--otel-tenant-name", " padded"}, {"--otel-tenant-name", "a,b"},
+	} {
+		if _, err := with(bad...); err == nil {
+			t.Errorf("%v must be refused: ego would drop it silently", bad)
+		}
 	}
 }
 

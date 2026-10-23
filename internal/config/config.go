@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Config is the supervisor's complete configuration.
@@ -69,7 +71,9 @@ type Config struct {
 	OtelEndpoint    string
 	OtelTokenFile   string
 	OtelToolDetails bool   // add tool parameters (Bash commands, file paths) to spans
-	OtelTenant      string // the ego.tenant label of the spans
+	OtelTenant      string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
+	OtelTenantAttr  string // the attribute ego reads the label from (ego's --usage-tenant-attr)
+	OtelTenantName  string // the display name ego shows for that tenant (default: the label)
 	// EgoMCPURL is ego's MCP endpoint; the spot reads its sessions, usage and
 	// findings there with the same sender token (--otel-token-file).
 	EgoMCPURL string
@@ -141,7 +145,9 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
 	fs.StringVar(&c.CoreTools, "core-tools", "curated", "curated: the core tools the loop names, destructive ones refused; all: every core tool Tria has, bounded by the core Role")
 	fs.StringVar(&c.EgoMCPURL, "ego-mcp-url", "", "ego's MCP endpoint (for example http://ego.<ns>.svc:8001/mcp), read with the --otel-token-file token; empty = no ego tools")
-	fs.StringVar(&c.OtelTenant, "otel-tenant", "tria-spot", "the ego.tenant the CLI's traces carry, so every spot lands under one tenant in ego")
+	fs.StringVar(&c.OtelTenant, "otel-tenant", "", "the tenant label the CLI's traces carry in ego (letters, digits, dots, dashes, underscores); default the spot's name, so each spot is its own tenant")
+	fs.StringVar(&c.OtelTenantAttr, "otel-tenant-attr", "triage.tenant", "the span attribute ego reads the tenant label from (ego's --usage-tenant-attr)")
+	fs.StringVar(&c.OtelTenantName, "otel-tenant-name", "", "the display name ego shows for the tenant (ego.tenant.name, at most 80 characters); default the label")
 	fs.BoolVar(&c.OtelToolDetails, "otel-tool-details", false, "add tool parameters (Bash commands, file paths) to trace spans; off, spans carry names and timings only")
 	fs.BoolVar(&c.LogContent, "log-content", false, "let debug logs carry message, issue and model text; off, no log line carries any")
 	fs.StringVar(&c.PermissionMode, "permission-mode", "auto", "CLI permission mode: auto, dontAsk or acceptEdits")
@@ -165,12 +171,22 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	return c, c.Validate()
 }
 
+// otelLabel is what ego accepts as a tenant label and what an attribute name
+// may be made of.
+var otelLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 func (c *Config) applyDefaults() {
 	if c.Name == "" && c.Tenant != "" {
 		c.Name = c.Tenant + "-spot"
 	}
 	if c.HeartbeatID == "" && c.Tenant != "" {
 		c.HeartbeatID = "system2-heartbeat-" + c.Tenant
+	}
+	if c.OtelTenant == "" {
+		c.OtelTenant = c.Name
+	}
+	if c.OtelTenantName == "" {
+		c.OtelTenantName = c.OtelTenant
 	}
 }
 
@@ -236,6 +252,19 @@ func (c *Config) Validate() error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("--anthropic-auth %q is not one of key, federation", c.AnthropicAuth))
+	}
+	if c.OtelEndpoint != "" {
+		// ego keys a tenant by sender/label and uses the label in grants, which
+		// split on spaces, commas and bars; a name it cannot take it drops silently.
+		if !otelLabel.MatchString(c.OtelTenant) {
+			errs = append(errs, fmt.Errorf("--otel-tenant %q must be letters, digits, dots, dashes or underscores", c.OtelTenant))
+		}
+		if !otelLabel.MatchString(c.OtelTenantAttr) {
+			errs = append(errs, fmt.Errorf("--otel-tenant-attr %q is not an attribute name", c.OtelTenantAttr))
+		}
+		if n := c.OtelTenantName; len([]rune(n)) > 80 || strings.TrimSpace(n) != n || strings.ContainsFunc(n, unicode.IsControl) || strings.ContainsAny(n, ",=") {
+			errs = append(errs, fmt.Errorf("--otel-tenant-name must be at most 80 characters, trimmed, with no control characters, commas or equals signs"))
+		}
 	}
 	req(c.StateDir, "state-dir")
 	req(c.RunDir, "run-dir")

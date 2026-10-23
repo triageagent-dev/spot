@@ -71,8 +71,26 @@ type Options struct {
 type Telemetry struct {
 	Endpoint    string // OTLP/HTTP base URL, for example http://ego.<ns>.svc:4318
 	Service     string // service.name, gen_ai.agent.name and ego.thread (the spot is one thread across rotations)
-	Tenant      string // ego.tenant
+	Tenant      string // the tenant label ego files the spans under
+	TenantAttr  string // the attribute ego reads the label from (ego's --usage-tenant-attr; triage.tenant on a core's ego)
+	TenantName  string // ego.tenant.name: the text ego shows for the tenant
 	ToolDetails bool   // tool parameters on spans; off, names and timings only
+}
+
+// resourceAttributes is the tenant label under the attribute ego reads it from
+// (ego.tenant is not one ego reads on a core's ego, so a spot sent under it lands in
+// the sender's default tenant), its display name, and the spot as one agent and
+// one thread across context rotations.
+func (t Telemetry) resourceAttributes() string {
+	attr := t.TenantAttr
+	if attr == "" {
+		attr = "triage.tenant"
+	}
+	name := t.TenantName
+	if name == "" {
+		name = t.Tenant
+	}
+	return attr + "=" + t.Tenant + ",ego.tenant.name=" + name + ",gen_ai.agent.name=" + t.Service + ",ego.thread=" + t.Service
 }
 
 // Env returns the CLI's telemetry environment. None of it is secret.
@@ -86,7 +104,7 @@ func (t Telemetry) Env() []string {
 		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
 		"OTEL_EXPORTER_OTLP_ENDPOINT=" + t.Endpoint,
 		"OTEL_SERVICE_NAME=" + t.Service,
-		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=" + t.Tenant + ",gen_ai.agent.name=" + t.Service + ",ego.thread=" + t.Service, // one thread across context rotations
+		"OTEL_RESOURCE_ATTRIBUTES=" + t.resourceAttributes(),
 	}
 	if t.ToolDetails {
 		env = append(env, "OTEL_LOG_TOOL_DETAILS=1")

@@ -158,13 +158,13 @@ func TestEnvPutsKoDataFirstOnPath(t *testing.T) {
 
 func TestTelemetryEnvCarriesNoSecret(t *testing.T) {
 	o := opts()
-	o.Telemetry = &Telemetry{Endpoint: "http://ego.example.svc:4318", Service: "example-spot", Tenant: "tenant-a"}
+	o.Telemetry = &Telemetry{Endpoint: "http://ego.example.svc:4318", Service: "example-spot", Tenant: "tenant-a", TenantName: "Tenant A"}
 	env := strings.Join(New(o).Env(), "\n")
 	for _, want := range []string{
 		"CLAUDE_CODE_ENABLE_TELEMETRY=1", "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1", "OTEL_TRACES_EXPORTER=otlp",
 		"OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
 		"OTEL_EXPORTER_OTLP_ENDPOINT=http://ego.example.svc:4318", "OTEL_SERVICE_NAME=example-spot",
-		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=tenant-a,gen_ai.agent.name=example-spot,ego.thread=example-spot",
+		"OTEL_RESOURCE_ATTRIBUTES=triage.tenant=tenant-a,ego.tenant.name=Tenant A,gen_ai.agent.name=example-spot,ego.thread=example-spot",
 	} {
 		if !strings.Contains(env, want) {
 			t.Errorf("missing %s", want)

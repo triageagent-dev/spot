@@ -423,9 +423,17 @@ With `telemetry.enabled` (flag `--otel-endpoint`) the CLI exports its own
 OpenTelemetry traces (beta in the CLI: `CLAUDE_CODE_ENABLE_TELEMETRY` and
 `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`, protocol http/protobuf). The supervisor
 sets these in the CLI's environment, so the pod still carries no environment
-variable. Resource attributes are `ego.tenant=tria-spot` (`telemetry.tenant`, flag
-`--otel-tenant`, one tenant in ego for every spot) and
-`gen_ai.agent.name=<spot name>`; `service.name` is the spot name. Spans:
+variable. Resource attributes are the tenant label under the attribute ego reads it from
+(`triage.tenant=<label>`: `telemetry.tenant`, flag `--otel-tenant`, default the
+spot's name, so each spot is its own tenant in ego; `telemetry.tenantAttr`, flag
+`--otel-tenant-attr`, is ego's `--usage-tenant-attr`), its display name
+(`ego.tenant.name=<name>`: `telemetry.tenantName`, flag `--otel-tenant-name`,
+default the label; ego keeps the first name it sees for a tenant and drops an
+invalid one silently, so the spot refuses a name over 80 characters, with
+control characters, commas or equals signs) and `gen_ai.agent.name=<spot name>`;
+`service.name` is the spot name. The tenant in ego is `<sender>/<label>`, the
+sender coming from the token; a token an ego admin minted bound to a tenant
+decides the tenant itself and these attributes only repeat it. Spans:
 `claude_code.interaction` per wake, with `llm_request` (model, input, output,
 cache-read and cache-creation tokens, stop reason, errors) and `tool` spans
 under it. The sender's bearer token is a Secret mounted as a file

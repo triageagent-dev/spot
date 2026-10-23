@@ -100,7 +100,9 @@ connectors: []
 telemetry:
   enabled: false
   endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
-  tenant: tria-spot            # the ego.tenant label of the spans
+  tenant: ""                   # the tenant label of the spans in ego; empty = the spot's name, so each spot is its own tenant (letters, digits, dots, dashes, underscores)
+  tenantName: ""               # the text ego shows for that tenant (ego.tenant.name, at most 80 characters, kept from the first span); empty = the label
+  tenantAttr: triage.tenant    # the attribute ego reads the label from (ego's --usage-tenant-attr)
   mcpUrl: ""                   # ego's MCP endpoint (e.g. http://<service>.<namespace>.svc:8001/mcp); with it the spot reads sessions, usage and findings through the same token. Add its port to networkPolicy.telemetry.ports
   tokenSecret:
     name: ""

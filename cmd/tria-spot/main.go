@@ -138,7 +138,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 	var tel *runner.Telemetry
 	if cfg.OtelEndpoint != "" {
-		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, ToolDetails: cfg.OtelToolDetails}
+		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, TenantAttr: cfg.OtelTenantAttr, TenantName: cfg.OtelTenantName, ToolDetails: cfg.OtelToolDetails}
 		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
 	}
 	ropts := runner.Options{
