@@ -164,7 +164,7 @@ func TestTelemetryEnvCarriesNoSecret(t *testing.T) {
 		"CLAUDE_CODE_ENABLE_TELEMETRY=1", "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1", "OTEL_TRACES_EXPORTER=otlp",
 		"OTEL_METRICS_EXPORTER=none", "OTEL_LOGS_EXPORTER=none", "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
 		"OTEL_EXPORTER_OTLP_ENDPOINT=http://ego.example.svc:4318", "OTEL_SERVICE_NAME=example-spot",
-		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=tenant-a,gen_ai.agent.name=example-spot",
+		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=tenant-a,gen_ai.agent.name=example-spot,ego.thread=example-spot",
 	} {
 		if !strings.Contains(env, want) {
 			t.Errorf("missing %s", want)

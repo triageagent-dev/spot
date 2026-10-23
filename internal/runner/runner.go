@@ -67,7 +67,7 @@ type Options struct {
 // Telemetry configures the CLI's OTLP trace export (https://code.claude.com/docs/en/monitoring-usage).
 type Telemetry struct {
 	Endpoint    string // OTLP/HTTP base URL, for example http://ego.<ns>.svc:4318
-	Service     string // service.name and gen_ai.agent.name
+	Service     string // service.name, gen_ai.agent.name and ego.thread (the spot is one thread across rotations)
 	Tenant      string // ego.tenant
 	ToolDetails bool   // tool parameters on spans; off, names and timings only
 }
@@ -83,7 +83,7 @@ func (t Telemetry) Env() []string {
 		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
 		"OTEL_EXPORTER_OTLP_ENDPOINT=" + t.Endpoint,
 		"OTEL_SERVICE_NAME=" + t.Service,
-		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=" + t.Tenant + ",gen_ai.agent.name=" + t.Service,
+		"OTEL_RESOURCE_ATTRIBUTES=ego.tenant=" + t.Tenant + ",gen_ai.agent.name=" + t.Service + ",ego.thread=" + t.Service, // one thread across context rotations
 	}
 	if t.ToolDetails {
 		env = append(env, "OTEL_LOG_TOOL_DETAILS=1")
