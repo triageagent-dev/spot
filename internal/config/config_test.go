@@ -197,17 +197,16 @@ func TestNoFederationSecretFlags(t *testing.T) {
 
 func TestTelemetryAndBudgetFlags(t *testing.T) {
 	c, err := Parse(append(append([]string{}, required...),
-		"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/secrets/otel/token", "--otel-tool-details"), io.Discard)
+		"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/secrets/otel/token", "--otel-content=false"), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.OtelEndpoint != "http://ego.example.svc:4318" || c.OtelTokenFile != "/secrets/otel/token" || !c.OtelToolDetails {
+	if c.OtelEndpoint != "http://ego.example.svc:4318" || c.OtelTokenFile != "/secrets/otel/token" || c.OtelContent {
 		t.Fatalf("%+v", c)
 	}
 	for name, extra := range map[string][]string{
-		"token file without an endpoint":   {"--otel-token-file", "/t"},
-		"tool details without an endpoint": {"--otel-tool-details"},
-		"endpoint without a scheme":        {"--otel-endpoint", "ego:4318"},
+		"token file without an endpoint": {"--otel-token-file", "/t"},
+		"endpoint without a scheme":      {"--otel-endpoint", "ego:4318"},
 	} {
 		if _, err := Parse(append(append([]string{}, required...), extra...), io.Discard); err == nil {
 			t.Errorf("%s: want an error", name)

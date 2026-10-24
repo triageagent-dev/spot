@@ -132,7 +132,9 @@ What we gain:
 - **Choice of model route.** The same loop runs on Anthropic's API (key or
   federation) or on Vertex AI.
 - **Our own telemetry.** Spans follow the GenAI conventions and carry the
-  fields ego needs, instead of whatever the CLI exported.
+  fields ego needs, instead of whatever the CLI exported. By default they also
+  carry the turn's messages, tool arguments and results, which the receiver
+  needs to evaluate a turn; an install that must not send them turns that off.
 - **A spot that can be cloned.** With no state worth keeping in the pod, a
   sandbox platform can start many from one image.
 

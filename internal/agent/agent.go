@@ -249,10 +249,11 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 			res.Err = err
 			return res
 		}
-		chat := root.Chat(a.o.Model)
-		resp, err := a.o.LLM.Complete(ctx, llm.Request{
+		req := llm.Request{
 			System: a.o.System, Messages: msgs, Tools: defs, MaxTokens: a.o.MaxTokens, Effort: a.o.Effort,
-		})
+		}
+		chat := root.Chat(a.o.Model, req)
+		resp, err := a.o.LLM.Complete(ctx, req)
 		chat.End(resp, err)
 		if err != nil {
 			res.Err = err

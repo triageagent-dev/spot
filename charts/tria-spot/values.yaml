@@ -115,8 +115,10 @@ connectors: []
 # The spot's own OpenTelemetry spans (one per wake, per model request and per
 # tool call), sent to an OTLP/HTTP endpoint such as ego. The sender's token is a
 # Secret mounted as a file and read at every export; no variable carries it.
-# Spans hold names, timings and token counts; toolDetails adds tool arguments
-# and results. Prompts and answers are added only by agent.logContent.
+# Spans hold names, timings and token counts and, with content on (the default),
+# the turn's prompts, answers, tool arguments and tool results: the receiver
+# builds a conversation turn from them and cannot evaluate one without. Set
+# content to false to send names, timings and token counts only.
 telemetry:
   enabled: false
   endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
@@ -127,7 +129,7 @@ telemetry:
   tokenSecret:
     name: ""
     key: token
-  toolDetails: false
+  content: true
 
 # Supervisor settings (see the README for each flag).
 agent:
@@ -145,7 +147,7 @@ agent:
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
   # text at any level. true lets debug logs include it (tool input and the
-  # model's text) and puts the first prompt and the final text on the root span.
+  # model's text). What the spans carry is telemetry.content.
   logContent: false
   heartbeatId: ""             # default system2-heartbeat-<tenant>
 

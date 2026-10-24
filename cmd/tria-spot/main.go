@@ -83,14 +83,14 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	tel, err := telemetry.New(ctx, telemetry.Options{
 		Endpoint: cfg.OtelEndpoint, TokenFile: cfg.OtelTokenFile, Name: cfg.Name,
 		Tenant: cfg.OtelTenant, TenantAttr: cfg.OtelTenantAttr, TenantName: cfg.OtelTenantName,
-		ToolDetails: cfg.OtelToolDetails, LogContent: cfg.LogContent, Provider: cfg.LLMProvider,
+		Content: cfg.OtelContent, Provider: cfg.LLMProvider,
 	})
 	if err != nil {
 		log.Error("telemetry", "err", err)
 		return 1
 	}
 	if tel != nil {
-		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
+		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "content", cfg.OtelContent)
 		defer func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

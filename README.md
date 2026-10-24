@@ -324,9 +324,9 @@ Flags only. No credential is a flag value or an environment variable.
 | `--otel-tenant` | the spot's name | tenant label of the spans in ego |
 | `--otel-tenant-attr` | `triage.tenant` | the attribute ego reads the label from |
 | `--otel-tenant-name` | the label | display name ego shows for the tenant |
-| `--otel-tool-details` | off | add tool arguments and results to the spans |
+| `--otel-content` | `true` | put the turn's content on the spans: prompts, answers, tool arguments and results; `--otel-content=false` leaves names, timings and token counts |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `--log-content` | off | let debug logs carry message, issue, tool input and model text, and the spans carry the first prompt and the final text |
+| `--log-content` | off | let debug logs carry message, issue, tool input and model text (the spans are governed by `--otel-content`) |
 
 `tria-spot version` prints the build.
 
@@ -479,18 +479,41 @@ Spans, per turn:
   `gen_ai.conversation.id` (a fresh UUID per turn), `gen_ai.agent.name` and
   `tria.wake.reason`;
 - `chat <model>` for each model request: `gen_ai.provider.name` (`anthropic` or `gemini`),
-  the request and response model, `gen_ai.usage.input_tokens` (the uncached
-  input), `output_tokens`, `cache_read.input_tokens`,
-  `cache_creation.input_tokens`, `gen_ai.response.finish_reasons`;
+  the request and response model, `gen_ai.usage.input_tokens` (the whole
+  prompt of the call: uncached input plus cache reads plus cache writes, which
+  is how ego counts a call), `output_tokens`, `cache_read.input_tokens` and
+  `cache_creation.input_tokens` (the split ego prices with),
+  `gen_ai.response.finish_reasons`;
 - `execute_tool <name>` for each tool call: `gen_ai.tool.name`,
   `gen_ai.tool.call.id`, an error status when the tool errored.
 
-Prompts, answers and tool parameters are not added by default.
-`--otel-tool-details` adds `gen_ai.tool.call.arguments` and
-`gen_ai.tool.call.result`; `--log-content` adds the first prompt as
-`gen_ai.input.messages` and the final text as `gen_ai.output.messages` on the
-root. The traces carry no spend control: that is the spend limit on the model
-credential and the supervisor's `--daily-token-ceiling`.
+**Content.** By default (`telemetry.content: true`, `--otel-content`) the spans
+carry what the turn said and did, because ego builds one conversation turn per
+`invoke_agent` root span and cannot evaluate a turn without it: the receiver
+gets the prompts, the answers, and every tool call's arguments and result.
+Set `telemetry.content: false` (`--otel-content=false`) to send names, timings
+and token counts only; then none of the attributes below is set, and ego
+reports a turn it cannot score. Do this when the workspace's data must not
+leave the pod for the receiver.
+
+- Each `chat` span carries `gen_ai.input.messages`, the request's messages as a
+  JSON array in the GenAI shape (`role`, and `parts` of `text`, `tool_call` and
+  `tool_call_response`; thinking is left out), and `gen_ai.output.messages`, the
+  answer as one assistant message. The first `chat` span of a turn also carries
+  `gen_ai.system_instructions`, the system prompt.
+- Each `execute_tool` span carries `gen_ai.tool.call.arguments` (the input as a
+  JSON object string) and `gen_ai.tool.call.result`
+  (`{"result": <text>, "isError": <bool>}` as a string).
+- The root span carries the wake prompt as `gen_ai.input.messages` and the final
+  text as `gen_ai.output.messages`, which the receiver falls back to.
+- An attribute value is cut at 64 KiB. A message array loses its oldest
+  messages first and starts with a user message saying how many were left out,
+  so the latest message and the answer survive; a single long string is cut in
+  the middle with a marker.
+
+`--log-content` is separate: it governs only the process log. The traces carry
+no spend control: that is the spend limit on the model credential and the
+supervisor's `--daily-token-ceiling`.
 
 ## Spend
 

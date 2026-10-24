@@ -77,12 +77,12 @@ type Config struct {
 
 	// Telemetry: the spot's own OpenTelemetry spans go to an OTLP/HTTP
 	// endpoint (ego). The sender token is a file, never an environment value.
-	OtelEndpoint    string
-	OtelTokenFile   string
-	OtelToolDetails bool   // add tool arguments and results to spans
-	OtelTenant      string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
-	OtelTenantAttr  string // the attribute ego reads the label from (ego's --usage-tenant-attr)
-	OtelTenantName  string // the display name ego shows for that tenant (default: the label)
+	OtelEndpoint   string
+	OtelTokenFile  string
+	OtelContent    bool   // put the turn's messages, tool arguments and results on the spans (the receiver evaluates from them)
+	OtelTenant     string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
+	OtelTenantAttr string // the attribute ego reads the label from (ego's --usage-tenant-attr)
+	OtelTenantName string // the display name ego shows for that tenant (default: the label)
 	// EgoMCPURL is ego's MCP endpoint; the spot reads its sessions, usage and
 	// findings there with the same sender token (--otel-token-file).
 	EgoMCPURL string
@@ -160,7 +160,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.OtelTenant, "otel-tenant", "", "the tenant label the spot's traces carry in ego (letters, digits, dots, dashes, underscores); default the spot's name, so each spot is its own tenant")
 	fs.StringVar(&c.OtelTenantAttr, "otel-tenant-attr", "triage.tenant", "the span attribute ego reads the tenant label from (ego's --usage-tenant-attr)")
 	fs.StringVar(&c.OtelTenantName, "otel-tenant-name", "", "the display name ego shows for the tenant (ego.tenant.name, at most 80 characters); default the label")
-	fs.BoolVar(&c.OtelToolDetails, "otel-tool-details", false, "add tool arguments and results to trace spans; off, spans carry names, timings and token counts only")
+	fs.BoolVar(&c.OtelContent, "otel-content", true, "put the turn's content on the trace spans: the prompts, the answers, the tool arguments and results, which the receiver needs to evaluate a turn; --otel-content=false leaves names, timings and token counts only")
 	fs.BoolVar(&c.LogContent, "log-content", false, "let debug logs carry message, issue, tool input and model text; off, no log line carries any")
 	fs.StringVar(&c.HeartbeatID, "heartbeat-id", "", "memory cell id of the heartbeat; default system2-heartbeat-<tenant>")
 	if err := fs.Parse(args); err != nil {
@@ -225,8 +225,8 @@ func (c *Config) Validate() error {
 	if c.EgoMCPURL != "" && !strings.HasPrefix(c.EgoMCPURL, "http://") && !strings.HasPrefix(c.EgoMCPURL, "https://") {
 		errs = append(errs, errors.New("--ego-mcp-url must be an http:// or https:// URL"))
 	}
-	if c.OtelEndpoint == "" && (c.OtelTokenFile != "" || c.OtelToolDetails) {
-		errs = append(errs, errors.New("--otel-token-file and --otel-tool-details need --otel-endpoint"))
+	if c.OtelEndpoint == "" && c.OtelTokenFile != "" {
+		errs = append(errs, errors.New("--otel-token-file needs --otel-endpoint"))
 	}
 	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))

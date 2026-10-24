@@ -120,9 +120,7 @@ spec:
             {{- if .Values.telemetry.tokenSecret.name }}
             - --otel-token-file=/secrets/otel/{{ .Values.telemetry.tokenSecret.key }}
             {{- end }}
-            {{- if .Values.telemetry.toolDetails }}
-            - --otel-tool-details
-            {{- end }}
+            - --otel-content={{ .Values.telemetry.content }}
             {{- end }}
             - --log-level={{ .Values.agent.logLevel }}
             {{- if .Values.agent.logContent }}
