@@ -181,14 +181,14 @@ func TestUnreachableCoreErrors(t *testing.T) {
 // milliseconds, the cursor is the newest ts, and it is sent back as since_ts).
 func TestParseRoomCoreShape(t *testing.T) {
 	reply := `{"room":"team","messages":[` +
-		`{"id":"$a","sender":"@u.den:srv","name":"den","body":"hey","ts":1792672900123},` +
+		`{"id":"$a","sender":"@u.alice:srv","name":"alice","body":"hey","ts":1792672900123},` +
 		`{"id":"$b","sender":"@u.spot.t:srv","name":"t-spot","body":"hi","ts":1792672901123,"spot":"t-spot","hop":0},` +
 		`{"id":"$c","sender":"@tria:srv","name":"Tria","body":"ok","ts":1792672902123,"tria":true}]}`
 	m, next, err := ParseRoom(reply, "")
 	if err != nil || len(m) != 3 {
 		t.Fatalf("%+v %v", m, err)
 	}
-	if next != "1792672902123" || m[0].TS != 1792672900123 || m[0].Name != "den" || m[1].Spot != "t-spot" || !m[2].Tria {
+	if next != "1792672902123" || m[0].TS != 1792672900123 || m[0].Name != "alice" || m[1].Spot != "t-spot" || !m[2].Tria {
 		t.Fatalf("next=%q msgs=%+v", next, m)
 	}
 	// An empty read keeps the cursor.
@@ -198,7 +198,7 @@ func TestParseRoomCoreShape(t *testing.T) {
 }
 
 func TestParseRoomShowsAnAttachment(t *testing.T) {
-	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.den:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.den:s","body":"hi","ts":6}]}`, "")
+	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.alice:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.alice:s","body":"hi","ts":6}]}`, "")
 	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {
 		t.Fatalf("%+v %v", m, err)
 	}
