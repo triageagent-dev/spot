@@ -23,29 +23,36 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    {{- if eq .Values.llm.auth "vertex" }}
-    # Claude on Vertex AI: the Google API addresses you name, and the node's
-    # metadata server that hands out the Workload Identity token.
+    {{- $llm := .Values.llm }}
+    {{- $google := or (eq $llm.provider "gemini") (eq $llm.auth "vertex") }}
+    {{- if $google }}
+    # Google's APIs: the Gemini API (provider gemini with a key), Vertex AI
+    # (either provider) and the token endpoints: the addresses you name.
     - to:
-        {{- if not $np.vertex.cidrs }}{{ fail "networkPolicy.vertex.cidrs must list the addresses of the Google APIs the pod may reach when llm.auth is vertex" }}{{ end }}
-        {{- range $np.vertex.cidrs }}
+        {{- if not $np.google.cidrs }}{{ fail "networkPolicy.google.cidrs must list the addresses of the Google APIs the pod may reach when llm.provider is gemini or llm.auth is vertex" }}{{ end }}
+        {{- range $np.google.cidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
       ports:
-        {{- range $np.vertex.ports }}
+        {{- range $np.google.ports }}
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
+    {{- end }}
+    {{- if eq $llm.auth "vertex" }}
+    # Application default credentials: the node's metadata server hands out the
+    # Workload Identity token.
     - to:
-        {{- range $np.vertex.metadata.cidrs }}
+        {{- range $np.google.metadata.cidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
       ports:
-        {{- range $np.vertex.metadata.ports }}
+        {{- range $np.google.metadata.ports }}
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
-    {{- else }}
+    {{- end }}
+    {{- if and (eq $llm.provider "anthropic") (ne $llm.auth "vertex") }}
     # The Anthropic API.
     - to:
         {{- range $np.anthropic.cidrs }}

@@ -2,8 +2,11 @@
 {{- $name := include "tria-spot.name" . }}
 {{- $tenant := include "tria-spot.tenant" . }}
 {{- $llm := .Values.llm }}
+{{- $provider := $llm.provider }}
+{{- if not (has $provider (list "anthropic" "gemini")) }}{{ fail "llm.provider must be anthropic or gemini" }}{{ end }}
 {{- $auth := $llm.auth }}
 {{- if not (has $auth (list "key" "federation" "vertex")) }}{{ fail "llm.auth must be key, federation or vertex" }}{{ end }}
+{{- if and (eq $provider "gemini") (eq $auth "federation") }}{{ fail "llm.auth federation is an Anthropic auth mode: use key or vertex with llm.provider gemini" }}{{ end }}
 {{- $fed := $llm.federation }}
 {{- $identity := include "tria-spot.coreIdentity" . }}
 {{- if and (eq $identity "serviceAccount") (lt (int64 .Values.core.tokenExpirationSeconds) 600) }}{{ fail "core.tokenExpirationSeconds must be at least 600" }}{{ end }}
@@ -64,8 +67,11 @@ spec:
             - --core-api-url={{ .Values.core.apiUrl }}
             {{- end }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
+            - --llm-provider={{ $provider }}
             - --llm-auth={{ $auth }}
-            {{- if eq $auth "key" }}
+            {{- if and (eq $auth "key") (eq $provider "gemini") }}
+            - --gemini-key-file=/secrets/gemini/{{ $llm.geminiKeySecret.key }}
+            {{- else if eq $auth "key" }}
             - --anthropic-key-file=/secrets/anthropic/{{ $llm.keySecret.key }}
             {{- else if eq $auth "federation" }}
             - --anthropic-identity-token-file=/var/run/secrets/anthropic.com/token
@@ -79,7 +85,9 @@ spec:
             - --vertex-project={{ required "llm.vertex.project is required when llm.auth is vertex" $llm.vertex.project }}
             - --vertex-region={{ required "llm.vertex.region must not be empty" $llm.vertex.region }}
             {{- end }}
-            - --model={{ required "llm.model must not be empty" $llm.model }}
+            {{- if $llm.model }}
+            - --model={{ $llm.model }}
+            {{- end }}
             - --effort={{ $llm.effort }}
             - --max-steps={{ int $llm.maxSteps }}
             {{- if .Values.connectors }}
@@ -148,7 +156,11 @@ spec:
               mountPath: /secrets/otel
               readOnly: true
             {{- end }}
-            {{- if eq $auth "key" }}
+            {{- if and (eq $auth "key") (eq $provider "gemini") }}
+            - name: gemini-key
+              mountPath: /secrets/gemini
+              readOnly: true
+            {{- else if eq $auth "key" }}
             - name: anthropic-key
               mountPath: /secrets/anthropic
               readOnly: true
@@ -192,7 +204,12 @@ spec:
                   expirationSeconds: {{ int64 .Values.core.tokenExpirationSeconds }}
                   path: token
         {{- end }}
-        {{- if eq $auth "key" }}
+        {{- if and (eq $auth "key") (eq $provider "gemini") }}
+        - name: gemini-key
+          secret:
+            secretName: {{ required "llm.geminiKeySecret.name is required when llm.provider is gemini and llm.auth is key" $llm.geminiKeySecret.name }}
+            defaultMode: 0440
+        {{- else if eq $auth "key" }}
         - name: anthropic-key
           secret:
             secretName: {{ required "llm.keySecret.name is required when llm.auth is key" $llm.keySecret.name }}

@@ -57,21 +57,31 @@ core:
     name: ""         # Secret name only; mounted as a file, never an env var
     key: token
 
-# The model the spot calls, and how it authenticates. Three modes; the ones not
-# in use need no values and mount nothing.
+# The model the spot calls, and how it authenticates. Two providers behind the
+# same loop, and up to three auth modes; the ones not in use need no values and
+# mount nothing.
 llm:
-  # key: a static Anthropic API key from a Secret, read from a file.
+  # anthropic: Claude. Auth key, federation or vertex.
+  # gemini: Gemini. Auth key or vertex (federation is an Anthropic mode).
+  provider: anthropic
+  # key: a static API key from a Secret, read from a file (keySecret for
+  #   anthropic, geminiKeySecret for gemini). Gemini re-reads it on every request.
   # federation: Anthropic Workload Identity Federation. A projected
   #   ServiceAccount token is exchanged for a short-lived access token; no
   #   Secret is mounted.
-  # vertex: Claude on Google Vertex AI through the pod's Workload Identity
-  #   (Application Default Credentials). Annotate serviceAccount for it, and
-  #   set networkPolicy.vertex.cidrs.
+  # vertex: Claude or Gemini on Google Vertex AI through the pod's Workload
+  #   Identity (Application Default Credentials). Annotate serviceAccount for
+  #   it, and set networkPolicy.google.cidrs.
   auth: key
-  model: claude-opus-5-5       # on Vertex AI too, with no prefix
+  # The model id, on Vertex AI too, with no prefix. Empty = the provider's
+  # default: claude-opus-5-5 for anthropic, gemini-2.5-flash for gemini.
+  model: ""
   effort: medium               # low | medium | high | xhigh | max
   maxSteps: 40                 # model requests per wake
-  keySecret:                   # auth: key. Secret name only; mounted as a file
+  keySecret:                   # provider anthropic, auth: key. Secret name only; mounted as a file
+    name: ""
+    key: key
+  geminiKeySecret:             # provider gemini, auth: key. Secret name only; mounted as a file at /secrets/gemini/<key>
     name: ""
     key: key
   federation:                  # auth: federation. None of these ids is a secret
@@ -81,9 +91,9 @@ llm:
     workspaceId: ""            # wrkspc_...; optional when the rule spans one workspace
     audience: https://api.anthropic.com
     tokenExpirationSeconds: 600  # the kubelet rotates the token at 80% of this; minimum 600
-  vertex:                      # auth: vertex
-    project: ""                # the Google Cloud project that serves Claude
-    region: global
+  vertex:                      # auth: vertex, either provider
+    project: ""                # the Google Cloud project that serves the model
+    region: global             # the Vertex AI region, or global
 
 # Connectors: more MCP servers beside the core. Each is a service that holds
 # its own credentials and limits (a Kubernetes tool server for another
@@ -168,26 +178,26 @@ serviceAccount:
   annotations: {}
 
 # Egress limited to DNS, the model API, the core, the connectors and the
-# telemetry endpoint. NetworkPolicy has no host names: the CIDRs are the ones
-# Anthropic publishes for its API, and the cluster-specific ones are yours to
-# fill in.
+# telemetry endpoint. NetworkPolicy has no host names: the Anthropic CIDRs are
+# the ones Anthropic publishes for its API, and the Google and cluster-specific
+# ones are yours to fill in.
 networkPolicy:
   enabled: true
   dns:
     namespaceLabel: kube-system   # namespace of the cluster DNS (kubernetes.io/metadata.name)
-  anthropic:                      # llm.auth key or federation
+  anthropic:                      # llm.provider anthropic with llm.auth key or federation
     cidrs:
       - 160.79.104.0/23
       - 2607:6bc0::/48
     ports: [443]
-  vertex:                         # llm.auth vertex
-    # The addresses of the Google APIs the pod reaches (Vertex AI, the token
-    # endpoints). Required then: NetworkPolicy has no host names, so name the
-    # ranges your network uses, for example Private Google Access.
+  google:                         # llm.provider gemini (any auth), or llm.auth vertex
+    # The addresses of the Google APIs the pod reaches (the Gemini API, Vertex
+    # AI, the token endpoints). Required then: NetworkPolicy has no host names,
+    # so name the ranges your network uses, for example Private Google Access.
     cidrs: []
     ports: [443]
-    # The node's metadata server, which hands out the Workload Identity token
-    # (GKE's addresses and ports).
+    # llm.auth vertex. The node's metadata server, which hands out the Workload
+    # Identity token (GKE's addresses and ports).
     metadata:
       cidrs: [169.254.169.252/32, 169.254.169.254/32]
       ports: [988, 80]

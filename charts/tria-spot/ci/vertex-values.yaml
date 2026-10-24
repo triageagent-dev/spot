@@ -18,5 +18,5 @@ networkPolicy:
   core:
     podSelector:
       matchLabels: {app.kubernetes.io/name: core}
-  vertex:
+  google:
     cidrs: [199.36.153.8/30]

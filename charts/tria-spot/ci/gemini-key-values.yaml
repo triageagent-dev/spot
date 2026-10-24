@@ -1,0 +1,23 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# Gemini through the Gemini API with a key from a Secret, read as a file.
+spot:
+  enabled: true
+  tenant: example
+core:
+  identity: secret
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+llm:
+  provider: gemini
+  auth: key
+  effort: low
+  geminiKeySecret:
+    name: example-spot-gemini-key
+    key: api-key
+networkPolicy:
+  core:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}
+  google:
+    cidrs: [199.36.153.8/30]

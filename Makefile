@@ -52,12 +52,14 @@ push: ## Build and push the image with ko: make push IMAGE=<registry>/<repo>
 CHART_TMP := $(or $(TMPDIR),/tmp)
 
 .PHONY: chart-lint
-chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, key, federation and Vertex AI modes
+chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, Anthropic key, federation and Vertex AI modes, Gemini key and Vertex AI modes
 	helm lint $(CHART)
 	helm lint $(CHART) -f $(CHART)/ci/enabled-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/key-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/federation-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/vertex-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/gemini-key-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/gemini-vertex-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/connectors-values.yaml
@@ -66,17 +68,19 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	helm template t $(CHART) -f $(CHART)/ci/key-values.yaml > $(CHART_TMP)/tria-spot-keyset.yaml
 	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
 	helm template t $(CHART) -f $(CHART)/ci/vertex-values.yaml > $(CHART_TMP)/tria-spot-vertex.yaml
+	helm template t $(CHART) -f $(CHART)/ci/gemini-key-values.yaml > $(CHART_TMP)/tria-spot-gmkey.yaml
+	helm template t $(CHART) -f $(CHART)/ci/gemini-vertex-values.yaml > $(CHART_TMP)/tria-spot-gmvertex.yaml
 	helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml > $(CHART_TMP)/tria-spot-tel.yaml
 	helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml > $(CHART_TMP)/tria-spot-sa.yaml
 	helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml > $(CHART_TMP)/tria-spot-conn.yaml
-	@for f in key keyset fed vertex tel sa conn; do \
+	@for f in key keyset fed vertex gmkey gmvertex tel sa conn; do \
 	  ! grep -qiE 'sandbox|hostUsers|Unconfined|procMount|--run-dir|permission-mode|--persistent|--allowed-tools|claude-bin|medium: Memory' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the pod carries nothing for a shell, a sandbox or a rendered config ($$f)"; exit 1; }; \
 	  grep -q 'type: RuntimeDefault' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q 'readOnlyRootFilesystem: true' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q 'allowPrivilegeEscalation: false' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the pod keeps its runtime seccomp profile, a read-only root and no privilege escalation ($$f)"; exit 1; }; \
 	  ! grep -qE '^[[:space:]]+env(From)?:' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the pod must carry no env ($$f)"; exit 1; }; \
 	  ! grep -qE 'resources:.*secrets' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
 	  ! grep -qE 'kind: (ClusterRole|ClusterRoleBinding)' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the spot holds no cluster RBAC; a cluster is reached through a connector ($$f)"; exit 1; }; \
 	  grep -q 'automountServiceAccountToken: false' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the ServiceAccount token must not be mounted ($$f)"; exit 1; }; \
-	  grep -q -- '--llm-auth=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--model=claude-opus-5-5' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--effort=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--max-steps=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--tool-timeout=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--tool-result-max-bytes=' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the model and loop flags are always passed ($$f)"; exit 1; }; \
+	  grep -q -- '--llm-provider=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--llm-auth=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--effort=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--max-steps=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--tool-timeout=' $(CHART_TMP)/tria-spot-$$f.yaml && grep -q -- '--tool-result-max-bytes=' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the provider, auth and loop flags are always passed ($$f)"; exit 1; }; \
 	done
 	@grep -q -- '--connectors-file=' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'connectors.json' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'Connector example-kube' $(CHART_TMP)/tria-spot-conn.yaml || { echo "connectors: the flag, a ConfigMap and an egress rule each"; exit 1; }
 	@! grep -q -- '--connectors-file' $(CHART_TMP)/tria-spot-key.yaml || { echo "no connectors, no flag"; exit 1; }
@@ -85,11 +89,16 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	@! helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml --set 'connectors[0].egress=null' >/dev/null 2>&1 || { echo "a connector without an egress target must fail"; exit 1; }
 	@grep -q -- '--otel-tenant-attr=triage.tenant' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant=' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant-attr' $(CHART_TMP)/tria-spot-key.yaml || { echo "telemetry: the label attribute is always passed, the label itself only when set (default: the spot's name)"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml --set telemetry.tenant=example --set 'telemetry.tenantName=Example workspace' | grep -q -- '--otel-tenant-name="Example workspace"' || { echo "telemetry: a set tenant name reaches the flag"; exit 1; }
+	@! grep -q -- '--model=' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q -- '--model=' $(CHART_TMP)/tria-spot-gmkey.yaml && grep -q -- '--model=gemini-3-pro-preview' $(CHART_TMP)/tria-spot-gmvertex.yaml || { echo "an empty llm.model passes no --model (the provider's default); a set one reaches the flag"; exit 1; }
+	@grep -q -- '--llm-provider=anthropic' $(CHART_TMP)/tria-spot-key.yaml && grep -q -- '--llm-provider=anthropic' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q -- '--llm-provider=gemini' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q -- '--gemini' $(CHART_TMP)/tria-spot-key.yaml || { echo "llm.provider reaches the flag, anthropic by default"; exit 1; }
 	@grep -q -- '--llm-auth=key' $(CHART_TMP)/tria-spot-key.yaml && grep -q -- '--anthropic-key-file=/secrets/anthropic/key' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q -- '--vertex' $(CHART_TMP)/tria-spot-key.yaml || { echo "key mode: key file, no projected token, no Vertex flags"; exit 1; }
 	@grep -q -- '--model=claude-opus-5-5' $(CHART_TMP)/tria-spot-keyset.yaml && grep -q -- '--effort=high' $(CHART_TMP)/tria-spot-keyset.yaml && grep -q -- '--max-steps=25' $(CHART_TMP)/tria-spot-keyset.yaml && grep -q -- '--tool-timeout=30s' $(CHART_TMP)/tria-spot-keyset.yaml && grep -q -- '--tool-result-max-bytes=16384' $(CHART_TMP)/tria-spot-keyset.yaml && grep -q -- '--anthropic-key-file=/secrets/anthropic/api-key' $(CHART_TMP)/tria-spot-keyset.yaml || { echo "the llm and agent values reach the flags"; exit 1; }
 	@grep -q -- '--llm-auth=federation' $(CHART_TMP)/tria-spot-fed.yaml && grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-fed.yaml && ! grep -q -- '--anthropic-key-file' $(CHART_TMP)/tria-spot-fed.yaml && ! grep -q -- '--vertex' $(CHART_TMP)/tria-spot-fed.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-fed.yaml)" = 1 ] || { echo "federation mode: projected token, no key Secret"; exit 1; }
 	@grep -q -- '--llm-auth=vertex' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q -- '--vertex-project=example-project' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q -- '--vertex-region=europe-west1' $(CHART_TMP)/tria-spot-vertex.yaml && ! grep -q -- '--anthropic' $(CHART_TMP)/tria-spot-vertex.yaml && ! grep -q 'anthropic.com' $(CHART_TMP)/tria-spot-vertex.yaml && ! grep -q 'secretName:' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q 'iam.gke.io/gcp-service-account' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q '199.36.153.8/30' $(CHART_TMP)/tria-spot-vertex.yaml && grep -q '169.254.169.254/32' $(CHART_TMP)/tria-spot-vertex.yaml && ! grep -q '160.79.104.0/23' $(CHART_TMP)/tria-spot-vertex.yaml || { echo "vertex mode: project and region, the pod's Workload Identity, Google egress, no Anthropic key or token"; exit 1; }
 	@grep -q '160.79.104.0/23' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q '199.36.153.8/30' $(CHART_TMP)/tria-spot-key.yaml || { echo "key mode: egress to the Anthropic API only"; exit 1; }
+	@grep -q -- '--llm-auth=key' $(CHART_TMP)/tria-spot-gmkey.yaml && grep -q -- '--gemini-key-file=/secrets/gemini/api-key' $(CHART_TMP)/tria-spot-gmkey.yaml && grep -q 'mountPath: /secrets/gemini' $(CHART_TMP)/tria-spot-gmkey.yaml && grep -q 'secretName: example-spot-gemini-key' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q -- '--anthropic' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q -- '--vertex' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q 'serviceAccountToken' $(CHART_TMP)/tria-spot-gmkey.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-gmkey.yaml)" = 2 ] || { echo "gemini key mode: the key file and its Secret, no Anthropic or Vertex flags"; exit 1; }
+	@grep -q '199.36.153.8/30' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q '160.79.104.0/23' $(CHART_TMP)/tria-spot-gmkey.yaml && ! grep -q '169.254.169.254/32' $(CHART_TMP)/tria-spot-gmkey.yaml || { echo "gemini key mode: egress to the Google APIs only, no metadata server"; exit 1; }
+	@grep -q -- '--llm-auth=vertex' $(CHART_TMP)/tria-spot-gmvertex.yaml && grep -q -- '--vertex-project=example-project' $(CHART_TMP)/tria-spot-gmvertex.yaml && grep -q -- '--vertex-region=europe-west1' $(CHART_TMP)/tria-spot-gmvertex.yaml && ! grep -q -- '--gemini-key-file' $(CHART_TMP)/tria-spot-gmvertex.yaml && ! grep -q 'secretName:' $(CHART_TMP)/tria-spot-gmvertex.yaml && grep -q 'iam.gke.io/gcp-service-account' $(CHART_TMP)/tria-spot-gmvertex.yaml && grep -q '199.36.153.8/30' $(CHART_TMP)/tria-spot-gmvertex.yaml && grep -q '169.254.169.254/32' $(CHART_TMP)/tria-spot-gmvertex.yaml && ! grep -q '160.79.104.0/23' $(CHART_TMP)/tria-spot-gmvertex.yaml || { echo "gemini vertex mode: project and region, the pod's Workload Identity, Google egress, no key Secret"; exit 1; }
 	@grep -q 'audience: triage-core' $(CHART_TMP)/tria-spot-sa.yaml && grep -q 'resourceNames:' $(CHART_TMP)/tria-spot-sa.yaml && grep -q 'triageagent.dev/managed: "true"' $(CHART_TMP)/tria-spot-sa.yaml && [ "$$(grep -c 'secretName:' $(CHART_TMP)/tria-spot-sa.yaml)" = 1 ] || { echo "serviceAccount identity: projected core token, Role with resourceNames, one Secret (the Anthropic key)"; exit 1; }
 	@grep -q 'resourceNames:' $(CHART_TMP)/tria-spot-key.yaml && { echo "secret identity must render no core Role"; exit 1; } || true
 	@! helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml --set core.identity=token >/dev/null 2>&1 || { echo "unknown core identity must fail"; exit 1; }
@@ -100,7 +109,13 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	@! helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set llm.federation.orgId= >/dev/null 2>&1 || { echo "federation needs an organization id"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set llm.keySecret.name= >/dev/null 2>&1 || { echo "key mode needs a key Secret name"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/vertex-values.yaml --set llm.vertex.project= >/dev/null 2>&1 || { echo "vertex mode needs a project"; exit 1; }
-	@! helm template t $(CHART) -f $(CHART)/ci/vertex-values.yaml --set networkPolicy.vertex.cidrs=null >/dev/null 2>&1 || { echo "vertex mode needs egress addresses for the Google APIs"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/vertex-values.yaml --set networkPolicy.google.cidrs=null >/dev/null 2>&1 || { echo "vertex mode needs egress addresses for the Google APIs"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/gemini-key-values.yaml --set networkPolicy.google.cidrs=null >/dev/null 2>&1 || { echo "the gemini provider needs egress addresses for the Google APIs"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/gemini-key-values.yaml --set llm.geminiKeySecret.name= >/dev/null 2>&1 || { echo "gemini key mode needs a key Secret name"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/gemini-key-values.yaml --set llm.auth=federation >/dev/null 2>&1 || { echo "federation is an Anthropic auth mode"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/gemini-vertex-values.yaml --set llm.vertex.project= >/dev/null 2>&1 || { echo "gemini vertex mode needs a project"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set llm.provider=openai >/dev/null 2>&1 || { echo "unknown provider must fail"; exit 1; }
+	@helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set llm.geminiKeySecret.name= >/dev/null || { echo "the Gemini key Secret is only needed for gemini key mode"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set llm.auth=oauth >/dev/null 2>&1 || { echo "unknown auth mode must fail"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml --set llm.keySecret.name= >/dev/null || { echo "federation must not need a key Secret"; exit 1; }
 	@echo "chart ok"
