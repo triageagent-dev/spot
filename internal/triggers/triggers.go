@@ -286,8 +286,8 @@ func (c *Client) once(ctx context.Context) (up bool, err error) {
 		}
 		return false, err
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	c.wmu.Lock()
 	c.conn = conn

@@ -43,7 +43,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "version", "--version", "-version":
-			fmt.Fprintf(out, "tria-spot %s (%s, %s)\n", version, gitCommit, buildDate)
+			_, _ = fmt.Fprintf(out, "tria-spot %s (%s, %s)\n", version, gitCommit, buildDate)
 			return 0
 		case "run":
 			args = args[1:]
@@ -52,7 +52,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	cfg, err := config.Parse(args, errOut)
 	if err != nil {
 		if err != flag.ErrHelp {
-			fmt.Fprintln(errOut, "tria-spot:", err)
+			_, _ = fmt.Fprintln(errOut, "tria-spot:", err)
 			return 2
 		}
 		return 0

@@ -114,7 +114,8 @@ func TestInstructionIsTheSameForEveryWake(t *testing.T) {
 	// It is the cached prefix of every request: nothing in it may depend on
 	// the time or on the wake.
 	p := Params{Name: "n", Tenant: "t", MinWake: time.Minute, MaxWake: time.Hour}
-	if Instruction(p) != Instruction(p) {
+	first, second := Instruction(p), Instruction(p)
+	if first != second {
 		t.Error("the instruction must be deterministic")
 	}
 }

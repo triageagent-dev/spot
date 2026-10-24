@@ -230,7 +230,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if pend != nil {
 			if s.paused() {
 				s.pauseForCeiling()
-				pend = nil
 			} else {
 				s.turn(ctx, pend)
 				pend = nil

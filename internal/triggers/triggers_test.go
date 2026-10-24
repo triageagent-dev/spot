@@ -49,7 +49,7 @@ func TestStreamDeliversWhatChangedAndCoalesces(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`))
 		for m := range send {
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(m))
@@ -109,10 +109,10 @@ func TestStreamReconnectsAndIsNotConnectedWhileDown(t *testing.T) {
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`))
 		if n == 2 {
-			conn.Close() // drops once
+			_ = conn.Close() // drops once
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		time.Sleep(time.Second)
 	}))
 	t.Cleanup(srv.Close)

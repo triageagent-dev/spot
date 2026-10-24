@@ -142,12 +142,7 @@ func newScriptTurner(timeout time.Duration) *scriptTurner {
 }
 
 func (f *scriptTurner) set(name, v string) { f.mu.Lock(); f.vals[name] = v; f.mu.Unlock() }
-func (f *scriptTurner) get(name string) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.vals[name]
-}
-func (f *scriptTurner) turnCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.count }
+func (f *scriptTurner) turnCount() int     { f.mu.Lock(); defer f.mu.Unlock(); return f.count }
 func (f *scriptTurner) prompt(n int) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -169,7 +164,7 @@ func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 	}
 	var tin, tout int64 = 100, 50
 	if v := f.vals["tokens"]; v != "" {
-		fmt.Sscan(v, &tin, &tout)
+		_, _ = fmt.Sscan(v, &tin, &tout)
 	}
 	next, summary := f.vals["next"], f.vals["summary"]
 	f.mu.Unlock()
@@ -295,7 +290,10 @@ func (h *harness) stop() {
 	h.t.Helper()
 	h.cancel()
 	select {
-	case <-h.done:
+	case err := <-h.done:
+		if err != nil {
+			h.t.Errorf("supervisor stopped with %v", err)
+		}
 	case <-time.After(15 * time.Second):
 		h.t.Fatal("supervisor did not stop")
 	}
