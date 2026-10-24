@@ -11,7 +11,7 @@ var CoreTools = []string{
 	"fetch_memory", "get_world_context", "get_service_analytics", "get_service_prediction",
 	"inspect_service", "list_services", "list_applications", "analyze_issue", "verify_hypothesis",
 	"comment_on_issue", "upsert_memory_item", "note_observation",
-	"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_spot_status",
+	"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_workspace_status", "set_spot_status",
 }
 
 // CoreToolsDenied are the core's tools the spot must never call: they close,

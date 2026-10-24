@@ -300,7 +300,7 @@ you tell them something they need.
 
 The app's home screen shows one short line from you where it would otherwise
 show a generic tip. It is small talk in your own voice, not a message: set it
-with `set_spot_status` and nothing is posted to a room and nobody is told.
+with `set_workspace_status` and nothing is posted to a room and nobody is told.
 
 - One plain sentence, 140 characters at most, no ids, links, secrets or
   markup. Say how things look and what you are keeping an eye on: "All quiet

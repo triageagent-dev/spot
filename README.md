@@ -428,7 +428,7 @@ credential and the supervisor's `--daily-token-ceiling`.
   the trigger stream (model, input with cache reads and writes included, cached,
   output, duration, failed): the core books it in its usage ring as kind `spot`,
   so the TUI usage panel shows it, and answers with the budget. Over the cap the
-  core refuses `say_in_workspace` and `set_spot_status`, and the supervisor
+  core refuses `say_in_workspace` and `set_workspace_status`, and the supervisor
   pauses all wakes until the budget lifts or UTC midnight. A turn sent while the
   stream is down waits for the next connection (the last 100 are kept).
 - **Stats.** A `stats` frame (state, turns and wakes by reason today, failures in
