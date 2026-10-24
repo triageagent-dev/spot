@@ -41,6 +41,6 @@ setting is explained in [values.yaml](charts/tria-spot/values.yaml).
 
 ## Read more
 
-- [Specification](docs/spec.html): the loop, tools, credentials, spans, spend, flags.
+- [Specification](https://triageagent.dev/spot/spec.html): the loop, tools, credentials, spans, spend, flags.
 - [ADR-098](docs/adr/098-spot-on-tria-runtime.md): why the spot is its own agent loop.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [License](LICENSE) (Apache 2.0).
