@@ -110,7 +110,7 @@ const (
 const (
 	DefaultStateDir       = "/state"
 	DefaultAnthropicModel = "claude-opus-5-5"
-	DefaultGeminiModel    = "gemini-2.5-flash"
+	DefaultGeminiModel    = "gemini-3-flash-preview"
 	DefaultEffort         = "medium"
 )
 
@@ -139,7 +139,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.VertexProject, "vertex-project", "", "vertex: the Google Cloud project that serves the model (required with --llm-auth=vertex)")
 	fs.StringVar(&c.VertexRegion, "vertex-region", "global", "vertex: the region, or global (the Vertex AI location, for either provider)")
 	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "directory for the supervisor's own files: token usage, room cursors, status; losing it is harmless")
-	fs.StringVar(&c.Model, "model", "", "the model id (on Vertex AI too, with no prefix); default claude-opus-5-5 for anthropic, gemini-2.5-flash for gemini")
+	fs.StringVar(&c.Model, "model", "", "the model id (on Vertex AI too, with no prefix); default claude-opus-5-5 for anthropic, gemini-3-flash-preview for gemini")
 	fs.StringVar(&c.Effort, "effort", DefaultEffort, "how much effort the model puts into a step: low, medium, high, xhigh or max")
 	fs.DurationVar(&c.MinWake, "min-wake", 2*time.Minute, "floor for the agent's own wake-up schedule")
 	fs.DurationVar(&c.MaxWake, "max-wake", 2*time.Hour, "ceiling for the agent's own wake-up schedule")

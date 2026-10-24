@@ -159,7 +159,7 @@ both.
 |---|---|---|
 | Auth modes (`--llm-auth`) | `key`, `federation`, `vertex` | `key`, `vertex` |
 | Key file | `--anthropic-key-file` | `--gemini-key-file` |
-| Default model (`--model` empty) | `claude-opus-5-5` | `gemini-2.5-flash` |
+| Default model (`--model` empty) | `claude-opus-5-5` | `gemini-3-flash-preview` |
 | Vertex AI location | `--vertex-region` | `--vertex-region` (one flag for both; `global` by default) |
 
 `federation` is an Anthropic mode and is refused with `gemini`.
@@ -305,7 +305,7 @@ Flags only. No credential is a flag value or an environment variable.
 | `--anthropic-workspace-id` | | workspace id (`wrkspc_...`); optional when the rule spans one workspace |
 | `--vertex-project` | required with `vertex` | the Google Cloud project that serves the model |
 | `--vertex-region` | `global` | the Vertex AI region, or `global`, for either provider |
-| `--model` | empty | the model id; empty = `claude-opus-5-5` (anthropic) or `gemini-2.5-flash` (gemini) |
+| `--model` | empty | the model id; empty = `claude-opus-5-5` (anthropic) or `gemini-3-flash-preview` (gemini) |
 | `--effort` | `medium` | `low`, `medium`, `high`, `xhigh` or `max` |
 | `--max-steps` | `40` | model requests per wake |
 | `--turn-timeout` | `20m` | wall-clock cap per wake |

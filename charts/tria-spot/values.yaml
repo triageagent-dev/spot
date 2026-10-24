@@ -74,7 +74,7 @@ llm:
   #   it, and set networkPolicy.google.cidrs.
   auth: key
   # The model id, on Vertex AI too, with no prefix. Empty = the provider's
-  # default: claude-opus-5-5 for anthropic, gemini-2.5-flash for gemini.
+  # default: claude-opus-5-5 for anthropic, gemini-3-flash-preview for gemini.
   model: ""
   effort: medium               # low | medium | high | xhigh | max
   maxSteps: 40                 # model requests per wake
