@@ -294,7 +294,7 @@ func TestStartupTickAndResume(t *testing.T) {
 			t.Errorf("credential on the command line")
 		}
 	}
-	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, h.state+"/next.json") {
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "schedule_next") {
 		t.Errorf("startup prompt:\n%s", in)
 	}
 	if cwd := strings.TrimSpace(h.file("cwd", 1)); !strings.HasSuffix(cwd, "/state/work") {

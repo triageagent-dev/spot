@@ -14,15 +14,12 @@ var instruction string
 
 // Params fill the placeholders in the system prompt.
 type Params struct {
-	Name     string
-	Tenant   string
-	StateDir string
-	MinWake  time.Duration
-	MaxWake  time.Duration
+	Name    string
+	Tenant  string
+	MinWake time.Duration
+	MaxWake time.Duration
 	// Connectors are the MCP servers beside the core, with the hint for each.
 	Connectors []Connector
-	// Sandbox says the agent has a Bash tool that runs only inside the CLI's sandbox.
-	Sandbox bool
 }
 
 // Connector is what the prompt says about one connector.
@@ -38,11 +35,9 @@ func Instruction(p Params) string {
 	return strings.NewReplacer(
 		"{{NAME}}", p.Name,
 		"{{TENANT}}", p.Tenant,
-		"{{STATE_DIR}}", strings.TrimRight(p.StateDir, "/"),
 		"{{MIN_WAKE}}", p.MinWake.String(),
 		"{{MAX_WAKE}}", p.MaxWake.String(),
 		"{{CONNECTORS}}", connectorsSection(p.Connectors),
-		"{{SHELL}}", shellSection(p.Sandbox),
 	).Replace(instruction)
 }
 
@@ -70,7 +65,6 @@ type Wake struct {
 	Note        string   // supervisor note, e.g. the schedule was defaulted
 	TokensUsed  int64
 	TokensCeil  int64 // 0 = no ceiling
-	StateDir    string
 }
 
 // Turn builds the prompt for a turn.
@@ -80,10 +74,10 @@ func Turn(w Wake) string {
 	if w.ChatName != "" {
 		fmt.Fprintf(&b, "In the messenger you appear as %s: people write to you by that name.\n", w.ChatName)
 	}
-	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is your notes, the core's memory and what the core and the room show you now.\n")
+	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is the core's memory and what the core and the room show you now.\n")
 	switch w.Reason {
 	case Startup:
-		b.WriteString("The pod (re)started. Read your notes, then look at the tenant.\n")
+		b.WriteString("The pod (re)started. Read your notes to yourself in the core's memory, then look at the tenant.\n")
 	case Tick:
 		if w.ScheduledBy != "" {
 			fmt.Fprintf(&b, "You scheduled this wake. Your reason: %s\n", w.ScheduledBy)
@@ -99,7 +93,7 @@ func Turn(w Wake) string {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}
 	if w.Interrupted {
-		b.WriteString("Your previous turn was cut off before it ended. Check your notes and the cluster for a half-finished change before you continue.\n")
+		b.WriteString("Your previous turn was cut off before it ended. Check the core's memory and the cluster for a half-finished change before you continue.\n")
 	}
 	if w.Note != "" {
 		fmt.Fprintf(&b, "Supervisor note: %s\n", w.Note)
@@ -113,12 +107,10 @@ func Turn(w Wake) string {
 	} else {
 		fmt.Fprintf(&b, "Tokens today: %d used (no ceiling set).\n", w.TokensUsed)
 	}
-	fmt.Fprintf(&b, "End this turn by writing %s/next.json.\n", strings.TrimRight(w.StateDir, "/"))
+	b.WriteString("End this turn by calling schedule_next.\n")
 	return b.String()
 }
 
-// connectorsSection is the prompt's part about connectors; empty when there
-// are none.
 // Interjection is what a person's message becomes when it reaches a turn that
 // is already running: the same facts as a wake, said as an interruption.
 func Interjection(chatName string, facts []string) string {
@@ -135,6 +127,8 @@ func Interjection(chatName string, facts []string) string {
 	return b.String()
 }
 
+// connectorsSection is the prompt's part about connectors; empty when there
+// are none.
 func connectorsSection(cs []Connector) string {
 	if len(cs) == 0 {
 		return ""
@@ -151,7 +145,7 @@ func connectorsSection(cs []Connector) string {
 		} else {
 			names := make([]string, 0, len(c.Tools))
 			for _, t := range c.Tools {
-				names = append(names, fmt.Sprintf("`mcp__%s__%s`", c.Name, t))
+				names = append(names, fmt.Sprintf("`%s__%s`", c.Name, t))
 			}
 			b.WriteString(" Its tools are " + strings.Join(names, ", ") + " and no others.")
 		}
@@ -159,12 +153,4 @@ func connectorsSection(cs []Connector) string {
 	}
 	b.WriteString("\n")
 	return b.String()
-}
-
-// shellSection is what the prompt says about a shell.
-func shellSection(sandbox bool) string {
-	if !sandbox {
-		return "You have no shell and no kubectl: the connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
-	}
-	return "Your Bash tool is a sandbox, not a shell on the cluster: it has no network, no kubectl, no credentials and no view of other processes, and it writes only under your notes and the temporary directory. Write `next.json` and your notes with the Write tool, not from the shell. Use it to cut down what you read (`jq`, `grep`, `sed`, `sort`) and to wait (`sleep`), never to reach the cluster; a command that is refused is a limit, not a puzzle. The connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
 }

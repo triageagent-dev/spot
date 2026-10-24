@@ -881,7 +881,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	text := prompt.Turn(prompt.Wake{
 		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Interrupted: interrupted, Note: p.note,
-		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil, StateDir: s.cfg.StateDir,
+		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
 	})
 
 	sess.Running = true

@@ -86,8 +86,8 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
 		OtelTokenFile: cfg.OtelTokenFile, Sandbox: cfg.Sandbox,
 		Instruction: prompt.Instruction(prompt.Params{
-			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
-			Connectors: promptConnectors(cfg.Connectors), Sandbox: cfg.Sandbox,
+			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+			Connectors: promptConnectors(cfg.Connectors),
 		}),
 	})
 	if err != nil {
