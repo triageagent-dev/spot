@@ -79,8 +79,16 @@ func TestInstructionListsConnectorsOnlyWhenThereAreSome(t *testing.T) {
 	if strings.Contains(none, "{{") || strings.Contains(none, "## Connectors") {
 		t.Fatal("no connectors: no section and no leftover placeholder")
 	}
-	with := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state", Connectors: []Connector{{Name: "example-kube", Hint: "The workspace's cluster, read-only."}}})
-	if !strings.Contains(with, "## Connectors") || !strings.Contains(with, "`mcp__example-kube__*`: The workspace's cluster, read-only.") {
+	with := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state", Connectors: []Connector{{Name: "example-kube", Hint: "The workspace's cluster, read-only.", Tools: []string{"k8s_get_resources", "k8s_get_pod_logs"}}}})
+	if !strings.Contains(with, "## Connectors") || !strings.Contains(with, "`example-kube`: The workspace's cluster, read-only.") {
 		t.Fatalf("the connector and its hint belong in the prompt:\n%s", with)
+	}
+	for _, want := range []string{"`mcp__example-kube__k8s_get_resources`", "`mcp__example-kube__k8s_get_pod_logs`", "and no others"} {
+		if !strings.Contains(with, want) {
+			t.Fatalf("the prompt must name the exact tool %q:\n%s", want, with)
+		}
+	}
+	if strings.Contains(with, "mcp__example-kube__*") {
+		t.Fatalf("the prompt must not promise every tool of the connector:\n%s", with)
 	}
 }

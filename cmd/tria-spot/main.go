@@ -218,7 +218,7 @@ func level(s string) slog.Level {
 func promptConnectors(cs []config.Connector) []prompt.Connector {
 	out := make([]prompt.Connector, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, prompt.Connector{Name: c.Name, Hint: c.Hint})
+		out = append(out, prompt.Connector{Name: c.Name, Hint: c.Hint, Tools: c.Tools})
 	}
 	return out
 }

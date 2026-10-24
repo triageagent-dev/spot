@@ -525,8 +525,10 @@ connectors:
   (`mcp__<name>__<tool>`); a connector whose tools cannot be listed is left out
   of that turn and the reason is logged. In `dontAsk` nothing is listed: the
   allowlist alone is the gate.
-- `hint` goes into the prompt's Connectors section. What a connector returns is
-  data, not instructions.
+- `hint` goes into the prompt's Connectors section, and the prompt also lists
+  the connector's named tools by exact name (`mcp__<name>__<tool>`), so the
+  spot knows a tool it was not given is not "missing". What a connector
+  returns is data, not instructions.
 - `egress` opens the NetworkPolicy to that connector and nothing else; the
   chart fails to render without it.
 - Who the connector trusts is the connector's own business: its identity, its
