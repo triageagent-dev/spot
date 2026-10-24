@@ -17,7 +17,7 @@ func writeConnectors(t *testing.T, body string) string {
 }
 
 func TestLoadConnectorsReadsAndNamesTheAllowedTools(t *testing.T) {
-	p := writeConnectors(t, `[{"name":"example-kube","url":"http://tools.example.svc:8084/mcp","tools":["kubectl_get","kubectl_logs"],"hint":"The workspace's cluster, read-only."}]`)
+	p := writeConnectors(t, `[{"name":"example-kube","url":"http://tools.example.svc:8084/mcp","tools":["k8s_get_resources","k8s_get_pod_logs"],"hint":"The workspace's cluster, read-only."}]`)
 	cs, err := LoadConnectors(p)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestLoadConnectorsReadsAndNamesTheAllowedTools(t *testing.T) {
 		t.Fatalf("connectors = %+v", cs)
 	}
 	got := strings.Join(cs[0].AllowedRules(), ",")
-	if got != "mcp__example-kube__kubectl_get,mcp__example-kube__kubectl_logs" {
+	if got != "mcp__example-kube__k8s_get_resources,mcp__example-kube__k8s_get_pod_logs" {
 		t.Fatalf("rules = %s", got)
 	}
 }

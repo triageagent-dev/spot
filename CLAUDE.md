@@ -32,20 +32,18 @@ Read the ADR and `README.md` before changing behaviour.
 - **Flag names come from the docs.** Claude Code flags and settings are
   verified against https://code.claude.com/docs before use; do not guess. If
   you cannot verify one, say so in the README's "Not verified" list.
-- **RBAC is the boundary.** The prompt and the PreToolUse hook are best effort.
-  Never widen the chart's Read stage to Secrets. The Act stage is opt-in per
-  namespace and defaults to `act.scope: limited` (no `patch` on a workload: it
-  is a pod-template rewrite); `act.scope: namespace` is the operator's explicit
-  choice for an install and still excludes Secrets, ServiceAccounts and RBAC
-  objects. By default the core's tools are allowed by name
-  (`runner.CoreTools`) and the destructive ones are disallowed by name
-  (`runner.CoreToolsDenied`). `--core-tools all` (`agent.coreTools: all`) allows
-  `mcp__core__*` and drops that list: an operator's explicit choice for an
-  install, with the core's Role (`core.verbs`) as the bound. Never make it the
-  default.
+- **The connector is the boundary.** The prompt is best effort. The spot holds
+  no cluster RBAC and never gets a shell (`Bash` stays in `runner.Disallowed`;
+  never add a `Bash(...)` allow rule). A cluster is reached only through a
+  connector, whose tools are allowed by exact name. By default the core's tools
+  are allowed by name (`runner.CoreTools`) and the destructive ones are
+  disallowed by name (`runner.CoreToolsDenied`). `--core-tools all`
+  (`agent.coreTools: all`) allows `mcp__core__*` and drops that list: an
+  operator's explicit choice for an install, with the core's Role
+  (`core.verbs`) as the bound. Never make it the default.
 - **The agent must not be able to edit its own limits.** Supervisor files live
-  under `/state/supervisor` (denied to Edit and Write), the usage counter is
-  held in memory, and no allowed shell command writes a file. Keep it so.
+  under `/state/supervisor` (denied to Edit and Write by rendered rules), the usage counter is
+  held in memory, and there is no shell. Keep it so.
 - The core's MCP server is `github.com/mark3labs/mcp-go`; the supervisor's
   client uses the same library.
 

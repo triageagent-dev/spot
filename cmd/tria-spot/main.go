@@ -1,7 +1,7 @@
 // Command tria-spot is the supervisor and container entrypoint of the Tria
 // spot (ADR-095): it wakes a Claude Code agent in turns, gives it the core's
 // MCP tools and its connectors, and keeps its schedule, budget and
-// heartbeat. `tria-spot hook pretool` is the Claude Code PreToolUse hook.
+// heartbeat.
 package main
 
 import (
@@ -18,7 +18,6 @@ import (
 
 	"github.com/triageagent-dev/tria-spot/internal/config"
 	"github.com/triageagent-dev/tria-spot/internal/corecli"
-	"github.com/triageagent-dev/tria-spot/internal/hook"
 	"github.com/triageagent-dev/tria-spot/internal/ledger"
 	"github.com/triageagent-dev/tria-spot/internal/prompt"
 	"github.com/triageagent-dev/tria-spot/internal/render"
@@ -41,8 +40,6 @@ func main() {
 func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
-		case "hook":
-			return hookCmd(args[1:], in, out, errOut)
 		case "version", "--version", "-version":
 			fmt.Fprintf(out, "tria-spot %s (%s, %s)\n", version, gitCommit, buildDate)
 			return 0
@@ -61,21 +58,6 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	return supervise(cfg, errOut)
 }
 
-func hookCmd(args []string, in io.Reader, out, errOut io.Writer) int {
-	if len(args) == 0 || args[0] != "pretool" {
-		fmt.Fprintln(errOut, "usage: tria-spot hook pretool [--state-dir DIR]")
-		return 2
-	}
-	fs := flag.NewFlagSet("hook pretool", flag.ContinueOnError)
-	fs.SetOutput(errOut)
-	state := fs.String("state-dir", config.DefaultStateDir, "state directory (audit log)")
-	if err := fs.Parse(args[1:]); err != nil {
-		// A broken hook invocation must not block the agent's tools.
-		return 0
-	}
-	return hook.Run(in, out, errOut, hook.Options{StateDir: *state})
-}
-
 func supervise(cfg config.Config, errOut io.Writer) int {
 	reapOrphans()
 	log := slog.New(slog.NewTextHandler(errOut, &slog.HandlerOptions{Level: level(cfg.LogLevel)}))
@@ -86,13 +68,6 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	if err != nil {
 		log.Error("state dir", "err", err)
 		return 1
-	}
-	hookBin := cfg.HookBin
-	if hookBin == "" {
-		if hookBin, err = os.Executable(); err != nil {
-			log.Error("cannot find own path for the hook", "err", err)
-			return 1
-		}
 	}
 	var fed *render.Federation
 	if cfg.AnthropicAuth == config.AuthFederation {
@@ -109,7 +84,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	paths, err := render.Render(render.Input{
 		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
-		HookBin: hookBin, OtelTokenFile: cfg.OtelTokenFile,
+		OtelTokenFile: cfg.OtelTokenFile,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 			Connectors: promptConnectors(cfg.Connectors),

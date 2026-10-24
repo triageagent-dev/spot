@@ -19,7 +19,7 @@ func setup(t *testing.T) (Input, string) {
 	return Input{
 		RunDir: run, StateDir: filepath.Join(d, "state"),
 		CoreMCPURL: "https://core.example.invalid/mcp", CoreTokenFile: tok, AnthropicKeyFile: key,
-		HookBin: "/usr/local/bin/tria-spot", Instruction: "hello",
+		Instruction: "hello",
 	}, d
 }
 
@@ -86,8 +86,34 @@ func TestRenderMCPAndSettingsContent(t *testing.T) {
 	if st["apiKeyHelper"] != p.KeyHelper {
 		t.Fatalf("apiKeyHelper = %v", st["apiKeyHelper"])
 	}
-	if !strings.Contains(string(sb), `"matcher": "Bash"`) {
-		t.Fatalf("hook not configured: %s", sb)
+	if strings.Contains(string(sb), "hooks") {
+		t.Fatalf("no hook: the shell is not among the agent's tools: %s", sb)
+	}
+	var perm struct {
+		Permissions struct{ Deny []string } `json:"permissions"`
+	}
+	must(t, json.Unmarshal(sb, &perm))
+	deny := strings.Join(perm.Permissions.Deny, "\n")
+	// Credentials by directory (a volume serves the file through ..data), the
+	// kubelet's mounts, and the directories the agent must not write.
+	for _, want := range []string{
+		"Read(" + absRule(filepath.Dir(in.CoreTokenFile)) + "/**)",
+		"Read(" + absRule(filepath.Dir(in.AnthropicKeyFile)) + "/**)",
+		"Read(//var/run/secrets/**)",
+		"Read(" + absRule(in.RunDir) + "/**)",
+		"Edit(" + absRule(filepath.Join(in.StateDir, "supervisor")) + "/**)",
+		"Write(" + absRule(filepath.Join(in.StateDir, "work")) + "/**)",
+		"Write(" + absRule(filepath.Join(in.StateDir, "claude")) + "/**)",
+		"Write(" + absRule(in.RunDir) + "/**)",
+	} {
+		if !strings.Contains(deny, want) {
+			t.Errorf("deny rules lack %q:\n%s", want, deny)
+		}
+	}
+	for _, r := range perm.Permissions.Deny {
+		if strings.Contains(r, "notes") || strings.Contains(r, "next.json") {
+			t.Errorf("the agent's own files must stay writable: %s", r)
+		}
 	}
 }
 
@@ -168,7 +194,7 @@ func TestFederationRenderHasNoKeyHelperAndNoKeyReference(t *testing.T) {
 	}
 	must(t, json.Unmarshal(sb, &st))
 	deny := strings.Join(st.Permissions.Deny, "\n")
-	for _, want := range []string{"Read(//", in.Federation.IdentityTokenFile[1:], in.CoreTokenFile[1:], strings.TrimPrefix(in.RunDir, "/") + "/**"} {
+	for _, want := range []string{"Read(//", filepath.Dir(in.Federation.IdentityTokenFile)[1:] + "/**", filepath.Dir(in.CoreTokenFile)[1:] + "/**", strings.TrimPrefix(in.RunDir, "/") + "/**"} {
 		if !strings.Contains(deny, want) {
 			t.Errorf("deny rules lack %q:\n%s", want, deny)
 		}
@@ -277,7 +303,7 @@ func TestOtelHeaderHelperReadsTheTokenFromAFile(t *testing.T) {
 	if st["otelHeadersHelper"] != p.OtelHelper {
 		t.Fatalf("otelHeadersHelper = %v", st["otelHeadersHelper"])
 	}
-	if !strings.Contains(string(sb), "Read("+absRule(otel)+")") || strings.Contains(string(sb), "egs_example") {
+	if !strings.Contains(string(sb), "Read("+absRule(filepath.Dir(otel))+"/**)") || strings.Contains(string(sb), "egs_example") {
 		t.Fatalf("settings must deny the token file and not hold it: %s", sb)
 	}
 }

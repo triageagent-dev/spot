@@ -22,5 +22,3 @@ networkPolicy:
     podSelector:
       matchLabels:
         app.kubernetes.io/name: core
-  apiServer:
-    cidrs: [10.0.0.1/32]

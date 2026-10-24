@@ -31,8 +31,9 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "tria-spot.saName" . }}
-      # kubectl in the pod authenticates with the projected ServiceAccount token.
-      automountServiceAccountToken: true
+      # Nothing in the pod talks to the API server: the core and the Anthropic
+      # API each get their own projected, audience-bound token below.
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true

@@ -33,5 +33,3 @@ networkPolicy:
       matchLabels: {kubernetes.io/metadata.name: example-obs}
     podSelector:
       matchLabels: {app.kubernetes.io/name: collector}
-  apiServer:
-    cidrs: [10.0.0.1/32]

@@ -15,13 +15,10 @@ anthropic:
     serviceAccountId: svac_example
 agent:
   persistent: true
-rbac:
-  read:
-    enabled: false
 connectors:
   - name: example-kube
     url: http://tools.example-conn.svc:8084/mcp
-    tools: [kubectl_get, kubectl_describe, kubectl_logs]
+    tools: [k8s_get_resources, k8s_describe_resource, k8s_get_pod_logs]
     hint: The workspace's cluster, read-only.
     egress:
       namespaceSelector:
@@ -35,5 +32,3 @@ networkPolicy:
       matchLabels: {kubernetes.io/metadata.name: example-core}
     podSelector:
       matchLabels: {app.kubernetes.io/name: core}
-  apiServer:
-    cidrs: [10.0.0.1/32]

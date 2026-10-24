@@ -209,13 +209,12 @@ var CoreToolsDenied = []string{
 	"build_memory", "build_knowledge", "build_rca",
 }
 
-// DefaultAllowed is the --allowedTools list: reads, the notes directory and
-// next.json, the core tools the loop uses and the shell tools an
-// investigation needs. A cluster is reached through a connector (an MCP
-// server that holds its own credential), never through a shell: the image has
-// no kubectl. No tool that writes an arbitrary path is here:
-// echo, mkdir, sort and uniq can write files, so the agent keeps its notes
-// with Edit and Write.
+// DefaultAllowed is the --allowedTools list: the file reads (which the
+// settings' deny rules keep away from the credential files), the notes
+// directory and next.json, and the core tools the loop uses. No shell: a
+// cluster is reached through a connector (an MCP server that holds its own
+// credential), the image has no kubectl, and a shell command runs as the uid
+// that can read every mounted token, which no deny rule reaches.
 func DefaultAllowed(stateDir string) []string {
 	state := "/" + filepath.ToSlash(stateDir)
 	out := []string{
@@ -226,22 +225,19 @@ func DefaultAllowed(stateDir string) []string {
 	for _, t := range CoreTools {
 		out = append(out, "mcp__"+render.ServerName+"__"+t)
 	}
-	return append(out,
-		"Bash(jq *)", "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(grep *)",
-		"Bash(wc *)", "Bash(date *)",
-	)
+	return out
 }
 
-// DefaultDisallowed is the --disallowedTools list: the web, subagents (their
-// usage is not in the result the ledger counts) and the core tools the spot
-// must never call.
+// DefaultDisallowed is the --disallowedTools list: the shell, the web,
+// subagents (their usage is not in the result the ledger counts) and the core
+// tools the spot must never call.
 func DefaultDisallowed() []string { return Disallowed(false) }
 
-// Disallowed is DefaultDisallowed, or with coreAll only the web and subagents:
-// the operator has chosen to give the spot every core tool Tria has, so the
-// core's own grant (the ServiceAccount's Role) is what bounds it.
+// Disallowed is DefaultDisallowed, or with coreAll only the shell, the web and
+// subagents: the operator has chosen to give the spot every core tool Tria
+// has, so the core's own grant (the ServiceAccount's Role) is what bounds it.
 func Disallowed(coreAll bool) []string {
-	out := []string{"WebFetch", "WebSearch", "Task", "Agent"}
+	out := []string{"Bash", "WebFetch", "WebSearch", "Task", "Agent"}
 	if coreAll {
 		return out
 	}

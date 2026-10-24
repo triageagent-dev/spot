@@ -36,13 +36,11 @@ const (
 	UsageFile   = "usage.json"
 	StatusFile  = "status.json"
 	RoomsFile   = "rooms.json"
-	AuditFile   = "audit.log"
-	CounterFile = "hook-writes.json"
 )
 
 // migrated are the files an earlier layout kept at the state root. New
 // returns them to the supervisor directory once.
-var migrated = []string{SessionFile, UsageFile, StatusFile, CounterFile, AuditFile, AuditFile + ".1"}
+var migrated = []string{SessionFile, UsageFile, StatusFile}
 
 // Ledger is safe for concurrent use.
 type Ledger struct {

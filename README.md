@@ -22,11 +22,9 @@ supervisor works without them.
    |    polls the core (MCP, model-free) for edges            |
    |    claude -p --resume ... (one turn per wake)  ----+     |
    |                                                    v     |
-   |  Claude Code CLI -- MCP --> core /mcp   kubectl --> API  |
-   |        ^  PreToolUse hook: tria-spot hook pretool        |
+   |  Claude Code CLI -- MCP --> core /mcp, connectors        |
    |  /state: notes/, next.json (the agent's)                 |
-   |          supervisor/: session, usage, status, cursors,  |
-   |          audit.log (the supervisor's; not editable)      |
+   |          supervisor/: session, usage, status, cursors    |
    +----------------------------------------------------------+
 ```
 
@@ -196,7 +194,7 @@ Flags only. No credential is a flag value or an environment variable.
 | `--anthropic-org-id` | required with `federation` | Anthropic organization id |
 | `--anthropic-service-account-id` | required with `federation` | Anthropic service account id (`svac_...`) |
 | `--anthropic-workspace-id` | | workspace id (`wrkspc_...`); optional when the rule spans one workspace |
-| `--state-dir` | `/state` | persistent: notes, session, schedule, ledger, audit log |
+| `--state-dir` | `/state` | persistent: notes, session, schedule, ledger |
 | `--run-dir` | `/run/tria-spot` | memory-backed: rendered CLI config |
 | `--claude-bin` | `claude` | the CLI |
 | `--model` | CLI default | `--model` for the CLI |
@@ -215,13 +213,9 @@ Flags only. No credential is a flag value or an environment variable.
 | `--chat-batch` | `10m` | how long a room message that does not name the spot waits before it wakes a turn; `0` wakes at once |
 | `--max-edge-wakes-per-hour` | `12` | cap on early wakes per hour; `0` = no cap |
 | `--heartbeat-id` | `system2-heartbeat-<tenant>` | memory cell id of the heartbeat |
-| `--local-kubectl` | off | let the spot run `kubectl` in its own pod, bounded by the pod's ServiceAccount; off = a cluster is reached through connectors only |
-| `--kubectl-writes-per-hour` | `20` | PreToolUse hook cap on local kubectl |
-| `--hook-bin` | this executable | binary the hook setting runs |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
-`tria-spot hook pretool [--state-dir D] [--kubectl-writes-per-hour N]` is the
-hook, `tria-spot version` prints the build.
+`tria-spot version` prints the build.
 
 ## How credentials flow
 
@@ -258,7 +252,9 @@ needs are not secrets, but they are flags, not environment variables.
   directory on a memory-backed emptyDir, so a rotated token reaches the CLI
   without a restart. Its own MCP client re-reads the token file on every
   request.
-- **ServiceAccount token.** The cluster's projected token, used by `kubectl`.
+- **ServiceAccount token.** The pod's default ServiceAccount token is not
+  mounted (`automountServiceAccountToken: false`); nothing in the pod talks to
+  the API server. The projected tokens above are separate volumes.
 - **The CLI's environment** is the supervisor's, minus every variable whose
   name contains KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL or starts with
   `ANTHROPIC_`, `CLAUDE_CODE_OAUTH` or `CLAUDE_CODE_USE_`, plus `HOME` and
@@ -266,15 +262,17 @@ needs are not secrets, but they are flags, not environment variables.
   `DISABLE_ERROR_REPORTING=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. In
   federation mode `ANTHROPIC_CONFIG_DIR` and `ANTHROPIC_PROFILE` are added
   back, and nothing else with that prefix. None of these is a credential.
-- `settings.json` denies the Read tool on the run directory, everything under
-  `/var/run/secrets` (the ServiceAccount token included), the core token file,
-  and the key file (key mode) or the identity token file (federation); and it
-  denies Edit and Write on `/state/supervisor`, `/state/claude` (the CLI's
-  config home), `/state/home`, `/state/work` (the CLI's working directory, an
-  empty directory of its own) and the run directory. The agent's writable
-  files are `/state/notes/**` and `/state/next.json`, through Edit and Write;
-  no shell command that writes a file (`echo`, `mkdir`, `sort`, `uniq`) is in
-  the allow list.
+- `settings.json` denies the Read tool on the run directory, on
+  `/var/run/secrets/**` and on the directory of every credential file (the
+  core token, the OTLP token, and the key file in key mode or the identity
+  token in federation mode). It is by directory because a Secret or projected
+  volume serves the file through a `..data` symlink. It denies Edit and Write
+  on `/state/supervisor`, `/state/claude` (the CLI's config home),
+  `/state/home`, `/state/work` (the CLI's working directory, an empty
+  directory of its own) and the run directory. The agent has no shell:
+  `Bash` is in `--disallowedTools`, so the Read deny rules are the whole story
+  for the CLI's file tools. The agent's writable files are `/state/notes/**`
+  and `/state/next.json`, through Edit and Write.
 
 ### The identity token must be fresh at every exchange
 
@@ -299,38 +297,26 @@ the Console history: `jti_reused`, `match_subject_prefix` and the other
 `match_*` rules, `workspace_id_required`. Whether to switch off `check_jti` on a
 dedicated issuer is a decision for whoever runs the test.
 
-**Limit, stated plainly.** The agent's shell runs as the same user as the
-supervisor, so a command it runs (`head /run/tria-spot/mcp.json`; `head`,
-`tail` and `grep` are allowed because log reading needs them) can read the
-rendered files, the mounted tokens, the identity token and the cached access
-token, and it could post what it read to a room through the core. The deny
-rules and the prompt only stop the obvious path. What bounds the damage is:
-the Anthropic key (or the federated service account's workspace) has a spend
-limit, the core identity has `r` and `w` on one tenant and nothing else, the
-ServiceAccount reads a listed namespace and nothing more, NetworkPolicy lets
-egress reach only the Anthropic API, the core, the API server and the OTLP
-endpoint, and the Read stage grants no Secrets. The same user also means a
-shell command can write where the Edit tool is denied; the supervisor's
-counters are therefore held in memory (the ledger) or best effort (the hook).
+**Limit, stated plainly.** There is no shell, so the only readers of the
+rendered files and mounted tokens are the CLI's own file tools, which the deny
+rules bind. What bounds the rest is: the Anthropic key (or the federated
+service account's workspace) has a spend limit, the core identity has `r` and
+`w` on one tenant and nothing else, the connector's own identity is whatever
+its operator gave it, and the NetworkPolicy lets egress reach only the
+Anthropic API, the core, the connectors and the OTLP endpoint. The
+supervisor's counters are held in memory.
 
-## Stages and RBAC
+## Boundary
 
-The cluster boundary is the ServiceAccount, not the prompt and not the hook.
-
-| Stage | Chart | The agent can |
-| --- | --- | --- |
-| Read | ClusterRole + binding (`rbac.read.enabled`, default on; cluster-wide unless `rbac.read.namespaces` lists namespaces, then a Role per namespace and only nodes and namespaces cluster-wide) | `get/list/watch` pods, services, endpoints, events, nodes, namespaces, PVCs, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs, Ingresses, NetworkPolicies, metrics; `pods/log`. No Secrets, no ConfigMaps. |
-| Act | one `Role` + `RoleBinding` per name in `actNamespaces` (default `[]`) | `act.scope: limited` (default): `delete` pods; `patch`/`update` the scale subresource of Deployments and StatefulSets. No `patch` on the workloads themselves: that would let the holder rewrite the pod template (mount any Secret, change the ServiceAccount), so `kubectl rollout restart` is not available and the spot deletes pods instead. `act.scope: namespace`: every verb on pods (log, exec, port-forward, eviction), services, endpoints, config maps, PVCs, quotas, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs, Ingresses, NetworkPolicies and PDBs of those namespaces, including `patch`. Still never Secrets, ServiceAccounts, Roles or RoleBindings, nor custom resources, so it cannot read a credential or widen its own grant. |
-
-Back out by emptying `actNamespaces` or deleting the Role. Inside the RBAC the
-supervisor narrows further: an explicit permission mode (auto where the CLI
-offers it), `--allowedTools` for the tools the loop needs (an explicit list
-of the core's tools, `runner.CoreTools`, never `mcp__core__*`),
-`--disallowedTools` for WebFetch, WebSearch, subagents (their usage is not in
-the result the ledger counts) and the core tools the spot must never call
-(`runner.CoreToolsDenied`: `resolve_issue`, `forget_issue`,
-`update_issue_severity`, `set_tenant_goals`, `run_rsi`, the event, pattern,
-memory-editing and test tools), and the PreToolUse hook.
+The spot holds no cluster RBAC. A cluster is reached through a connector,
+whose own identity is the boundary. The supervisor narrows further with the
+permission mode (auto where the CLI offers it), `--allowedTools` (the core's
+tools by name, `runner.CoreTools`, and each connector's tools by exact name,
+never `mcp__core__*`) and `--disallowedTools` (`Bash`, WebFetch, WebSearch,
+subagents, whose usage is not in the result the ledger counts, and the core
+tools the spot must never call, `runner.CoreToolsDenied`: `resolve_issue`,
+`forget_issue`, `update_issue_severity`, `set_tenant_goals`, `run_rsi`, the
+event, pattern, memory-editing and test tools).
 
 ### Identity towards the core
 
@@ -346,23 +332,11 @@ that namespace, so in this mode the chart must be installed in the core's
 namespace. `core.identity: secret` keeps the earlier behaviour: a bearer token
 read from the Secret named in `core.tokenSecret`, usable from any namespace.
 
-### The hook is not the boundary
-
-`tria-spot hook pretool` appends every Bash command to
-`/state/supervisor/audit.log` (one JSON line each, rotated at 5 MiB) and refuses a mutating `kubectl` command
-(apply, patch, delete, scale, rollout restart/undo, annotate, label, edit,
-replace, cordon, uncordon, drain, taint, create, set, run, expose, autoscale)
-once `--kubectl-writes-per-hour` have run in the last hour, counting every
-write in a compound command. `--dry-run` other than `=none`/`=false` is not
-counted. It scans words, so it also sees `bash -c "kubectl ..."` and
-`xargs kubectl ...`. A shell can route around any text check (a script, an
-interpreter, a client library), so treat the hook as a speed bump and an
-audit trail. It fails open: a broken hook must not stop an investigation.
-
 ## Kill switches
 
-Any one is enough: `spot.enabled=false`; delete the Deployment; delete the Act
-`Role` (reads only); revoke the core token (it can neither read nor speak). The
+Any one is enough: `spot.enabled=false`; delete the Deployment; delete the
+connector's egress or the connector itself (it can read and write nothing in
+the cluster); revoke the core token (it can neither read nor speak). The
 Anthropic workspace's spend limit stops the model regardless of the pod.
 
 ## Status
@@ -392,16 +366,16 @@ for `auto` and the CLI reports anything else, it logs an error, records it in
 `status.json` (`fellBack`) and uses `--fallback-permission-mode` (`dontAsk`) for
 all later turns. In `dontAsk`, only `--allowedTools` run, which is why that
 list is kept (reads, edits under `/state/notes` and `next.json`, the core
-tools by name, the connectors' tools by name, `jq` and a few read-only text tools (`kubectl` only with `--local-kubectl`); no bare
-`Bash`, no `cat`, nothing that writes a file), and the hook and RBAC carry
-the rest. `--permission-prompts none` is always passed so nothing waits for an
+tools by name, the connectors' tools by name; there is no Bash at all), and
+the connector's own limits carry the rest. `--permission-prompts none` is always passed so nothing waits for an
 answer.
 
 ## Image
 
 The image is built with ko only; there is no Dockerfile and no Docker. `make
-kodata` downloads the Claude Code CLI, `kubectl` and `jq` for linux/amd64 into
-`cmd/tria-spot/kodata`, each checked against a pinned digest, and ko adds them
+kodata` downloads the Claude Code CLI and `jq` for linux/amd64 into
+`cmd/tria-spot/kodata`, each checked against a pinned digest, and removes
+anything else it finds in the directory so a stale binary cannot ship. ko adds them
 to the image under `/var/run/ko`. The supervisor puts that directory first on
 the CLI's `PATH` (from `KO_DATA_PATH`) and runs the kodata copy of the CLI.
 `make image` writes an OCI layout to `bin/image` and pushes nothing; `make
@@ -412,9 +386,8 @@ read-only root filesystem; every write goes to `/state`, `/run/tria-spot` or
 | Component | Version | Where it came from |
 | --- | --- | --- |
 | Claude Code CLI | `2.1.304` | The Claude Code package ships a native binary per platform. `npm view @anthropic-ai/claude-code dist-tags` on 2026-10-21: `stable` = 2.1.304. `make kodata` runs `npm pack @anthropic-ai/claude-code-linux-x64@2.1.304`, computes the tarball's sha512 and fails unless it equals the value in the Makefile (the registry's `dist.integrity` for that package). No Node is needed at run time. |
-| kubectl | `v1.37.1` | `https://dl.k8s.io/release/stable.txt` on 2026-10-21; the amd64 sha256 from `dl.k8s.io` is in the Makefile and checked with `shasum -a 256 -c`. |
 | jq | `1.7.1` | the `jq-linux-amd64` asset of the jqlang release; the sha256 is from the release's `sha256sum.txt` and is checked the same way. |
-| Base image | `buildpack-deps:bookworm-curl` | pinned by digest in `.ko.yaml`: it has bash, coreutils, curl and CA certificates, which the CLI's shell tool and the agent's commands need. linux/amd64 only. |
+| Base image | `buildpack-deps:bookworm-curl` | pinned by digest in `.ko.yaml`: it has bash, coreutils, curl and CA certificates; the shell is only used by the CLI for `apiKeyHelper`/`otelHeadersHelper`. linux/amd64 only. |
 
 Seen: ko builds it (`make image`), the kodata files land in the image as mode
 `0555`, and the entrypoint is `/ko-app/tria-spot`.
@@ -488,9 +461,8 @@ level. An error the API or the CLI produced (`API Error: ...`) is operational
 and is logged, because it is what diagnoses a failed login. `--log-level` is
 `debug`, `info` (default), `warn` or `error`.
 
-Two things on `/state` are not logs and do hold content:
-`supervisor/audit.log` (each Bash command the agent ran) and the notes and
-`status.json` `nextWake.why` the agent wrote itself. They stay in the pod's
+Two things on `/state` are not logs and do hold content: the notes and
+`status.json` `nextWake.why`, which the agent wrote itself. They stay in the pod's
 volume. The supervisor is PID 1 in the container and reaps children the CLI
 leaves behind.
 
@@ -507,21 +479,19 @@ either the key Secret (`key`, default) or a projected `serviceAccountToken`
 volume at `/var/run/secrets/anthropic.com` (`federation`: audience
 `https://api.anthropic.com`, `tokenExpirationSeconds` 600; no Secret mounted;
 `anthropic.federation.ruleId`, `organizationId` and `serviceAccountId` are
-required, `workspaceId` is optional), the Read ClusterRole and
-binding, one Act Role per `actNamespaces` entry, and a NetworkPolicy (egress
-to cluster DNS, the Anthropic API CIDRs, the core, the API server and, with
+required, `workspaceId` is optional), and a NetworkPolicy (egress
+to cluster DNS, the Anthropic API CIDRs, the core, the connectors and, with
 `telemetry.enabled`, the OTLP endpoint from `networkPolicy.telemetry`;
 nothing in). NetworkPolicy has no host names, so the Anthropic CIDRs are the
 ones Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`,
 platform.claude.com/docs/en/api/ip-addresses), the core is selected by
-namespace and pod selector or CIDR, and `networkPolicy.apiServer.cidrs` is yours
-to set. The chart fails to render when a required value is missing.
+namespace and pod selector or CIDR. The chart fails to render when a required value is missing.
 `make chart-lint` runs `helm lint` and `helm template` with the flag off (must
 render nothing), in key mode (`ci/enabled-values.yaml`), in federation mode
 (`ci/federation-values.yaml`), with telemetry (`ci/telemetry-values.yaml`) and
 with the ServiceAccount identity (`ci/serviceaccount-values.yaml`;
 placeholders only), checks that the pod has no `env`, that no rule names
-Secrets, that no Act rule has `patch` on a workload, that each mode mounts
+Secrets, that no ClusterRole renders and the ServiceAccount token is not mounted, that each mode mounts
 only its own credential, and that a missing required value or an unknown
 mode fails to render. The federation exchange goes to the Anthropic API, so the NetworkPolicy
 is unchanged.
@@ -537,8 +507,8 @@ spot has no code for any of them and carries no credential for them.
 connectors:
   - name: example-kube
     url: http://tools.example.svc:8084/mcp
-    tools: [kubectl_get, kubectl_describe, kubectl_logs]
-    hint: The workspace's cluster, read-only. Use it instead of kubectl.
+    tools: [k8s_get_resources, k8s_describe_resource, k8s_get_pod_logs]
+    hint: The workspace's cluster, read-only.
     egress:
       namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: example}}
       podSelector: {matchLabels: {app.kubernetes.io/name: tools}}
@@ -557,11 +527,10 @@ connectors:
 - Who the connector trusts is the connector's own business: its identity, its
   RBAC or IAM, and the network. A tool the connector offers but the spot does
   not name is refused by the CLI, but the connector's own limits are the
-  boundary, never the list. A cluster other than the spot's own is reached
-  through such a connector, with `rbac.read.enabled: false` so the spot's
-  ServiceAccount reads nothing in its own cluster.
+  boundary, never the list. A connector is the only way to any cluster: the
+  spot holds no cluster RBAC of its own.
 
-## Run it against a local kubeconfig
+## Run it locally
 
 The supervisor needs the CLI, a core you can reach and your own credentials in
 files. Nothing below is a real name.
@@ -578,16 +547,14 @@ printf '%s' "$ANTHROPIC_KEY" > /tmp/spot/anthropic-key
   --min-wake 2m --daily-token-ceiling 200000 --log-level debug
 ```
 
-`kubectl` uses your `KUBECONFIG`, which passes through the environment scrub,
-so the agent has your own access: point it at a read-only context. `Ctrl-C`
-stops it gracefully. Check `/tmp/spot/state/status.json` and
-`audit.log`. Without a `claude` login on the machine the CLI uses only the
-key helper.
+The spot reaches no cluster unless `--connectors-file` names a connector.
+`Ctrl-C` stops it gracefully. Check `/tmp/spot/state/supervisor/status.json`.
+Without a `claude` login on the machine the CLI uses only the key helper.
 
 ## Layout
 
 ```
-cmd/tria-spot            entrypoint: supervisor, `hook pretool`, `version`, PID-1 reaper
+cmd/tria-spot            entrypoint: supervisor, `version`, PID-1 reaper
 internal/config          flags
 internal/render          CLI config into the run dir (modes, helper script)
 internal/runner          one `claude -p` turn: args, env scrub, stream parse, timeouts
@@ -596,7 +563,6 @@ internal/schedule        next.json parse and clamp
 internal/corecli         the supervisor's MCP client (list_open_issues, heartbeat, rooms)
 internal/edges           edge detection between issue snapshots
 internal/ledger          /state layout: the supervisor directory, session, daily usage (in memory, written through), room cursors, status
-internal/hook            the PreToolUse hook
 internal/prompt          the system prompt (instruction.md, embedded) and turn prompts
 internal/supervisor      the loop; tests drive it with a fake `claude` script
 charts/tria-spot         Helm chart
@@ -615,9 +581,8 @@ unreachable core):
 | `apiKeyHelper` (run through `/bin/sh`, output sent as the API credential, cached 5 minutes) | https://code.claude.com/docs/en/settings-reference#apikeyhelper |
 | Credential order (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN` rank above profiles and federation); `ANTHROPIC_PROFILE`; no profiles or federation variables in `--bare` | https://code.claude.com/docs/en/authentication#anthropic-profiles-and-federation-credentials |
 | Federation variables, the all-four activation rule, `ANTHROPIC_CONFIG_DIR`, `ANTHROPIC_PROFILE`, profile file layout (`configs/<name>.json`, `credentials/<name>.json` mode 0600), profile JSON (`authentication.type: oidc_federation`, `identity_token {source: file, path}`), `jti_reused` and the opaque 401 | https://platform.claude.com/docs/en/manage-claude/wif-reference |
-| PreToolUse input (`tool_name`, `tool_input.command`, `session_id`, `tool_use_id`), deny by `hookSpecificOutput.permissionDecision`, hook `args` exec form, settings shape | https://code.claude.com/docs/en/hooks |
 | MCP file: `mcpServers.<name>` with `type: "http"`, `url`, `headers` | https://code.claude.com/docs/en/mcp |
-| Permission rule syntax (`mcp__core__*`, `Edit(//abs/path/**)`, `Bash(kubectl *)`) | https://code.claude.com/docs/en/permissions |
+| Permission rule syntax (`mcp__core__*`, `Edit(//abs/path/**)`, `Read(//abs/path/**)`) | https://code.claude.com/docs/en/permissions |
 | stream-json fields: `system/init` (`session_id`, `permissionMode`, `mcp_servers`), `assistant.message.usage`, `result` (`subtype`, `is_error`, `usage`, `total_cost_usd`, `terminal_reason`, `errors`), `system/api_retry` (`error: authentication_failed`) | https://code.claude.com/docs/en/agent-sdk/typescript and the live run |
 
 Seen live in federation mode (2026-10-22, CLI 2.1.305, dummy identity token file, a rule id the API rejects as malformed): the CLI read the rendered profile from `ANTHROPIC_CONFIG_DIR`/`ANTHROPIC_PROFILE` and attempted a real exchange against `api.anthropic.com`. The result text was `API Error: Token exchange failed with status 400 ... federation_rule_id is not a well-formed fdrl_ tagged ID`, so the rule id, service account, organization and token path came from the profile (none was in the environment). The init message reported `apiKeySource: none` with no `apiKeyHelper` in `settings.json`. The SDK created `<run-dir>/anthropic/credentials/federation/`. `claude doctor --settings` raised no settings warning. That failure arrives as a `result` with `subtype: success`, `is_error: true` and no `api_error_status`, not as `api_retry` events.
@@ -647,8 +612,8 @@ Not verified, and why:
   undercount a turn that spawns subagents), and `-p` reading a prompt from
   stdin when no argument is given (documented for piped input; the live run
   started a turn, but it never reached the model).
-- Whether the hook `args` exec form and `timeout` are honoured: documented,
-  and `settings.json` loaded without a warning, but no Bash call ran.
+- Whether the CLI applies a `Read(...)` deny rule to `Grep` and `Glob` as the
+  permissions doc says: not exercised live.
 - The core side of phase 3: `say_in_workspace` and `read_workspace_room` do not
   exist yet. The reply shape of `read_workspace_room` is read loosely (an
   object with `messages`, or an array; `id`, `sender|from|author`,

@@ -50,6 +50,8 @@ JQ_SHA256             ?= 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b8
 .PHONY: kodata
 kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	@mkdir -p $(KODATA)
+	@# ko packs the whole directory: anything an earlier fetch left (a kubectl) would ship.
+	@find $(KODATA) -mindepth 1 ! -name .gitkeep ! -name claude ! -name jq -exec rm -rf {} +
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	 (cd "$$tmp" && npm pack "@anthropic-ai/claude-code-linux-x64@$(CLAUDE_CODE_VERSION)" --silent >/dev/null); \
 	 got="sha512-$$(openssl dgst -sha512 -binary "$$tmp"/*.tgz | base64 | tr -d '\n')"; \
@@ -59,6 +61,7 @@ kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	 curl -fsSL -o "$$tmp/jq" "https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-linux-amd64"; \
 	 echo "$(JQ_SHA256)  $$tmp/jq" | shasum -a 256 -c -; \
 	 install -m 0755 "$$tmp/jq" $(KODATA)/jq
+	@test "$$(ls -A $(KODATA) | grep -v '^\.gitkeep$$' | sort | tr '\n' ' ')" = "claude jq " || { echo "kodata holds more than claude and jq:"; ls -A $(KODATA); exit 1; }
 	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), jq $(JQ_VERSION)"
 
 .PHONY: image
@@ -94,7 +97,8 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	@for f in $(CHART_TMP)/tria-spot-key.yaml $(CHART_TMP)/tria-spot-fed.yaml $(CHART_TMP)/tria-spot-tel.yaml $(CHART_TMP)/tria-spot-sa.yaml $(CHART_TMP)/tria-spot-conn.yaml; do \
 	  ! grep -qE '^[[:space:]]+env(From)?:' $$f || { echo "the pod must carry no env ($$f)"; exit 1; }; \
 	  ! grep -qE 'resources:.*secrets' $$f || { echo "no RBAC rule may name secrets ($$f)"; exit 1; }; \
-	  ! awk '/resources:/ {r=$$0} /verbs:.*patch/ {n=split(r,a,/[][ ,]+/); for(i=1;i<=n;i++) if(a[i]=="deployments"||a[i]=="statefulsets"||a[i]=="daemonsets") bad=1} END {exit !bad}' $$f || { echo "no rule may patch a workload, only the scale subresources ($$f)"; exit 1; }; \
+	  ! grep -qE 'kind: (ClusterRole|ClusterRoleBinding)' $$f || { echo "the spot holds no cluster RBAC; a cluster is reached through a connector ($$f)"; exit 1; }; \
+	  grep -q 'automountServiceAccountToken: false' $$f || { echo "the ServiceAccount token must not be mounted ($$f)"; exit 1; }; \
 	done
 	@grep -q -- '--otel-tenant-attr=triage.tenant' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant=' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant-attr' $(CHART_TMP)/tria-spot-key.yaml || { echo "telemetry: the label attribute is always passed, the label itself only when set (default: the spot's name)"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml --set telemetry.tenant=example --set 'telemetry.tenantName=Example workspace' | grep -q -- '--otel-tenant-name="Example workspace"' || { echo "telemetry: a set tenant name reaches the flag"; exit 1; }

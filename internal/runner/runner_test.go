@@ -48,13 +48,11 @@ func TestAllowedToolsAreScoped(t *testing.T) {
 			t.Errorf("allowed tools lack %q: %s", want, allowed)
 		}
 	}
-	// A bare Bash, an unscoped Edit, a wildcard over the core's tools or a
-	// shell command that writes a file would pre-approve too much.
+	// An unscoped Edit or a wildcard over the core's tools would pre-approve
+	// too much, and any shell command runs as the uid that reads the tokens.
 	for _, r := range DefaultAllowed("/state") {
 		switch {
-		case r == "Bash" || r == "Edit" || r == "Write" || r == "Bash(*)" || r == "Bash(cat *)",
-			r == "mcp__core__*" || r == "Edit(//state/**)",
-			strings.HasPrefix(r, "Bash(echo"), strings.HasPrefix(r, "Bash(mkdir"), strings.HasPrefix(r, "Bash(sort"):
+		case r == "Edit" || r == "Write" || r == "mcp__core__*" || r == "Edit(//state/**)", strings.HasPrefix(r, "Bash"):
 			t.Errorf("too broad: %s", r)
 		}
 	}
@@ -62,7 +60,7 @@ func TestAllowedToolsAreScoped(t *testing.T) {
 		t.Errorf("kubectl is not a default tool; a cluster is reached through connectors: %s", allowed)
 	}
 	dis := strings.Join(DefaultDisallowed(), ",")
-	for _, want := range []string{"mcp__core__resolve_issue", "mcp__core__forget_issue", "mcp__core__run_rsi", "Task", "Agent", "WebFetch"} {
+	for _, want := range []string{"Bash", "mcp__core__resolve_issue", "mcp__core__forget_issue", "mcp__core__run_rsi", "Task", "Agent", "WebFetch"} {
 		if !strings.Contains(dis, want) {
 			t.Errorf("disallowed tools lack %q: %s", want, dis)
 		}

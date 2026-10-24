@@ -58,14 +58,4 @@ spec:
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
     {{- end }}
-    # The cluster API server (kubectl and the ServiceAccount token).
-    - to:
-        {{- range (required "networkPolicy.apiServer.cidrs is required when the NetworkPolicy is on" $np.apiServer.cidrs) }}
-        - ipBlock:
-            cidr: {{ . }}
-        {{- end }}
-      ports:
-        {{- range $np.apiServer.ports }}
-        - {protocol: TCP, port: {{ . }}}
-        {{- end }}
 {{- end }}

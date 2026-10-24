@@ -84,8 +84,8 @@ anthropic:
 connectors: []
   # - name: example-kube                       # lowercase letters, digits, dashes; not core or ego
   #   url: http://tools.example.svc:8084/mcp   # streamable HTTP
-  #   tools: [kubectl_get, kubectl_describe]   # required: the tool names the spot may call
-  #   hint: The workspace's cluster, read-only. Use it instead of kubectl.
+  #   tools: [k8s_get_resources, k8s_describe_resource]   # required: the tool names the spot may call
+  #   hint: The workspace's cluster, read-only.
   #   egress:                                  # same shape as networkPolicy.core
   #     namespaceSelector: {}
   #     podSelector: {}
@@ -150,39 +150,19 @@ tolerations: []
 affinity: {}
 podAnnotations: {}
 
+# The pod's own ServiceAccount: the subject of Workload Identity Federation
+# and, with core.identity serviceAccount, of the core grant. It holds no
+# cluster RBAC: the spot reaches a cluster only through a connector, and its
+# token is not mounted (automountServiceAccountToken is false).
 serviceAccount:
   create: true
   name: ""
   annotations: {}
 
-# READ stage: get/list/watch on workloads, events, nodes, services and
-# namespaces, plus pod logs. No Secrets, no ConfigMaps. Bound cluster-wide.
-rbac:
-  read:
-    enabled: true
-    # Namespaces the spot may read workloads, events and pod logs in. Empty =
-    # every namespace. With a list, the cluster-wide part shrinks to nodes and
-    # namespaces only.
-    namespaces: []
-
-# ACT stage: namespaces in which the spot may delete pods and scale
-# Deployments and StatefulSets (the scale subresource). It gets no patch on the
-# workloads themselves: that would let the holder rewrite the pod template
-# (mount any Secret, change the ServiceAccount). Empty = it cannot write
-# anywhere. Deleting a name from this list (or the Role it renders) takes the
-# stage back.
-actNamespaces: []
-
-act:
-  # limited: delete pods and scale (the default). namespace: every verb on the
-  # workloads, services, config maps, PVCs, jobs, HPAs, ingresses, network
-  # policies and PDBs of each actNamespaces entry, but never Secrets,
-  # ServiceAccounts, Roles or RoleBindings.
-  scope: limited
-
-# Egress limited to DNS, the Anthropic API, the core and the API server.
-# NetworkPolicy has no host names: the CIDRs are the ones Anthropic publishes
-# for its API, and the cluster-specific ones are yours to fill in.
+# Egress limited to DNS, the Anthropic API, the core, the connectors and the
+# telemetry endpoint. NetworkPolicy has no host names: the CIDRs are the ones
+# Anthropic publishes for its API, and the cluster-specific ones are yours to
+# fill in.
 networkPolicy:
   enabled: true
   dns:
@@ -209,6 +189,3 @@ networkPolicy:
     podSelector: {}
     cidrs: []
     ports: [4318]
-  apiServer:
-    cidrs: []                     # required when enabled: the API server's address(es)
-    ports: [443, 6443]

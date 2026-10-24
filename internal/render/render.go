@@ -31,7 +31,6 @@ type Input struct {
 	AnthropicKeyFile string // key mode
 	// Federation mode: set Federation and leave AnthropicKeyFile empty.
 	Federation  *Federation
-	HookBin     string // absolute path of the tria-spot binary
 	Instruction string // the rendered system prompt
 	// OtelTokenFile, when set, makes the CLI send its traces with a bearer
 	// token read from this file by a rendered helper (otelHeadersHelper).
@@ -169,42 +168,42 @@ type Server struct {
 	TokenFile string
 }
 
-// Settings builds the settings JSON. Exposed for tests.
+// Settings builds the settings JSON: the helpers and the deny rules. The
+// rules hold because the shell is not among the agent's tools (runner
+// disallows Bash); a Read rule binds every built-in tool that reads a file.
 func Settings(in Input, helperPath string) map[string]any {
-	hook := map[string]any{
-		"type":    "command",
-		"command": in.HookBin,
-		"args": []string{
-			"hook", "pretool",
-			"--state-dir", in.StateDir,
-		},
-		"timeout": 20,
+	st := map[string]any{}
+	// Each credential is denied by its directory, not its file: a Secret or
+	// projected volume serves the file through a ..data symlink, and a rule on
+	// the path alone would leave that path open. /var/run/secrets covers the
+	// ServiceAccount token the kubelet would mount and the identity token.
+	deny := []string{
+		"Read(" + absRule(in.RunDir) + "/**)",
+		"Read(//var/run/secrets/**)",
+		"Read(" + absRule(filepath.Dir(in.CoreTokenFile)) + "/**)",
 	}
-	deny := []string{"Read(" + absRule(in.RunDir) + "/**)"}
-	st := map[string]any{
-		"hooks": map[string]any{
-			"PreToolUse": []any{map[string]any{
-				"matcher": "Bash",
-				"hooks":   []any{hook},
-			}},
-		},
-		// Best effort only: the shell runs as the same user and can cat these.
-		// The key's spend limit and the ServiceAccount's RBAC are the boundary.
-	}
-	deny = append(deny, "Read("+absRule(in.CoreTokenFile)+")")
 	if in.OtelTokenFile != "" {
-		deny = append(deny, "Read("+absRule(in.OtelTokenFile)+")")
+		deny = append(deny, "Read("+absRule(filepath.Dir(in.OtelTokenFile))+"/**)")
 		st["otelHeadersHelper"] = filepath.Join(in.RunDir, "otel-headers.sh")
 	}
 	if in.Federation != nil {
 		// No apiKeyHelper: it outranks federation and would shadow it. The
 		// profile and the cached access token live under the run dir (already
 		// denied); the identity token file is denied explicitly.
-		deny = append(deny, "Read("+absRule(in.Federation.IdentityTokenFile)+")")
+		deny = append(deny, "Read("+absRule(filepath.Dir(in.Federation.IdentityTokenFile))+"/**)")
 	} else {
 		st["apiKeyHelper"] = helperPath
-		deny = append(deny, "Read("+absRule(in.AnthropicKeyFile)+")")
+		deny = append(deny, "Read("+absRule(filepath.Dir(in.AnthropicKeyFile))+"/**)")
 	}
+	// The supervisor's files, the CLI's own home, config and working
+	// directories and the run directory: the agent writes only under its
+	// notes and next.json (the allow rules), and these rules say so even in a
+	// mode where an unlisted write would be put to the classifier.
+	for _, d := range []string{"supervisor", "claude", "home", "work"} {
+		p := absRule(filepath.Join(in.StateDir, d)) + "/**)"
+		deny = append(deny, "Edit("+p, "Write("+p)
+	}
+	deny = append(deny, "Edit("+absRule(in.RunDir)+"/**)", "Write("+absRule(in.RunDir)+"/**)")
 	st["permissions"] = map[string]any{"deny": deny}
 	return st
 }
