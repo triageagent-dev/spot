@@ -87,6 +87,9 @@ type Supervisor struct {
 type heldEdge struct {
 	edges.Edge
 	at time.Time
+	// retries is how many times a wake that carried this edge failed before the
+	// model saw it and the edge was put back.
+	retries int
 }
 
 type roomState struct {
@@ -204,6 +207,9 @@ type pending struct {
 	scheduledBy string
 	note        string
 	room        string // where the "typing…" indicator shows; empty = the agents room
+	// edges are the held edges that made up the wake, so they can be put back if
+	// the turn fails before the model saw them.
+	edges []heldEdge
 }
 
 const maxHeld = 20
@@ -440,9 +446,39 @@ func (s *Supervisor) sleep(ctx context.Context, d time.Duration) bool {
 // dropped.
 func (s *Supervisor) hold(add []edges.Edge) {
 	now := s.now()
+	kept := make([]heldEdge, 0, len(add))
 	for _, e := range add {
-		s.held = append(s.held, heldEdge{Edge: e, at: now})
+		kept = append(kept, heldEdge{Edge: e, at: now})
 	}
+	s.holdKept(kept)
+}
+
+// maxRetries is how many times an edge is put back after a wake that carried it
+// failed before the model saw it. The next failure drops it, so a persistent
+// failure cannot keep one fact alive for ever.
+const maxRetries = 3
+
+// requeue puts back the edges of a wake whose turn failed before any model
+// request, so the next wake carries them. An edge put back maxRetries times is
+// dropped, with a log line that names its kind and not its text.
+func (s *Supervisor) requeue(edges []heldEdge) {
+	var back []heldEdge
+	for _, e := range edges {
+		e.retries++
+		if e.retries > maxRetries {
+			s.log.Warn("an edge was dropped after its wake failed before the model saw it, too many times", "kind", e.Kind, "retries", maxRetries)
+			continue
+		}
+		back = append(back, e)
+	}
+	if len(back) > 0 {
+		s.log.Info("the turn failed before the model saw the wake; its facts are held for the next wake", "count", len(back))
+		s.holdKept(back)
+	}
+}
+
+func (s *Supervisor) holdKept(add []heldEdge) {
+	s.held = append(s.held, add...)
 	for len(s.held) > maxHeld {
 		drop := -1
 		for i, h := range s.held {
@@ -533,7 +569,7 @@ func (s *Supervisor) edgeWakesCapped(now time.Time) bool {
 }
 
 func (s *Supervisor) fromHeld() *pending {
-	p := &pending{reason: prompt.Edge}
+	p := &pending{reason: prompt.Edge, edges: append([]heldEdge(nil), s.held...)}
 	for _, e := range s.held {
 		p.facts = append(p.facts, e.Fact)
 		if e.Human {
@@ -852,6 +888,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		for _, e := range s.held {
 			p.facts = append(p.facts, e.Fact)
 		}
+		p.edges = append(p.edges, s.held...)
 		s.held = nil
 		s.status.HeldEdges = 0
 	}
@@ -900,6 +937,13 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	failed := (res.Failed || res.CoreDown) && !res.Canceled
 	if err := s.led.SaveSession(sess); err != nil {
 		s.log.Error("saving session", "err", err)
+	}
+
+	// A turn that failed before any model request never showed the wake to the
+	// model: its facts (a person's message above all) go back to be carried by
+	// the next wake. Shutdown is not this: the next start reports the cut-off.
+	if res.Steps == 0 && (res.Failed || res.CoreDown) && !res.Canceled {
+		s.requeue(p.edges)
 	}
 
 	// A message handed to the turn that it ended without showing to the model

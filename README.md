@@ -81,6 +81,11 @@ Kubernetes client.
    down is news on the next start; only the very first read of a room sets the
    cursor without waking. At most 20 edges are held; past that, machine
    messages are dropped first, then the oldest.
+   A turn that fails before its first model request (no core tools, a rejected
+   credential, a timeout) never showed the wake to the model, so the facts of
+   that wake, a person's message above all, are put back and carried by the
+   next wake; an edge put back three times is dropped, with a log line naming
+   its kind.
 6. **The heartbeat** (`upsert_memory_item`, kind `note`, `stale_after` of twice
    the next sleep, at least 5m) is refreshed after every turn that succeeded.
    A failed turn does not refresh it: the agent is dark, so reflection should

@@ -179,6 +179,8 @@ func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 	switch mode {
 	case "fail":
 		return agent.Result{Failed: true, Err: errors.New("boom: simulated failure")}
+	case "stepfail":
+		return agent.Result{Failed: true, Steps: 1, Err: errors.New("boom after the first step")}
 	case "authfail":
 		return agent.Result{Failed: true, AuthFailed: true, Err: &llm.APIError{Status: 401}}
 	case "coredown":
@@ -1515,5 +1517,90 @@ func TestStatusShowsTheTurnsSummaryAndSteps(t *testing.T) {
 	lt := h.status().LastTurn
 	if lt == nil || lt.Summary != "all quiet" || lt.Steps != 2 || lt.ToolCalls != 3 {
 		t.Fatalf("last turn: %+v", lt)
+	}
+}
+
+func TestATurnThatFailsBeforeTheModelSawTheWakeKeepsItsFacts(t *testing.T) {
+	h := roomHarness(t, nil)
+	defer h.stop()
+	h.set("mode.2", "authfail") // the model API refuses: no request is made
+	h.post("team", say("alice", "alice", "@example-spot please look at checkout"))
+	h.waitIdle(2)
+	if st := h.status(); st.LastTurn == nil || !st.LastTurn.IsError || !st.LastTurn.AuthFailed {
+		t.Fatalf("turn 2 should have failed: %+v", st.LastTurn)
+	}
+	if st := h.status(); st.HeldEdges != 1 {
+		t.Fatalf("the message must be held again: %+v", st)
+	}
+	// The next wake, whatever its reason, carries it.
+	h.clock.Advance(3 * time.Minute)
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "please look at checkout") {
+		t.Fatalf("the person's message was lost with the failed turn:\n%s", in)
+	}
+	if h.status().LastTurn.IsError {
+		t.Fatal("turn 3 should have succeeded")
+	}
+	// Shown to the model once: it is not carried again.
+	h.clock.Advance(3 * time.Hour)
+	h.waitIdle(4)
+	if in := h.file("stdin", 4); strings.Contains(in, "please look at checkout") {
+		t.Fatalf("a fact the model has seen came back:\n%s", in)
+	}
+}
+
+func TestAnEdgeIsDroppedAfterThreeFailedWakes(t *testing.T) {
+	h := roomHarness(t, nil)
+	defer h.stop()
+	for n := 2; n <= 5; n++ {
+		h.set(fmt.Sprintf("mode.%d", n), "authfail")
+	}
+	h.post("team", say("alice", "alice", "@example-spot the-secret-question"))
+	h.waitIdle(2)
+	for n := 3; n <= 5; n++ {
+		h.clock.Advance(3 * time.Hour)
+		h.waitIdle(n)
+		want := n < 5 // put back after the 1st, 2nd and 3rd failure; the 4th drops it
+		if got := h.status().HeldEdges == 1; got != want {
+			t.Fatalf("after failed turn %d: held=%d, want held=%v", n, h.status().HeldEdges, want)
+		}
+		if in := h.file("stdin", n); !strings.Contains(in, "the-secret-question") {
+			t.Fatalf("failed wake %d must still have carried the fact:\n%s", n, in)
+		}
+	}
+	logs := h.logs.String()
+	if !strings.Contains(logs, "was dropped after its wake failed") || !strings.Contains(logs, "kind=room-message") {
+		t.Fatalf("the drop must be logged with the edge kind:\n%s", logs)
+	}
+	if strings.Contains(logs, "the-secret-question") {
+		t.Fatal("the drop log must not carry the text")
+	}
+	h.clock.Advance(3 * time.Hour)
+	h.waitIdle(6)
+	if in := h.file("stdin", 6); strings.Contains(in, "the-secret-question") {
+		t.Fatalf("a dropped fact came back:\n%s", in)
+	}
+}
+
+func TestATurnTheModelSawIsNotRequeued(t *testing.T) {
+	// A turn that made a model request and then failed is not put back.
+	h := roomHarness(t, nil)
+	defer h.stop()
+	h.set("mode.2", "stepfail")
+	h.post("team", say("alice", "alice", "@example-spot already seen"))
+	h.waitIdle(2)
+	if h.status().HeldEdges != 0 {
+		t.Fatalf("a message the model saw must not be put back: %+v", h.status())
+	}
+}
+
+func TestAShutdownMidTurnDoesNotRequeue(t *testing.T) {
+	h := roomHarness(t, nil)
+	h.set("mode.2", "sleep")
+	h.post("team", say("alice", "alice", "@example-spot mid shutdown"))
+	h.waitFor("turn 2 to run", func() bool { return h.script.hasStarted(2) })
+	h.stop()
+	if n := len(h.sup.held); n != 0 {
+		t.Fatalf("a cut-off turn must not put its facts back (the next start reports the interruption): %d held", n)
 	}
 }
