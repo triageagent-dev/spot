@@ -166,5 +166,5 @@ func shellSection(sandbox bool) string {
 	if !sandbox {
 		return "You have no shell and no kubectl: the connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
 	}
-	return "Your Bash tool is a sandbox, not a shell on the cluster: it has no network, no kubectl, no credentials and no view of other processes, and it writes only under your notes and the temporary directory. Use it to cut down what you read (`jq`, `grep`, `sed`, `sort`) and to wait (`sleep`), never to reach the cluster; a command that is refused is a limit, not a puzzle. The connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
+	return "Your Bash tool is a sandbox, not a shell on the cluster: it has no network, no kubectl, no credentials and no view of other processes, and it writes only under your notes and the temporary directory. Write `next.json` and your notes with the Write tool, not from the shell. Use it to cut down what you read (`jq`, `grep`, `sed`, `sort`) and to wait (`sleep`), never to reach the cluster; a command that is refused is a limit, not a puzzle. The connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
 }

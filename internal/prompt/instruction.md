@@ -86,7 +86,7 @@ one change at a time and look at the result before the next.
 
 ## Scheduling yourself
 
-End every turn by writing `{{STATE_DIR}}/next.json`, as the last thing you do:
+End every turn by writing `{{STATE_DIR}}/next.json` with the Write tool, as the last thing you do:
 
     {"after": "15m", "why": "check that the rollout finished and errors fell"}
 

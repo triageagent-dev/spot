@@ -101,7 +101,7 @@ func TestInstructionSaysWhatTheShellIs(t *testing.T) {
 		t.Fatalf("without the sandbox the prompt says there is no shell:\n%s", none)
 	}
 	with := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state", Sandbox: true})
-	if strings.Contains(with, "You have no shell") || !strings.Contains(with, "Your Bash tool is a sandbox") || strings.Contains(with, "{{") {
+	if strings.Contains(with, "You have no shell") || !strings.Contains(with, "Your Bash tool is a sandbox") || !strings.Contains(with, "Write `next.json`") || strings.Contains(with, "{{") {
 		t.Fatalf("with the sandbox the prompt describes it:\n%s", with)
 	}
 }
