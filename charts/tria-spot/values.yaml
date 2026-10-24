@@ -1,4 +1,4 @@
-# The Tria spot (ADR-095, ADR-098). Everything below renders nothing until
+# The Tria spot (the core's ADR-095, ADR-098). Everything below renders nothing until
 # spot.enabled is true.
 
 spot:
@@ -38,7 +38,7 @@ core:
   #   its own namespace, so in this mode the chart MUST be installed in the
   #   core's namespace.
   # secret: a static bearer token from a Secret (core.tokenSecret), a machine
-  #   identity with r and w on one tenant and no x, i, v: ADR-051. The spot can
+  #   identity with r and w on one tenant and no x, i, v: the core's ADR-051. The spot can
   #   live in any namespace.
   identity: serviceAccount
   audience: triage-core          # identity: serviceAccount. The audience the core checks
@@ -50,7 +50,7 @@ core:
     # false = the grant is made elsewhere. Ignored when identity is secret.
     create: true
   # identity: serviceAccount. Verbs on the tenant, from get, list, create,
-  # update, execute, ingest, voice, observe. The default is the ADR-051 grant
+  # update, execute, ingest, voice, observe. The default is the core's ADR-051 grant
   # (no execute, ingest, voice).
   verbs: [get, list, create, update]
   tokenSecret:                   # identity: secret (required then); ignored otherwise

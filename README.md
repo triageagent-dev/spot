@@ -1,9 +1,13 @@
 # tria-spot
 
+The [Triage core](https://github.com/triageagent-dev/core) is an incident triage platform, and its ADRs, such as
+the ADR-095 this README cites, live in the core repository. [ego](https://github.com/triageagent-dev/ego) is the
+evaluation service that scores agents from their telemetry. A "workspace" is one tenant of the core.
+
 The Tria spot for one workspace (the core calls it a tenant): an always-on
 teammate that watches the workspace's cluster through the core's MCP tools and
 its connectors (MCP servers that hold their own credentials), fixes what they
-let it fix, and tells the team what it saw and did (ADR-095, ADR-098).
+let it fix, and tells the team what it saw and did (the core's ADR-095, and ADR-098 in `docs/adr`).
 
 The binary is two things in one process. A **supervisor** wakes the agent in
 turns, watches the core between turns without a model, and keeps the schedule,
@@ -723,3 +727,7 @@ against a local HTTP server and the loop against a scripted fake.
   to pass and respect them.
 - Running the image, `helm install`, kubeconform, and `golangci-lint` (not
   installed where this was written; `make lint` runs it when present).
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE).

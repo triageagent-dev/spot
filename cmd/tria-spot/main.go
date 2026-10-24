@@ -1,5 +1,5 @@
 // Command tria-spot is the supervisor and container entrypoint of the Tria
-// spot (ADR-095, ADR-098): it wakes the spot's own agent loop in turns, gives it
+// spot (the core's ADR-095, ADR-098): it wakes the spot's own agent loop in turns, gives it
 // the core's MCP tools and its connectors, and keeps its schedule, budget and
 // heartbeat.
 package main

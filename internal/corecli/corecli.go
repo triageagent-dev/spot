@@ -209,7 +209,7 @@ func (c *Client) Heartbeat(ctx context.Context, id, title, content string, stale
 }
 
 // ErrNoRoomTool is returned by RoomMessages when the core does not offer
-// read_workspace_room (ADR-095 phase 3 is not deployed yet).
+// read_workspace_room (the core's ADR-095 phase 3 is not deployed yet).
 var ErrNoRoomTool = errors.New("core has no read_workspace_room tool")
 
 // RoomMessages reads a workspace room (read_workspace_room) since cursor and

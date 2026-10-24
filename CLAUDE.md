@@ -5,7 +5,7 @@ Guidance for agents working in this repo.
 ## What this is
 
 `tria-spot` is the supervisor, the agent loop, the image and the chart for the
-Tria spot (ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
+Tria spot (the core's ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
 workspace of the Triage core, running as its own Go agent loop over the
 Anthropic Go SDK or the Google GenAI Go SDK, with tools taken from the core's MCP server and connectors.
 Read the ADRs and `README.md` before changing behaviour.
@@ -17,8 +17,8 @@ Read the ADRs and `README.md` before changing behaviour.
 - **Tests before commit.** Run `make check` (gofmt, `go vet`, golangci-lint if
   installed, `go test -race`, `helm lint` and `helm template` with every
   `charts/tria-spot/ci/*-values.yaml`). Never commit a failing tree.
-- **Push only when asked.** The remote `origin` is the private repository
-  `triageagent-dev/tria-spot`; it stays private. Never push unasked, and never
+- **Push only when asked.** The remote `origin` is the public repository
+  `triageagent-dev/tria-spot`. Never push unasked, and never
   push a branch other than the one asked for. The image is built with ko only
   (no Docker, no Dockerfile): `make image` only builds, and `make push
   REGISTRY=...` publishes an image when the user has asked for a deploy.

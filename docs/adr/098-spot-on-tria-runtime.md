@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-24
-- Builds on: ADR-095 (the spot as a teammate that acts through connectors)
+- Builds on: the core's ADR-095 (the spot as a teammate that acts through connectors)
 
 ## Context
 

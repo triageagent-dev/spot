@@ -653,7 +653,7 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 	msgs, next, err := s.core.RoomMessages(ctx, room, rs.cursor)
 	switch {
 	case errors.Is(err, corecli.ErrNoRoomTool):
-		// The core predates ADR-095 phase 3. Ask again later, quietly.
+		// The core predates ADR-095 phase 3 (the core's ADR). Ask again later, quietly.
 		rs.disabled = s.now().Add(10 * time.Minute)
 		s.log.Debug("core offers no read_workspace_room; skipping room polls")
 		return nil, false
