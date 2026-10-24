@@ -15,9 +15,11 @@ Read the ADR and `README.md` before changing behaviour.
 - **Tests before commit.** Run `make check` (gofmt, `go vet`, golangci-lint if
   installed, `go test -race`, `helm lint` and `helm template`). Never commit a
   failing tree.
-- **Never `git push`.** There is no remote. Do not add one. The image is built
-  with ko only (no Docker, no Dockerfile): `make image` only builds, and `make
-  push` publishes an image when the user has asked for a deploy.
+- **Push only when asked.** The remote `origin` is the private repository
+  `triageagent-dev/tria-spot`; it stays private. Never push unasked, and never
+  push a branch other than the one asked for. The image is built with ko only
+  (no Docker, no Dockerfile): `make image` only builds, and `make push`
+  publishes an image when the user has asked for a deploy.
 - **No hard-coded deployment names.** No cluster, tenant, company, customer or
   user names in code, charts, docs, tests or commit messages. Use placeholders
   (`example`, `<tenant>`). Everything specific to an install is a flag or a
