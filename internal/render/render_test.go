@@ -102,9 +102,6 @@ func TestRenderMCPAndSettingsContent(t *testing.T) {
 		"Read(//var/run/secrets/**)",
 		"Read(" + absRule(in.RunDir) + "/**)",
 		"Edit(" + absRule(filepath.Join(in.StateDir, "supervisor")) + "/**)",
-		"Write(" + absRule(filepath.Join(in.StateDir, "work")) + "/**)",
-		"Write(" + absRule(filepath.Join(in.StateDir, "claude")) + "/**)",
-		"Write(" + absRule(in.RunDir) + "/**)",
 	} {
 		if !strings.Contains(deny, want) {
 			t.Errorf("deny rules lack %q:\n%s", want, deny)

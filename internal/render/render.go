@@ -216,10 +216,10 @@ func Settings(in Input, helperPath string) map[string]any {
 		dir := filepath.Join(in.StateDir, d)
 		noWrite = append(noWrite, dir)
 		p := absRule(dir) + "/**)"
-		deny = append(deny, "Edit("+p, "Write("+p)
+		deny = append(deny, "Edit("+p) // an Edit rule covers every tool that edits a file, Write included
 	}
 	noWrite = append(noWrite, in.RunDir)
-	deny = append(deny, "Edit("+absRule(in.RunDir)+"/**)", "Write("+absRule(in.RunDir)+"/**)")
+	deny = append(deny, "Edit("+absRule(in.RunDir)+"/**)")
 	if in.Sandbox {
 		st["sandbox"] = sandboxSettings(in, credDirs, noWrite)
 	}
