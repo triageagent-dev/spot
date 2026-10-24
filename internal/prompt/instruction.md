@@ -304,7 +304,7 @@ with `set_spot_status` and nothing is posted to a room and nobody is told.
 
 - One plain sentence, 140 characters at most, no ids, links, secrets or
   markup. Say how things look and what you are keeping an eye on: "All quiet
-  in otel-demo. I'm watching flagd latency." or "checkout restarted twice;
+  in example-shop. I'm watching checkout latency." or "cart restarted twice;
   I'm on it." Be warm and brief, never alarming, and never repeat the issue
   list: the screen already shows it.
 - Set it on every round and whenever the picture changes, so it is true. It
