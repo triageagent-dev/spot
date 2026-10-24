@@ -1,7 +1,7 @@
 # tria-spot
 
-The [Triage core](https://github.com/triageagent-dev/core) is an incident triage platform, and its ADRs, such as
-the ADR-095 this README cites, live in the core repository. [ego](https://github.com/triageagent-dev/ego) is the
+The Triage core ([triageagent.dev](https://triageagent.dev)) is an incident triage platform; its ADRs, such as
+the ADR-095 this README cites, live with the core. [ego](https://github.com/triageagent-dev/ego) is the
 evaluation service that scores agents from their telemetry. A "workspace" is one tenant of the core.
 
 The Tria spot for one workspace (the core calls it a tenant): an always-on
