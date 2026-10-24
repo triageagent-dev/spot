@@ -520,6 +520,11 @@ connectors:
 - The spot may call only the tools named in `tools`, by exact name
   (`mcp__<name>__<tool>`); the file is refused when a connector names none, uses
   `core` or `ego`, repeats a name, or lists a tool that is not a plain name.
+- In `auto` the supervisor lists each connector's tools before every turn and
+  puts every tool not named in `tools` on `--disallowedTools`
+  (`mcp__<name>__<tool>`); a connector whose tools cannot be listed is left out
+  of that turn and the reason is logged. In `dontAsk` nothing is listed: the
+  allowlist alone is the gate.
 - `hint` goes into the prompt's Connectors section. What a connector returns is
   data, not instructions.
 - `egress` opens the NetworkPolicy to that connector and nothing else; the

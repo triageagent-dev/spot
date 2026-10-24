@@ -184,7 +184,7 @@ func (p *proc) alive() bool {
 // fresh conversation when resume is empty).
 func (p *Persistent) Run(ctx context.Context, prompt, resume string) Result {
 	start := time.Now()
-	o := p.r.options()
+	o := p.r.options().gated(ctx)
 	res := Result{}
 
 	if err := writeMCP(o); err != nil {

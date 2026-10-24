@@ -102,7 +102,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	var servers []render.Server
 	for _, c := range cfg.Connectors {
 		allowed = append(allowed, c.AllowedRules()...)
-		servers = append(servers, render.Server{Name: c.Name, URL: c.URL})
+		servers = append(servers, render.Server{Name: c.Name, URL: c.URL, Tools: c.Tools})
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
 	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)

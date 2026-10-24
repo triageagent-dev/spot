@@ -166,6 +166,10 @@ type Server struct {
 	Name      string
 	URL       string
 	TokenFile string
+	// Tools are the tool names the spot may call on this server (a
+	// connector's allowlist); empty for the core and ego, which are not gated
+	// by listing the server's tools.
+	Tools []string
 }
 
 // Settings builds the settings JSON: the helpers and the deny rules. The

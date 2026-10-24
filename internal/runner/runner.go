@@ -21,11 +21,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/triageagent-dev/tria-spot/internal/mcptools"
 	"github.com/triageagent-dev/tria-spot/internal/render"
 	"github.com/triageagent-dev/tria-spot/internal/stream"
 )
@@ -359,10 +362,63 @@ func writeMCP(o Options) error {
 	return render.WriteMCP(o.Paths.MCPConfig, o.CoreMCPURL, o.CoreTokenFile, extra...)
 }
 
+// gateTimeout bounds the listing of all connectors' tools before a turn, so a
+// slow connector cannot eat the turn timeout.
+const gateTimeout = 20 * time.Second
+
+// gated returns a copy of o that refuses, by name, every tool a connector
+// offers beyond the ones the spot names. The exact-name allowlist is a hard
+// gate only in dontAsk; in any other mode an unnamed tool would go to the CLI's
+// classifier, so each connector's tools are listed over MCP and the unnamed
+// ones are added to --disallowedTools. A connector whose tools cannot be listed
+// is left out of the copy (fail closed) and the reason is logged. In dontAsk
+// nothing is listed: the allowlist alone is the gate.
+func (o Options) gated(ctx context.Context) Options {
+	if o.PermissionMode == "dontAsk" || len(o.Connectors) == 0 {
+		return o
+	}
+	log := o.Logger
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
+	defer cancel()
+	var deny []string
+	var kept []render.Server
+	for _, c := range o.Connectors {
+		if len(c.Tools) == 0 {
+			kept = append(kept, c)
+			continue
+		}
+		offered, err := mcptools.List(ctx, c.URL)
+		if err != nil {
+			log.Error("connector left out of this turn: its tools cannot be listed", "connector", c.Name, "err", err)
+			continue
+		}
+		kept = append(kept, c)
+		for _, t := range offered {
+			if !slices.Contains(c.Tools, t) {
+				deny = append(deny, "mcp__"+c.Name+"__"+t)
+			}
+		}
+	}
+	g := o
+	g.Connectors = kept
+	if len(deny) > 0 {
+		sort.Strings(deny)
+		base := o.DisallowedTools
+		if len(base) == 0 {
+			base = DefaultDisallowed()
+		}
+		g.DisallowedTools = append(slices.Clone(base), deny...)
+	}
+	return g
+}
+
 // Run executes one turn with prompt on stdin, resuming resume if not empty.
 func (r *Runner) Run(ctx context.Context, prompt, resume string) Result {
 	start := time.Now()
-	o := r.options()
+	o := r.options().gated(ctx)
 	res := Result{Args: BuildArgs(o, resume)}
 	for _, d := range []string{"home", "claude", "work"} {
 		if err := os.MkdirAll(filepath.Join(o.StateDir, d), 0o700); err != nil {
