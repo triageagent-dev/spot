@@ -21,6 +21,8 @@ type Params struct {
 	MaxWake  time.Duration
 	// Connectors are the MCP servers beside the core, with the hint for each.
 	Connectors []Connector
+	// Sandbox says the agent has a Bash tool that runs only inside the CLI's sandbox.
+	Sandbox bool
 }
 
 // Connector is what the prompt says about one connector.
@@ -40,6 +42,7 @@ func Instruction(p Params) string {
 		"{{MIN_WAKE}}", p.MinWake.String(),
 		"{{MAX_WAKE}}", p.MaxWake.String(),
 		"{{CONNECTORS}}", connectorsSection(p.Connectors),
+		"{{SHELL}}", shellSection(p.Sandbox),
 	).Replace(instruction)
 }
 
@@ -156,4 +159,12 @@ func connectorsSection(cs []Connector) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// shellSection is what the prompt says about a shell.
+func shellSection(sandbox bool) string {
+	if !sandbox {
+		return "You have no shell and no kubectl: the connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
+	}
+	return "Your Bash tool is a sandbox, not a shell on the cluster: it has no network, no kubectl, no credentials and no view of other processes, and it writes only under your notes and the temporary directory. Use it to cut down what you read (`jq`, `grep`, `sed`, `sort`) and to wait (`sleep`), never to reach the cluster; a command that is refused is a limit, not a puzzle. The connector's tools are the only way to the cluster, and with no connector you investigate from the core's data and say that is all you can see."
 }

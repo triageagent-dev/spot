@@ -322,11 +322,56 @@ The spot holds no cluster RBAC. A cluster is reached through a connector,
 whose own identity is the boundary. The supervisor narrows further with the
 permission mode (auto where the CLI offers it), `--allowedTools` (the core's
 tools by name, `runner.CoreTools`, and each connector's tools by exact name,
-never `mcp__core__*`) and `--disallowedTools` (`Bash`, WebFetch, WebSearch,
+never `mcp__core__*`) and `--disallowedTools` (`Bash` unless `--sandbox`, WebFetch, WebSearch,
 subagents, whose usage is not in the result the ledger counts, and the core
 tools the spot must never call, `runner.CoreToolsDenied`: `resolve_issue`,
 `forget_issue`, `update_issue_severity`, `set_tenant_goals`, `run_rsi`, the
 event, pattern, memory-editing and test tools).
+
+### A shell in a sandbox
+
+By default the agent has no shell: `Bash` is disallowed. A shell run as the
+agent's own user would read every mounted token, which no Read rule reaches.
+With `--sandbox` (chart `sandbox.enabled: true`) the agent gets a `Bash` tool
+that runs only inside the CLI's sandbox (bubblewrap). The rendered settings
+(`internal/render`) set:
+
+- `sandbox.enabled` with `failIfUnavailable`: the CLI exits at start when the
+  sandbox cannot run, instead of running commands unsandboxed;
+- `allowUnsandboxedCommands: false` and no `excludedCommands`: no command and
+  no retry runs outside it;
+- no allowed domain: a sandboxed command has no network (no cluster, no
+  exfiltration), and the shell is for cutting down output (`jq`, `grep`) and
+  `sleep`, not for the cluster;
+- `denyRead` on the credential directories (run directory, `/secrets`,
+  `/var/run/secrets`) and `denyWrite` on the supervisor's, the CLI's and the
+  run directory, on top of the Read and Edit deny rules the CLI merges in;
+- writes only under the notes and the temporary directory; the working
+  directory is denied, so a command cannot leave a `CLAUDE.md` for the next
+  conversation to load.
+
+The sandbox runs in its own PID namespace with a fresh `/proc`, so a sandboxed
+command sees none of the supervisor's or the CLI's processes (their memory
+holds the tokens). That needs user namespaces and a fresh `/proc`, which the
+runtime's default pod profile blocks. Measured on GKE (Container-Optimized
+OS, kernel 6.18), each of these was needed:
+
+| Pod setting | Without it |
+|---|---|
+| `hostUsers: false` (the pod's own user namespace) | `procMount: Unmasked` is refused, and bubblewrap cannot mount a fresh `/proc` |
+| `procMount: Unmasked` | `Can't mount proc on /newroot/proc` |
+| seccomp `Unconfined` | `unshare` is refused (`No permissions to create new namespace`) |
+| AppArmor `Unconfined` | `Failed to make / slave: Permission denied` |
+
+So `sandbox.enabled` takes the runtime's seccomp and AppArmor profiles off for
+the pod. The container still runs non-root with every capability dropped, no
+privilege escalation and a read-only root filesystem, and `hostUsers: false`
+means root in the pod is not root on the node. `bubblewrap` and `socat` (and
+the one library `socat` needs) are Debian bookworm packages fetched from a
+fixed archive snapshot by `make kodata`, pinned by digest, and travel as
+kodata next to the CLI. `enableWeakerNestedSandbox` is not used: it would
+expose the container's `/proc`, and with it the other processes of the same
+user.
 
 ### Identity towards the core
 

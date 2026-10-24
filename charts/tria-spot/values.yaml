@@ -109,6 +109,14 @@ telemetry:
     key: token
   toolDetails: false
 
+# The agent's Bash tool, inside the CLI's sandbox (bubblewrap): no network, no
+# credential files, no other process visible, writes only under the notes. Off,
+# the agent has no shell. On, the pod gets its own user namespace, an unmasked
+# /proc and the runtime's seccomp and AppArmor profiles off (see the README,
+# "A shell in a sandbox"); the CLI refuses to start if the sandbox cannot run.
+sandbox:
+  enabled: false
+
 # Supervisor settings (see the README for each flag).
 agent:
   model: ""                   # model alias or name; empty = the CLI default

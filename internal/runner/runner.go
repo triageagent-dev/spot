@@ -250,6 +250,21 @@ func Disallowed(coreAll bool) []string {
 	return out
 }
 
+// WithSandbox adjusts the allow and disallow lists for a spot whose shell runs
+// inside the CLI's sandbox: Bash leaves the disallowed list and is allowed. The
+// sandbox settings (render.Settings) make every Bash command run inside the
+// sandbox, refuse a retry outside it and make the CLI fail at start when the
+// sandbox is unavailable, so the allow rule never reaches an unsandboxed shell.
+func WithSandbox(allowed, disallowed []string) ([]string, []string) {
+	out := make([]string, 0, len(disallowed))
+	for _, d := range disallowed {
+		if d != "Bash" {
+			out = append(out, d)
+		}
+	}
+	return append(allowed, "Bash"), out
+}
+
 // CoreAllTool is the rule that allows every tool of the core's MCP server.
 var CoreAllTool = "mcp__" + render.ServerName + "__*"
 

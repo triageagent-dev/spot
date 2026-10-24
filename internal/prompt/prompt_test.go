@@ -37,7 +37,7 @@ func TestWakePromptSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
 func TestTemplateHoldsOnlyKnownPlaceholders(t *testing.T) {
 	// The template ships in the binary: deployment-specific values come from
 	// placeholders, never from the text.
-	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true, "{{CONNECTORS}}": true}
+	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{STATE_DIR}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true, "{{CONNECTORS}}": true, "{{SHELL}}": true}
 	raw := Raw()
 	for {
 		i := strings.Index(raw, "{{")
@@ -92,5 +92,16 @@ func TestInstructionListsConnectorsOnlyWhenThereAreSome(t *testing.T) {
 	}
 	if strings.Contains(with, "mcp__example-kube__*") {
 		t.Fatalf("the prompt must not promise every tool of the connector:\n%s", with)
+	}
+}
+
+func TestInstructionSaysWhatTheShellIs(t *testing.T) {
+	none := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state"})
+	if !strings.Contains(none, "You have no shell") || strings.Contains(none, "{{") {
+		t.Fatalf("without the sandbox the prompt says there is no shell:\n%s", none)
+	}
+	with := Instruction(Params{Name: "n", Tenant: "t", StateDir: "/state", Sandbox: true})
+	if strings.Contains(with, "You have no shell") || !strings.Contains(with, "Your Bash tool is a sandbox") || strings.Contains(with, "{{") {
+		t.Fatalf("with the sandbox the prompt describes it:\n%s", with)
 	}
 }

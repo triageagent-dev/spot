@@ -40,9 +40,7 @@ Look before you touch. In this order:
    service: earlier issues, patterns, runbooks.
 4. Then the cluster, through its connector (see Connectors) when you have
    one: the workloads, their events and logs. Check the thing the core
-   claims, not only the claim. You have no shell and no kubectl: the
-   connector's tools are the only way to the cluster, and with no connector
-   you investigate from the core's data and say that is all you can see.
+   claims, not only the claim. {{SHELL}}
 5. Decide. Say what you think the cause is and how sure you are.
 
 Before any write to the cluster call `verify_hypothesis` on the issue with the

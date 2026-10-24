@@ -35,13 +35,23 @@ spec:
       # API each get their own projected, audience-bound token below.
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
+      {{- if .Values.sandbox.enabled }}
+      # The agent's Bash tool runs in the CLI's sandbox (bubblewrap), which needs
+      # user namespaces and a fresh /proc. A pod with its own user namespace
+      # (root in the pod is not root on the node) is the form that allows both:
+      # procMount Unmasked requires it. The runtime's default seccomp and
+      # AppArmor profiles block unshare and mount, so they are off for this
+      # pod; the container still runs non-root with no capabilities, no
+      # privilege escalation and a read-only root filesystem.
+      hostUsers: false
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile:
-          type: RuntimeDefault
+          type: {{ ternary "Unconfined" "RuntimeDefault" .Values.sandbox.enabled }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -88,6 +98,9 @@ spec:
             - --core-tools={{ .Values.agent.coreTools }}
             - --chat-batch={{ .Values.agent.chatBatch }}
             - --max-edge-wakes-per-hour={{ int .Values.agent.maxEdgeWakesPerHour }}
+            {{- if .Values.sandbox.enabled }}
+            - --sandbox
+            {{- end }}
             {{- if .Values.agent.persistent }}
             - --persistent
             {{- end }}
@@ -134,6 +147,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+            {{- if .Values.sandbox.enabled }}
+            procMount: Unmasked
+            appArmorProfile:
+              type: Unconfined
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

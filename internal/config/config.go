@@ -60,7 +60,11 @@ type Config struct {
 	// wait before it wakes a turn on its own; a message that names it wakes
 	// after EdgeCooldown. MaxEdgeWakesHr caps early wakes per hour; past it,
 	// edges are held for the next scheduled wake.
-	ChatBatch      time.Duration
+	ChatBatch time.Duration
+	// Sandbox gives the agent a shell that runs inside the CLI's sandbox (bubblewrap):
+	// no network, no credential files, writes only to the notes. The pod must
+	// allow user namespaces (chart: sandbox.enabled).
+	Sandbox        bool
 	MaxEdgeWakesHr int
 	LogLevel       string
 	LogContent     bool // allow message, issue and model text in debug logs
@@ -136,6 +140,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
+	fs.BoolVar(&c.Sandbox, "sandbox", false, "give the agent a Bash tool that runs only inside the CLI's sandbox (bubblewrap): no network, the credential directories unreadable, writes only under the notes; the CLI refuses to start if the sandbox cannot (the pod must allow user namespaces)")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the CLI's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")

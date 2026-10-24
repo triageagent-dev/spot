@@ -35,6 +35,10 @@ type Input struct {
 	// OtelTokenFile, when set, makes the CLI send its traces with a bearer
 	// token read from this file by a rendered helper (otelHeadersHelper).
 	OtelTokenFile string
+	// Sandbox turns on the CLI's sandbox for the Bash tool: bubblewrap, no
+	// network, the credential directories unreadable, writes only under the
+	// notes. The CLI refuses to start when it cannot sandbox.
+	Sandbox bool
 }
 
 // Federation is the non-secret part of Workload Identity Federation: the ids
@@ -172,44 +176,82 @@ type Server struct {
 	Tools []string
 }
 
-// Settings builds the settings JSON: the helpers and the deny rules. The
-// rules hold because the shell is not among the agent's tools (runner
-// disallows Bash); a Read rule binds every built-in tool that reads a file.
+// Settings builds the settings JSON: the helpers, the deny rules and, with
+// in.Sandbox, the sandbox for the Bash tool. Without it the shell is not among
+// the agent's tools (runner disallows Bash); a Read rule binds every built-in
+// tool that reads a file, and with the sandbox the CLI applies the same rules to
+// the commands the shell runs.
 func Settings(in Input, helperPath string) map[string]any {
 	st := map[string]any{}
 	// Each credential is denied by its directory, not its file: a Secret or
 	// projected volume serves the file through a ..data symlink, and a rule on
 	// the path alone would leave that path open. /var/run/secrets covers the
 	// ServiceAccount token the kubelet would mount and the identity token.
-	deny := []string{
-		"Read(" + absRule(in.RunDir) + "/**)",
-		"Read(//var/run/secrets/**)",
-		"Read(" + absRule(filepath.Dir(in.CoreTokenFile)) + "/**)",
-	}
+	// credDirs are plain absolute paths, for the sandbox (which uses plain
+	// paths); the Read rules below are the same directories in rule syntax.
+	credDirs := []string{in.RunDir, "/var/run/secrets", "/run/secrets", filepath.Dir(in.CoreTokenFile)}
 	if in.OtelTokenFile != "" {
-		deny = append(deny, "Read("+absRule(filepath.Dir(in.OtelTokenFile))+"/**)")
+		credDirs = append(credDirs, filepath.Dir(in.OtelTokenFile))
 		st["otelHeadersHelper"] = filepath.Join(in.RunDir, "otel-headers.sh")
 	}
 	if in.Federation != nil {
 		// No apiKeyHelper: it outranks federation and would shadow it. The
 		// profile and the cached access token live under the run dir (already
 		// denied); the identity token file is denied explicitly.
-		deny = append(deny, "Read("+absRule(filepath.Dir(in.Federation.IdentityTokenFile))+"/**)")
+		credDirs = append(credDirs, filepath.Dir(in.Federation.IdentityTokenFile))
 	} else {
 		st["apiKeyHelper"] = helperPath
-		deny = append(deny, "Read("+absRule(filepath.Dir(in.AnthropicKeyFile))+"/**)")
+		credDirs = append(credDirs, filepath.Dir(in.AnthropicKeyFile))
+	}
+	deny := []string{}
+	for _, d := range credDirs {
+		deny = append(deny, "Read("+absRule(d)+"/**)")
 	}
 	// The supervisor's files, the CLI's own home, config and working
 	// directories and the run directory: the agent writes only under its
 	// notes and next.json (the allow rules), and these rules say so even in a
 	// mode where an unlisted write would be put to the classifier.
+	noWrite := []string{}
 	for _, d := range []string{"supervisor", "claude", "home", "work"} {
-		p := absRule(filepath.Join(in.StateDir, d)) + "/**)"
+		dir := filepath.Join(in.StateDir, d)
+		noWrite = append(noWrite, dir)
+		p := absRule(dir) + "/**)"
 		deny = append(deny, "Edit("+p, "Write("+p)
 	}
+	noWrite = append(noWrite, in.RunDir)
 	deny = append(deny, "Edit("+absRule(in.RunDir)+"/**)", "Write("+absRule(in.RunDir)+"/**)")
+	if in.Sandbox {
+		st["sandbox"] = sandboxSettings(in, credDirs, noWrite)
+	}
 	st["permissions"] = map[string]any{"deny": deny}
 	return st
+}
+
+// sandboxSettings is the sandbox block for the Bash tool. Every key is
+// there to fail closed: the sandbox is required (the CLI exits at start
+// without it), a command that fails inside it is never retried outside, no
+// command is excluded, and the network starts empty and stays empty (no
+// allowed domain, so a sandboxed command has no route out). The Read and Edit
+// deny rules are merged into the sandbox by the CLI; the lists here repeat the
+// credential and supervisor directories so the sandbox does not depend on
+// that merge. Sandbox paths are plain absolute paths, unlike the // of rules.
+// A sandboxed command writes under the notes and the temporary directory
+// only: the working directory is the CLI's and is denied, so a command cannot
+// leave a CLAUDE.md for the next conversation to load.
+func sandboxSettings(in Input, denyRead, denyWrite []string) map[string]any {
+	return map[string]any{
+		"enabled":                  true,
+		"failIfUnavailable":        true,
+		"allowUnsandboxedCommands": false,
+		"autoAllowBashIfSandboxed": true,
+		"excludedCommands":         []string{},
+		"filesystem": map[string]any{
+			"allowWrite": []string{filepath.Join(in.StateDir, "notes")},
+			"denyWrite":  denyWrite,
+			"denyRead":   denyRead,
+		},
+		"network": map[string]any{"allowedDomains": []string{}},
+	}
 }
 
 // profileFile is the federation profile, https://platform.claude.com/docs/en/

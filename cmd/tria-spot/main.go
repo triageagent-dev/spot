@@ -84,10 +84,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	paths, err := render.Render(render.Input{
 		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
 		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
-		OtelTokenFile: cfg.OtelTokenFile,
+		OtelTokenFile: cfg.OtelTokenFile, Sandbox: cfg.Sandbox,
 		Instruction: prompt.Instruction(prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, StateDir: cfg.StateDir, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
-			Connectors: promptConnectors(cfg.Connectors),
+			Connectors: promptConnectors(cfg.Connectors), Sandbox: cfg.Sandbox,
 		}),
 	})
 	if err != nil {
@@ -109,6 +109,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	if cfg.CoreTools == "all" {
 		allowed = append(allowed, runner.CoreAllTool)
 		log.Info("core tools: all of them; the core's Role is the bound")
+	}
+	if cfg.Sandbox {
+		allowed, disallowed = runner.WithSandbox(allowed, disallowed)
+		log.Info("shell: Bash runs only inside the CLI's sandbox; the CLI refuses to start without it")
 	}
 	var tel *runner.Telemetry
 	if cfg.OtelEndpoint != "" {

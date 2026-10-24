@@ -46,12 +46,23 @@ CLAUDE_CODE_VERSION   ?= 2.1.304
 CLAUDE_CODE_INTEGRITY ?= sha512-yZ/zZk3y7e0zbkMs740y9Z+bs40MmWApwM9qHQ8Adis01SycQlyaZnHYhB/+UOeFJcL+hzbiIGCIyuTKyL2U7Q==
 JQ_VERSION            ?= 1.7.1
 JQ_SHA256             ?= 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
+# The sandbox for the agent's Bash tool needs bubblewrap and socat (and the
+# one library socat needs that the base image lacks). Debian bookworm packages,
+# the release the base image is, from a fixed snapshot of the archive and
+# pinned by digest.
+DEB_SNAPSHOT := https://snapshot.debian.org/archive/debian/20260901T000000Z/pool/main
+BWRAP_DEB    := b/bubblewrap/bubblewrap_0.8.0-2%2Bdeb12u1_amd64.deb
+BWRAP_SHA256 := 3cc9134a3286ad01a323dcd924ba123eb634cefaeec82d774257e06308aeaadb
+SOCAT_DEB    := s/socat/socat_1.7.4.4-2_amd64.deb
+SOCAT_SHA256 := 2bf3094e16ce0aab245193eb6b7cb6b6e086f68d321b757e2090901b4cd7f826
+LIBWRAP_DEB  := t/tcp-wrappers/libwrap0_7.6.q-32_amd64.deb
+LIBWRAP_SHA256 := cbce2669a3ba4d74cfdc52b14f38014893e23d85a33d109a3422c342eefc55f8
 
 .PHONY: kodata
 kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	@mkdir -p $(KODATA)
 	@# ko packs the whole directory: anything an earlier fetch left (a kubectl) would ship.
-	@find $(KODATA) -mindepth 1 ! -name .gitkeep ! -name claude ! -name jq -exec rm -rf {} +
+	@find $(KODATA) -mindepth 1 ! -name .gitkeep ! -name claude ! -name jq ! -name bwrap ! -name socat ! -name socat.bin ! -name lib -exec rm -rf {} +
 	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	 (cd "$$tmp" && npm pack "@anthropic-ai/claude-code-linux-x64@$(CLAUDE_CODE_VERSION)" --silent >/dev/null); \
 	 got="sha512-$$(openssl dgst -sha512 -binary "$$tmp"/*.tgz | base64 | tr -d '\n')"; \
@@ -60,9 +71,21 @@ kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	 install -m 0755 "$$tmp/package/claude" $(KODATA)/claude; \
 	 curl -fsSL -o "$$tmp/jq" "https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-linux-amd64"; \
 	 echo "$(JQ_SHA256)  $$tmp/jq" | shasum -a 256 -c -; \
-	 install -m 0755 "$$tmp/jq" $(KODATA)/jq
-	@test "$$(ls -A $(KODATA) | grep -v '^\.gitkeep$$' | sort | tr '\n' ' ')" = "claude jq " || { echo "kodata holds more than claude and jq:"; ls -A $(KODATA); exit 1; }
-	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), jq $(JQ_VERSION)"
+	 install -m 0755 "$$tmp/jq" $(KODATA)/jq; \
+	 for d in "$(BWRAP_DEB) $(BWRAP_SHA256)" "$(SOCAT_DEB) $(SOCAT_SHA256)" "$(LIBWRAP_DEB) $(LIBWRAP_SHA256)"; do \
+	   set -- $$d; f="$$tmp/$$(basename $$1 | sed 's/%2B/+/')"; \
+	   curl -fsSL -o "$$f" "$(DEB_SNAPSHOT)/$$1"; \
+	   echo "$$2  $$f" | shasum -a 256 -c -; \
+	   (cd "$$tmp" && mkdir -p "x-$$2" && cd "x-$$2" && ar x "$$f" && tar -xf data.tar.*); \
+	 done; \
+	 mkdir -p $(KODATA)/lib; \
+	 install -m 0755 "$$tmp/x-$(BWRAP_SHA256)/usr/bin/bwrap" $(KODATA)/bwrap; \
+	 install -m 0755 "$$tmp/x-$(SOCAT_SHA256)/usr/bin/socat" $(KODATA)/socat.bin; \
+	 install -m 0644 "$$tmp/x-$(LIBWRAP_SHA256)/usr/lib/x86_64-linux-gnu/libwrap.so.0.7.6" $(KODATA)/lib/libwrap.so.0; \
+	 printf '%s\n' '#!/bin/sh' '# socat needs libwrap, which the base image lacks; it travels next to the binary.' 'd=$$(dirname "$$0")' 'LD_LIBRARY_PATH="$$d/lib" exec "$$d/socat.bin" "$$@"' > $(KODATA)/socat; \
+	 chmod 0755 $(KODATA)/socat
+	@test "$$(ls -A $(KODATA) | grep -v '^\.gitkeep$$' | sort | tr '\n' ' ')" = "bwrap claude jq lib socat socat.bin " || { echo "kodata holds more than claude, jq and the sandbox's bwrap and socat:"; ls -A $(KODATA); exit 1; }
+	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), jq $(JQ_VERSION), bwrap and socat for the sandbox"
 
 .PHONY: image
 image: kodata ## Build the image as an OCI layout in bin/image (pushes nothing)
@@ -84,12 +107,15 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, k
 	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/connectors-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/sandbox-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/federation-values.yaml > $(CHART_TMP)/tria-spot-fed.yaml
 	helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml > $(CHART_TMP)/tria-spot-tel.yaml
 	helm template t $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml > $(CHART_TMP)/tria-spot-sa.yaml
 	helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml > $(CHART_TMP)/tria-spot-conn.yaml
+	helm template t $(CHART) -f $(CHART)/ci/sandbox-values.yaml > $(CHART_TMP)/tria-spot-sbx.yaml
+	@grep -q 'hostUsers: false' $(CHART_TMP)/tria-spot-sbx.yaml && grep -q -- '--sandbox' $(CHART_TMP)/tria-spot-sbx.yaml && grep -q 'procMount: Unmasked' $(CHART_TMP)/tria-spot-sbx.yaml && grep -q 'type: Unconfined' $(CHART_TMP)/tria-spot-sbx.yaml && ! grep -q 'hostUsers' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q -- '--sandbox' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q 'Unconfined' $(CHART_TMP)/tria-spot-key.yaml && grep -q 'allowPrivilegeEscalation: false' $(CHART_TMP)/tria-spot-sbx.yaml || { echo "sandbox: only with sandbox.enabled the pod gets its own user namespace and the runtime profiles off, and it keeps no privilege escalation"; exit 1; }
 	@grep -q -- '--connectors-file=' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'connectors.json' $(CHART_TMP)/tria-spot-conn.yaml && grep -q 'Connector example-kube' $(CHART_TMP)/tria-spot-conn.yaml && grep -q -- '--persistent' $(CHART_TMP)/tria-spot-conn.yaml && ! grep -q -- '--persistent' $(CHART_TMP)/tria-spot-key.yaml || { echo "connectors: the flag, a ConfigMap and an egress rule each"; exit 1; }
 	@! sed -n '/kind: ConfigMap/,/^---/p' $(CHART_TMP)/tria-spot-conn.yaml | grep -qiE 'token|authorization|secret' || { echo "the connectors ConfigMap must hold no credential"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml --set 'connectors[0].tools=null' >/dev/null 2>&1 || { echo "a connector without named tools must fail"; exit 1; }

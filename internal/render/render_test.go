@@ -376,3 +376,43 @@ func TestWriteMCPConnectorCarriesNoCredential(t *testing.T) {
 		t.Fatalf("the core keeps its token: %+v", got.MCPServers[ServerName])
 	}
 }
+
+func TestSandboxSettings(t *testing.T) {
+	in := Input{RunDir: "/run/tria-spot", StateDir: "/state", CoreTokenFile: "/secrets/core/token", AnthropicKeyFile: "/secrets/anthropic/key", OtelTokenFile: "/secrets/otel/token", Sandbox: true}
+	st := Settings(in, "/run/tria-spot/api-key-helper.sh")
+	sb, ok := st["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("no sandbox block: %v", st)
+	}
+	for k, want := range map[string]any{"enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "autoAllowBashIfSandboxed": true} {
+		if sb[k] != want {
+			t.Errorf("sandbox.%s = %v, want %v", k, sb[k], want)
+		}
+	}
+	if ex, _ := sb["excludedCommands"].([]string); len(ex) != 0 {
+		t.Errorf("no command may run outside the sandbox: %v", ex)
+	}
+	net := sb["network"].(map[string]any)
+	if d, _ := net["allowedDomains"].([]string); len(d) != 0 {
+		t.Errorf("the sandbox must have no allowed domain: %v", d)
+	}
+	fs := sb["filesystem"].(map[string]any)
+	if w := fs["allowWrite"].([]string); len(w) != 1 || w[0] != "/state/notes" {
+		t.Errorf("allowWrite = %v", w)
+	}
+	deny := strings.Join(fs["denyRead"].([]string), " ")
+	for _, d := range []string{"/run/tria-spot", "/var/run/secrets", "/run/secrets", "/secrets/core", "/secrets/otel", "/secrets/anthropic"} {
+		if !strings.Contains(deny, d) {
+			t.Errorf("denyRead lacks %s: %s", d, deny)
+		}
+	}
+	nw := strings.Join(fs["denyWrite"].([]string), " ")
+	for _, d := range []string{"/state/supervisor", "/state/claude", "/state/home", "/state/work", "/run/tria-spot"} {
+		if !strings.Contains(nw, d) {
+			t.Errorf("denyWrite lacks %s: %s", d, nw)
+		}
+	}
+	if _, has := Settings(Input{RunDir: "/r", StateDir: "/s", CoreTokenFile: "/c/t", AnthropicKeyFile: "/a/k"}, "h")["sandbox"]; has {
+		t.Error("no sandbox block unless asked for")
+	}
+}

@@ -212,3 +212,26 @@ func TestCoreToolsAllDropsTheDenyListButKeepsTheWebAndSubagentsOff(t *testing.T)
 		t.Fatalf("rule %q", CoreAllTool)
 	}
 }
+
+func TestWithSandboxAllowsBashAndNothingElse(t *testing.T) {
+	allowed, disallowed := WithSandbox(DefaultAllowed("/state"), Disallowed(false))
+	has := func(l []string, v string) bool {
+		for _, x := range l {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(allowed, "Bash") || has(disallowed, "Bash") {
+		t.Fatalf("Bash must be allowed and not disallowed: %v / %v", allowed, disallowed)
+	}
+	for _, want := range []string{"WebFetch", "WebSearch", "Task", "Agent", "mcp__core__resolve_issue"} {
+		if !has(disallowed, want) {
+			t.Errorf("%s must stay disallowed", want)
+		}
+	}
+	if has(allowed, "Edit") || has(allowed, "Write") || has(allowed, "mcp__core__*") {
+		t.Errorf("only Bash is added: %v", allowed)
+	}
+}

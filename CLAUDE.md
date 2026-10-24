@@ -33,8 +33,13 @@ Read the ADR and `README.md` before changing behaviour.
   verified against https://code.claude.com/docs before use; do not guess. If
   you cannot verify one, say so in the README's "Not verified" list.
 - **The connector is the boundary.** The prompt is best effort. The spot holds
-  no cluster RBAC and never gets a shell (`Bash` stays in `runner.Disallowed`;
-  never add a `Bash(...)` allow rule). A cluster is reached only through a
+  no cluster RBAC. A shell exists only inside the CLI's sandbox (`--sandbox`,
+  chart `sandbox.enabled`): `Bash` stays in `runner.Disallowed` unless that flag
+  is set, and then `runner.WithSandbox` allows the bare tool, which is safe only
+  because the rendered settings require the sandbox (`failIfUnavailable`), forbid
+  an unsandboxed retry and give it no network. Never add a `Bash(...)` allow
+  rule, never set `excludedCommands`, `enableWeakerNestedSandbox` or an allowed
+  domain, and never run a shell outside the sandbox. A cluster is reached only through a
   connector, whose tools are allowed by exact name. By default the core's tools
   are allowed by name (`runner.CoreTools`) and the destructive ones are
   disallowed by name (`runner.CoreToolsDenied`). `--core-tools all`
