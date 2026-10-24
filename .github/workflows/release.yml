@@ -1,0 +1,70 @@
+name: Release
+
+# Publishes on a version tag push: the multi-arch image on ghcr.io (built with ko, no Docker), the Helm chart as an
+# OCI artifact next to it and a GitHub release with generated notes. The image tag and the chart version are the git
+# tag without its leading v, which is what the chart's default image tag (its appVersion) points at. `make push`
+# does the image part from a maintainer's machine; use one or the other for a tag, never both.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  release:
+    name: Image, chart and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Test
+        run: go test -race ./...
+
+      - uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Log in to ghcr.io
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          echo "$TOKEN" | ko login ghcr.io --username "$ACTOR" --password-stdin
+          echo "$TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Build and push the image
+        env:
+          KO_DOCKER_REPO: ghcr.io/triageagent-dev/spot
+        run: |
+          VERSION="${VERSION#v}"
+          GIT_COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%d')"
+          export VERSION GIT_COMMIT BUILD_DATE
+          tags="$VERSION"
+          case "$VERSION" in *-*) ;; *) tags="$VERSION,latest" ;; esac
+          ko build --bare --platform=linux/amd64,linux/arm64 --tags="$tags" ./cmd/tria-spot
+
+      - name: Package and push the chart
+        run: |
+          helm lint charts/tria-spot
+          helm package charts/tria-spot --version "${VERSION#v}" --app-version "${VERSION#v}" --destination dist
+          helm push "dist/tria-spot-${VERSION#v}.tgz" oci://ghcr.io/triageagent-dev/charts
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$VERSION" "dist/tria-spot-${VERSION#v}.tgz" --title "$VERSION" --generate-notes --verify-tag $prerelease
