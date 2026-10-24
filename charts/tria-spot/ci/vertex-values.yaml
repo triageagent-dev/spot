@@ -1,0 +1,22 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# Claude on Vertex AI through the pod's Workload Identity: no Secret at all (the
+# core identity is the ServiceAccount's own projected token).
+spot:
+  enabled: true
+  tenant: example
+core:
+  mcpUrl: https://core.example-core.svc/mcp
+llm:
+  auth: vertex
+  vertex:
+    project: example-project
+    region: europe-west1
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: example-spot@example-project.iam.gserviceaccount.com
+networkPolicy:
+  core:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}
+  vertex:
+    cidrs: [199.36.153.8/30]

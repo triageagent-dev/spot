@@ -1,4 +1,5 @@
 # Placeholder values for `helm lint` and `helm template`. Not for installing.
+# Key mode with the model settings spelled out.
 spot:
   enabled: true
   tenant: example
@@ -7,9 +8,17 @@ core:
   mcpUrl: https://core.example-core.svc/mcp
   tokenSecret:
     name: example-spot-core-token
-anthropic:
+llm:
+  auth: key
+  model: claude-opus-5-5
+  effort: high
+  maxSteps: 25
   keySecret:
-    name: example-spot-anthropic-key
+    name: example-spot-llm-key
+    key: api-key
+agent:
+  toolTimeout: 30s
+  toolResultMaxBytes: 16384
 networkPolicy:
   core:
     namespaceSelector:
@@ -18,5 +27,3 @@ networkPolicy:
     podSelector:
       matchLabels:
         app.kubernetes.io/name: core
-sandbox:
-  enabled: true

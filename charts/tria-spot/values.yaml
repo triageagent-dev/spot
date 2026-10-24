@@ -1,9 +1,9 @@
-# The Tria spot (ADR-095). Everything below renders nothing until
+# The Tria spot (ADR-095, ADR-098). Everything below renders nothing until
 # spot.enabled is true.
 
 spot:
   # Off in the chart. Setting it to true starts a model-driven agent that
-  # sends what it reads from the cluster to the Anthropic API; a tenant accepts
+  # sends what it reads from the cluster to the model API; a tenant accepts
   # that before this is on for it.
   enabled: false
   # The tenant this spot works for (required when enabled). The spot is named
@@ -57,23 +57,33 @@ core:
     name: ""         # Secret name only; mounted as a file, never an env var
     key: token
 
-# How the CLI authenticates to the Anthropic API. Two modes; the one not in use
-# needs no values and mounts nothing.
-anthropic:
-  # key: a static API key from a Secret, read through apiKeyHelper.
-  # federation: Workload Identity Federation. A projected ServiceAccount token
-  #   is exchanged for a short-lived access token; no Secret is mounted.
+# The model the spot calls, and how it authenticates. Three modes; the ones not
+# in use need no values and mount nothing.
+llm:
+  # key: a static Anthropic API key from a Secret, read from a file.
+  # federation: Anthropic Workload Identity Federation. A projected
+  #   ServiceAccount token is exchanged for a short-lived access token; no
+  #   Secret is mounted.
+  # vertex: Claude on Google Vertex AI through the pod's Workload Identity
+  #   (Application Default Credentials). Annotate serviceAccount for it, and
+  #   set networkPolicy.vertex.cidrs.
   auth: key
+  model: claude-opus-5-5       # on Vertex AI too, with no prefix
+  effort: medium               # low | medium | high | xhigh | max
+  maxSteps: 40                 # model requests per wake
   keySecret:                   # auth: key. Secret name only; mounted as a file
     name: ""
     key: key
   federation:                  # auth: federation. None of these ids is a secret
     ruleId: ""                 # fdrl_...
-    organizationId: ""
+    orgId: ""
     serviceAccountId: ""       # svac_...
     workspaceId: ""            # wrkspc_...; optional when the rule spans one workspace
     audience: https://api.anthropic.com
     tokenExpirationSeconds: 600  # the kubelet rotates the token at 80% of this; minimum 600
+  vertex:                      # auth: vertex
+    project: ""                # the Google Cloud project that serves Claude
+    region: global
 
 # Connectors: more MCP servers beside the core. Each is a service that holds
 # its own credentials and limits (a Kubernetes tool server for another
@@ -92,11 +102,11 @@ connectors: []
   #     cidrs: []
   #     ports: [8084]
 
-# The CLI's own OpenTelemetry traces (beta in the CLI), sent to an OTLP/HTTP
-# endpoint such as ego. The sender's token is a Secret mounted as a file and
-# read by a rendered header helper; no variable carries it. Spans hold names,
-# timings and token counts; toolDetails adds tool parameters (Bash commands,
-# file paths). Prompts and tool output are never added.
+# The spot's own OpenTelemetry spans (one per wake, per model request and per
+# tool call), sent to an OTLP/HTTP endpoint such as ego. The sender's token is a
+# Secret mounted as a file and read at every export; no variable carries it.
+# Spans hold names, timings and token counts; toolDetails adds tool arguments
+# and results. Prompts and answers are added only by agent.logContent.
 telemetry:
   enabled: false
   endpoint: ""                 # e.g. http://<service>.<namespace>.svc:4318
@@ -109,56 +119,47 @@ telemetry:
     key: token
   toolDetails: false
 
-# The agent's Bash tool, inside the CLI's sandbox (bubblewrap): no network, no
-# credential files, no other process visible, writes only under the notes. Off,
-# the agent has no shell. On, the pod gets its own user namespace, an unmasked
-# /proc and the runtime's seccomp and AppArmor profiles off (see the README,
-# "A shell in a sandbox"); the CLI refuses to start if the sandbox cannot run.
-sandbox:
-  enabled: false
-
 # Supervisor settings (see the README for each flag).
 agent:
-  model: ""                   # model alias or name; empty = the CLI default
   coreTools: curated          # curated: the tools the loop names, destructive ones (resolve_issue, forget_issue, ...) refused; all: every core tool, bounded by core.verbs
-  permissionMode: auto        # auto | dontAsk | acceptEdits
-  fallbackPermissionMode: dontAsk
   minWake: 2m
   maxWake: 2h
   pollInterval: 30s
   edgeCooldown: 1m
   chatBatch: 10m              # how long a person's message that does not name the spot waits; 0s = every message wakes it
   maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
-  persistent: false           # keep one claude process alive between turns (stream-json over stdin) instead of one per turn
-  maxTurns: 40
   turnTimeout: 20m
+  toolTimeout: 60s            # one tool call; past it the model gets an error result
+  toolResultMaxBytes: 32768   # a longer tool result is cut, and says how much was dropped
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
-  dailyCostCeilingUSD: 0      # dollars per UTC day (the CLI's own estimate); 0 = no ceiling
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
-  # text at any level. true lets debug logs include it (and the raw CLI lines).
+  # text at any level. true lets debug logs include it (tool input and the
+  # model's text) and puts the first prompt and the final text on the root span.
   logContent: false
-  extraAllowedTools: []       # extra --allowedTools rules
   heartbeatId: ""             # default system2-heartbeat-<tenant>
 
-# /state: notes, the CLI's session files, the schedule, the token ledger.
+# /state: the token ledger, the room cursors and the status file. The spot's
+# memory is the core's; a pod that starts with this empty starts fresh, which is
+# harmless.
 persistence:
-  size: 2Gi
+  size: 256Mi
   storageClassName: ""
   accessModes: [ReadWriteOnce]
   existingClaim: ""
 
 resources:
-  requests: {cpu: 100m, memory: 512Mi}
-  limits: {memory: 1536Mi}
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 500m, memory: 512Mi}
 
 nodeSelector: {}
 tolerations: []
 affinity: {}
 podAnnotations: {}
 
-# The pod's own ServiceAccount: the subject of Workload Identity Federation
-# and, with core.identity serviceAccount, of the core grant. It holds no
+# The pod's own ServiceAccount: the subject of Workload Identity Federation or
+# of the Vertex AI Workload Identity binding (annotations) and, with
+# core.identity serviceAccount, of the core grant. It holds no
 # cluster RBAC: the spot reaches a cluster only through a connector, and its
 # token is not mounted (automountServiceAccountToken is false).
 serviceAccount:
@@ -166,7 +167,7 @@ serviceAccount:
   name: ""
   annotations: {}
 
-# Egress limited to DNS, the Anthropic API, the core, the connectors and the
+# Egress limited to DNS, the model API, the core, the connectors and the
 # telemetry endpoint. NetworkPolicy has no host names: the CIDRs are the ones
 # Anthropic publishes for its API, and the cluster-specific ones are yours to
 # fill in.
@@ -174,11 +175,22 @@ networkPolicy:
   enabled: true
   dns:
     namespaceLabel: kube-system   # namespace of the cluster DNS (kubernetes.io/metadata.name)
-  anthropic:
+  anthropic:                      # llm.auth key or federation
     cidrs:
       - 160.79.104.0/23
       - 2607:6bc0::/48
     ports: [443]
+  vertex:                         # llm.auth vertex
+    # The addresses of the Google APIs the pod reaches (Vertex AI, the token
+    # endpoints). Required then: NetworkPolicy has no host names, so name the
+    # ranges your network uses, for example Private Google Access.
+    cidrs: []
+    ports: [443]
+    # The node's metadata server, which hands out the Workload Identity token
+    # (GKE's addresses and ports).
+    metadata:
+      cidrs: [169.254.169.252/32, 169.254.169.254/32]
+      ports: [988, 80]
   core:
     # Select where the core's MCP endpoint lives: a pod/namespace selector pair
     # for an in-cluster core, or CIDRs for one outside. A selector left empty is

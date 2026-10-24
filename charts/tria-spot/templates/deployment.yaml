@@ -1,9 +1,10 @@
 {{- if .Values.spot.enabled }}
 {{- $name := include "tria-spot.name" . }}
 {{- $tenant := include "tria-spot.tenant" . }}
-{{- $auth := .Values.anthropic.auth }}
-{{- if not (has $auth (list "key" "federation")) }}{{ fail "anthropic.auth must be key or federation" }}{{ end }}
-{{- $fed := .Values.anthropic.federation }}
+{{- $llm := .Values.llm }}
+{{- $auth := $llm.auth }}
+{{- if not (has $auth (list "key" "federation" "vertex")) }}{{ fail "llm.auth must be key, federation or vertex" }}{{ end }}
+{{- $fed := $llm.federation }}
 {{- $identity := include "tria-spot.coreIdentity" . }}
 {{- if and (eq $identity "serviceAccount") (lt (int64 .Values.core.tokenExpirationSeconds) 600) }}{{ fail "core.tokenExpirationSeconds must be at least 600" }}{{ end }}
 apiVersion: apps/v1
@@ -31,27 +32,18 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "tria-spot.saName" . }}
-      # Nothing in the pod talks to the API server: the core and the Anthropic
-      # API each get their own projected, audience-bound token below.
+      # Nothing in the pod talks to the API server: the core and, in federation
+      # mode, the Anthropic API each get their own projected, audience-bound
+      # token below.
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
-      {{- if .Values.sandbox.enabled }}
-      # The agent's Bash tool runs in the CLI's sandbox (bubblewrap), which needs
-      # user namespaces and a fresh /proc. A pod with its own user namespace
-      # (root in the pod is not root on the node) is the form that allows both:
-      # procMount Unmasked requires it. The runtime's default seccomp and
-      # AppArmor profiles block unshare and mount, so they are off for this
-      # pod; the container still runs non-root with no capabilities, no
-      # privilege escalation and a read-only root filesystem.
-      hostUsers: false
-      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile:
-          type: {{ ternary "Unconfined" "RuntimeDefault" .Values.sandbox.enabled }}
+          type: RuntimeDefault
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -72,25 +64,28 @@ spec:
             - --core-api-url={{ .Values.core.apiUrl }}
             {{- end }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
-            - --anthropic-auth={{ $auth }}
+            - --llm-auth={{ $auth }}
             {{- if eq $auth "key" }}
-            - --anthropic-key-file=/secrets/anthropic/{{ .Values.anthropic.keySecret.key }}
-            {{- else }}
+            - --anthropic-key-file=/secrets/anthropic/{{ $llm.keySecret.key }}
+            {{- else if eq $auth "federation" }}
             - --anthropic-identity-token-file=/var/run/secrets/anthropic.com/token
-            - --anthropic-federation-rule-id={{ required "anthropic.federation.ruleId is required when anthropic.auth is federation" $fed.ruleId }}
-            - --anthropic-org-id={{ required "anthropic.federation.organizationId is required when anthropic.auth is federation" $fed.organizationId }}
-            - --anthropic-service-account-id={{ required "anthropic.federation.serviceAccountId is required when anthropic.auth is federation" $fed.serviceAccountId }}
+            - --anthropic-federation-rule-id={{ required "llm.federation.ruleId is required when llm.auth is federation" $fed.ruleId }}
+            - --anthropic-org-id={{ required "llm.federation.orgId is required when llm.auth is federation" $fed.orgId }}
+            - --anthropic-service-account-id={{ required "llm.federation.serviceAccountId is required when llm.auth is federation" $fed.serviceAccountId }}
             {{- if $fed.workspaceId }}
             - --anthropic-workspace-id={{ $fed.workspaceId }}
             {{- end }}
+            {{- else }}
+            - --vertex-project={{ required "llm.vertex.project is required when llm.auth is vertex" $llm.vertex.project }}
+            - --vertex-region={{ required "llm.vertex.region must not be empty" $llm.vertex.region }}
             {{- end }}
+            - --model={{ required "llm.model must not be empty" $llm.model }}
+            - --effort={{ $llm.effort }}
+            - --max-steps={{ int $llm.maxSteps }}
             {{- if .Values.connectors }}
             - --connectors-file=/etc/tria-spot/connectors/connectors.json
             {{- end }}
             - --state-dir=/state
-            - --run-dir=/run/tria-spot
-            - --permission-mode={{ .Values.agent.permissionMode }}
-            - --fallback-permission-mode={{ .Values.agent.fallbackPermissionMode }}
             - --min-wake={{ .Values.agent.minWake }}
             - --max-wake={{ .Values.agent.maxWake }}
             - --poll-interval={{ .Values.agent.pollInterval }}
@@ -98,18 +93,10 @@ spec:
             - --core-tools={{ .Values.agent.coreTools }}
             - --chat-batch={{ .Values.agent.chatBatch }}
             - --max-edge-wakes-per-hour={{ int .Values.agent.maxEdgeWakesPerHour }}
-            {{- if .Values.sandbox.enabled }}
-            - --sandbox
-            {{- end }}
-            {{- if .Values.agent.persistent }}
-            - --persistent
-            {{- end }}
-            - --max-turns={{ .Values.agent.maxTurns }}
             - --turn-timeout={{ .Values.agent.turnTimeout }}
+            - --tool-timeout={{ .Values.agent.toolTimeout }}
+            - --tool-result-max-bytes={{ int .Values.agent.toolResultMaxBytes }}
             - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}
-            {{- if .Values.agent.dailyCostCeilingUSD }}
-            - --daily-cost-ceiling-usd={{ .Values.agent.dailyCostCeilingUSD }}
-            {{- end }}
             {{- if .Values.telemetry.enabled }}
             - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
             {{- if .Values.telemetry.tenant }}
@@ -133,32 +120,19 @@ spec:
             {{- if .Values.agent.logContent }}
             - --log-content
             {{- end }}
-            {{- if .Values.agent.model }}
-            - --model={{ .Values.agent.model }}
-            {{- end }}
             {{- if .Values.agent.heartbeatId }}
             - --heartbeat-id={{ .Values.agent.heartbeatId }}
-            {{- end }}
-            {{- if .Values.agent.extraAllowedTools }}
-            - --allowed-tools={{ join "," .Values.agent.extraAllowedTools }}
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-            {{- if .Values.sandbox.enabled }}
-            procMount: Unmasked
-            appArmorProfile:
-              type: Unconfined
-            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: state
               mountPath: /state
-            - name: run
-              mountPath: /run/tria-spot
             - name: tmp
               mountPath: /tmp
             - name: core-token
@@ -178,7 +152,7 @@ spec:
             - name: anthropic-key
               mountPath: /secrets/anthropic
               readOnly: true
-            {{- else }}
+            {{- else if eq $auth "federation" }}
             - name: anthropic-identity
               mountPath: /var/run/secrets/anthropic.com
               readOnly: true
@@ -187,11 +161,6 @@ spec:
         - name: state
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-state" $name) .Values.persistence.existingClaim }}
-        # Rendered CLI config (it holds the core token): memory-backed, never on disk.
-        - name: run
-          emptyDir:
-            medium: Memory
-            sizeLimit: 16Mi
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
@@ -226,9 +195,9 @@ spec:
         {{- if eq $auth "key" }}
         - name: anthropic-key
           secret:
-            secretName: {{ required "anthropic.keySecret.name is required when anthropic.auth is key" .Values.anthropic.keySecret.name }}
+            secretName: {{ required "llm.keySecret.name is required when llm.auth is key" $llm.keySecret.name }}
             defaultMode: 0440
-        {{- else }}
+        {{- else if eq $auth "federation" }}
         # The identity token Anthropic exchanges for an access token. The kubelet
         # writes it and rotates it on disk; it is not a Secret object.
         - name: anthropic-identity

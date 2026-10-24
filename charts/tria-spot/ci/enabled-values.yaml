@@ -7,7 +7,7 @@ core:
   mcpUrl: https://core.example-core.svc/mcp
   tokenSecret:
     name: example-spot-core-token
-anthropic:
+llm:
   keySecret:
     name: example-spot-anthropic-key
 networkPolicy:

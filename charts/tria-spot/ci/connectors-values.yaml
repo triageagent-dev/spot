@@ -7,14 +7,12 @@ core:
   mcpUrl: https://core.example-core.svc/mcp
   tokenSecret:
     name: example-spot-core-token
-anthropic:
+llm:
   auth: federation
   federation:
     ruleId: fdrl_example
-    organizationId: 00000000-0000-0000-0000-000000000000
+    orgId: 00000000-0000-0000-0000-000000000000
     serviceAccountId: svac_example
-agent:
-  persistent: true
 connectors:
   - name: example-kube
     url: http://tools.example-conn.svc:8084/mcp

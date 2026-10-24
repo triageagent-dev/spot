@@ -23,6 +23,29 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+    {{- if eq .Values.llm.auth "vertex" }}
+    # Claude on Vertex AI: the Google API addresses you name, and the node's
+    # metadata server that hands out the Workload Identity token.
+    - to:
+        {{- if not $np.vertex.cidrs }}{{ fail "networkPolicy.vertex.cidrs must list the addresses of the Google APIs the pod may reach when llm.auth is vertex" }}{{ end }}
+        {{- range $np.vertex.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $np.vertex.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    - to:
+        {{- range $np.vertex.metadata.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $np.vertex.metadata.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- else }}
     # The Anthropic API.
     - to:
         {{- range $np.anthropic.cidrs }}
@@ -33,6 +56,7 @@ spec:
         {{- range $np.anthropic.ports }}
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
+    {{- end }}
     # The core's MCP endpoint.
     - to:
         {{- include "tria-spot.egressPeers" (dict "t" $np.core "what" "core") | nindent 8 }}
