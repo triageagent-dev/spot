@@ -18,7 +18,7 @@ Read the ADRs, `README.md` and `docs/spec.html` before changing behaviour.
   installed, `go test -race`, `helm lint` and `helm template` with every
   `charts/tria-spot/ci/*-values.yaml`). Never commit a failing tree.
 - **Push only when asked.** The remote `origin` is the public repository
-  `triageagent-dev/tria-spot`. Never push unasked, and never
+  `triageagent-dev/spot`. Never push unasked, and never
   push a branch other than the one asked for. The image is built with ko only
   (no Docker, no Dockerfile): `make image` only builds, and `make push
   REGISTRY=...` publishes an image when the user has asked for a deploy.

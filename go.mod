@@ -1,4 +1,4 @@
-module github.com/triageagent-dev/tria-spot
+module github.com/triageagent-dev/spot
 
 go 1.27
 

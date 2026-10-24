@@ -19,8 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
-	"github.com/triageagent-dev/tria-spot/internal/mcptools"
+	"github.com/triageagent-dev/spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/mcptools"
 )
 
 // Server is one MCP server the spot takes tools from.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/triageagent-dev/tria-spot/internal/config"
+	"github.com/triageagent-dev/spot/internal/config"
 )
 
 func TestVersionAndUsage(t *testing.T) {

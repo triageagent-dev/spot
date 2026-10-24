@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/triageagent-dev/tria-spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/corecli"
 )
 
 // Kind is the type of an edge.

@@ -29,7 +29,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/llm"
 )
 
 // Options configure a Provider.

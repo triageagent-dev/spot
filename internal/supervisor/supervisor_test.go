@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/triageagent-dev/tria-spot/internal/agent"
-	"github.com/triageagent-dev/tria-spot/internal/config"
-	"github.com/triageagent-dev/tria-spot/internal/corecli"
-	"github.com/triageagent-dev/tria-spot/internal/ledger"
-	"github.com/triageagent-dev/tria-spot/internal/llm"
-	"github.com/triageagent-dev/tria-spot/internal/tools"
-	"github.com/triageagent-dev/tria-spot/internal/triggers"
+	"github.com/triageagent-dev/spot/internal/agent"
+	"github.com/triageagent-dev/spot/internal/config"
+	"github.com/triageagent-dev/spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/ledger"
+	"github.com/triageagent-dev/spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/tools"
+	"github.com/triageagent-dev/spot/internal/triggers"
 )
 
 type fakeClock struct {

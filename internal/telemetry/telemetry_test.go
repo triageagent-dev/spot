@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/llm"
 )
 
 func attrs(kv []attribute.KeyValue) map[string]attribute.Value {

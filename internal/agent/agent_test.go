@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
-	"github.com/triageagent-dev/tria-spot/internal/tools"
+	"github.com/triageagent-dev/spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/tools"
 )
 
 // fakeTools is a Toolbox with canned tools and the real built-in behaviour of

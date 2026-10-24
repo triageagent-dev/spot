@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/triageagent-dev/tria-spot/internal/agent"
-	"github.com/triageagent-dev/tria-spot/internal/config"
-	"github.com/triageagent-dev/tria-spot/internal/corecli"
-	"github.com/triageagent-dev/tria-spot/internal/edges"
-	"github.com/triageagent-dev/tria-spot/internal/ledger"
-	"github.com/triageagent-dev/tria-spot/internal/prompt"
-	"github.com/triageagent-dev/tria-spot/internal/schedule"
-	"github.com/triageagent-dev/tria-spot/internal/triggers"
+	"github.com/triageagent-dev/spot/internal/agent"
+	"github.com/triageagent-dev/spot/internal/config"
+	"github.com/triageagent-dev/spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/edges"
+	"github.com/triageagent-dev/spot/internal/ledger"
+	"github.com/triageagent-dev/spot/internal/prompt"
+	"github.com/triageagent-dev/spot/internal/schedule"
+	"github.com/triageagent-dev/spot/internal/triggers"
 )
 
 // Core is the supervisor's view of the core.

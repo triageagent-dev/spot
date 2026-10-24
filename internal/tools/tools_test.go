@@ -15,7 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/llm"
 )
 
 const listSchema = `{"type":"object","properties":{"limit":{"type":["integer","null"]}},"required":[],"additionalProperties":false}`

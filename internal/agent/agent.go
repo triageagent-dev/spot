@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/triageagent-dev/tria-spot/internal/llm"
-	"github.com/triageagent-dev/tria-spot/internal/telemetry"
-	"github.com/triageagent-dev/tria-spot/internal/tools"
+	"github.com/triageagent-dev/spot/internal/llm"
+	"github.com/triageagent-dev/spot/internal/telemetry"
+	"github.com/triageagent-dev/spot/internal/tools"
 )
 
 // ScheduleRequest is what the model asked schedule_next for.

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/triageagent-dev/tria-spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/corecli"
 )
 
 func is(id, sev string, reopen, comments int) corecli.Issue {

@@ -6,7 +6,7 @@
 | --- | --- |
 | Component | tria-spot |
 | Description | Always-on agent for one workspace of the Triage core: a supervisor wakes its own Go agent loop in turns, the loop calls a model (Anthropic or Gemini) and runs tools taken from MCP servers (the core, ego, connectors) |
-| Repository | github.com/triageagent-dev/tria-spot (public) |
+| Repository | github.com/triageagent-dev/spot (public) |
 | Image registry | ghcr.io/triageagent-dev/spot |
 | Chart registry | oci://ghcr.io/triageagent-dev/charts/tria-spot |
 | Version | commit 7fac342 (no release tag yet); chart 0.1.0, appVersion 0.1.0 |
