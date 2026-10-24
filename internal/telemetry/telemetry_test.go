@@ -222,3 +222,10 @@ func TestTracesURL(t *testing.T) {
 		t.Error("a URL without a scheme is an error")
 	}
 }
+
+func TestProviderNameFollowsTheOption(t *testing.T) {
+	spans := run(t, Options{Endpoint: "http://x", Name: "example-spot", Tenant: "example", TenantAttr: "triage.tenant", Provider: "gemini"})
+	if got := attrs(byName(spans, "chat ")[0].Attributes)["gen_ai.provider.name"].AsString(); got != "gemini" {
+		t.Errorf("provider = %q", got)
+	}
+}

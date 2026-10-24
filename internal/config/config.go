@@ -31,21 +31,27 @@ type Config struct {
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
 	Connectors     []Connector
+	// LLMProvider is the model provider: "anthropic" or "gemini". Both sit
+	// behind llm.Client.
+	LLMProvider string
 	// LLMAuth is how the spot authenticates to the model API: "key" (an API key
 	// read from a file), "federation" (Anthropic Workload Identity Federation:
-	// a projected identity token is exchanged for a short-lived access token)
-	// or "vertex" (Claude on Google Vertex AI through the pod's Workload
-	// Identity). The ids are not secrets.
+	// a projected identity token is exchanged for a short-lived access token;
+	// Anthropic only) or "vertex" (Claude or Gemini on Google Vertex AI through
+	// the pod's Workload Identity). The ids are not secrets.
 	LLMAuth                string
 	AnthropicKeyFile       string
+	GeminiKeyFile          string
 	IdentityTokenFile      string
 	FederationRuleID       string
 	AnthropicOrgID         string
 	AnthropicServiceAcctID string
 	AnthropicWorkspaceID   string
 	VertexProject          string
-	VertexRegion           string
-	// Model is the model id; Effort is low, medium, high, xhigh or max.
+	// VertexRegion is the Vertex AI region or global, for either provider.
+	VertexRegion string
+	// Model is the model id (empty = the provider's default, applied by Parse);
+	// Effort is low, medium, high, xhigh or max.
 	Model  string
 	Effort string
 	// StateDir holds the supervisor's own files (usage, cursors, status). The
@@ -94,11 +100,18 @@ const (
 	AuthVertex     = "vertex"
 )
 
+// Model providers.
+const (
+	ProviderAnthropic = "anthropic"
+	ProviderGemini    = "gemini"
+)
+
 // Defaults.
 const (
-	DefaultStateDir = "/state"
-	DefaultModel    = "claude-opus-5-5"
-	DefaultEffort   = "medium"
+	DefaultStateDir       = "/state"
+	DefaultAnthropicModel = "claude-opus-5-5"
+	DefaultGeminiModel    = "gemini-2.5-flash"
+	DefaultEffort         = "medium"
 )
 
 // Parse reads args (without the program name). Output of flag errors goes to
@@ -114,17 +127,19 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
-	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation or vertex")
-	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-auth=key, rejected otherwise)")
+	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
+	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only) or vertex")
+	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-provider=anthropic --llm-auth=key, rejected otherwise)")
+	fs.StringVar(&c.GeminiKeyFile, "gemini-key-file", "", "file holding the Gemini API key, re-read on every request (required with --llm-provider=gemini --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.IdentityTokenFile, "anthropic-identity-token-file", "", "federation: file holding the projected identity token (JWT), re-read on every exchange")
 	fs.StringVar(&c.FederationRuleID, "anthropic-federation-rule-id", "", "federation: the federation rule id (fdrl_...)")
 	fs.StringVar(&c.AnthropicOrgID, "anthropic-org-id", "", "federation: the Anthropic organization id")
 	fs.StringVar(&c.AnthropicServiceAcctID, "anthropic-service-account-id", "", "federation: the Anthropic service account id (svac_...)")
 	fs.StringVar(&c.AnthropicWorkspaceID, "anthropic-workspace-id", "", "federation: workspace id (wrkspc_...); optional when the rule spans one workspace")
-	fs.StringVar(&c.VertexProject, "vertex-project", "", "vertex: the Google Cloud project that serves Claude (required with --llm-auth=vertex)")
-	fs.StringVar(&c.VertexRegion, "vertex-region", "global", "vertex: the region, or global")
+	fs.StringVar(&c.VertexProject, "vertex-project", "", "vertex: the Google Cloud project that serves the model (required with --llm-auth=vertex)")
+	fs.StringVar(&c.VertexRegion, "vertex-region", "global", "vertex: the region, or global (the Vertex AI location, for either provider)")
 	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "directory for the supervisor's own files: token usage, room cursors, status; losing it is harmless")
-	fs.StringVar(&c.Model, "model", DefaultModel, "the model id (on Vertex AI too, with no prefix)")
+	fs.StringVar(&c.Model, "model", "", "the model id (on Vertex AI too, with no prefix); default claude-opus-5-5 for anthropic, gemini-2.5-flash for gemini")
 	fs.StringVar(&c.Effort, "effort", DefaultEffort, "how much effort the model puts into a step: low, medium, high, xhigh or max")
 	fs.DurationVar(&c.MinWake, "min-wake", 2*time.Minute, "floor for the agent's own wake-up schedule")
 	fs.DurationVar(&c.MaxWake, "max-wake", 2*time.Hour, "ceiling for the agent's own wake-up schedule")
@@ -167,6 +182,14 @@ func Parse(args []string, out io.Writer) (Config, error) {
 var otelLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func (c *Config) applyDefaults() {
+	if strings.TrimSpace(c.Model) == "" {
+		switch c.LLMProvider {
+		case ProviderAnthropic:
+			c.Model = DefaultAnthropicModel
+		case ProviderGemini:
+			c.Model = DefaultGeminiModel
+		}
+	}
 	if c.Name == "" && c.Tenant != "" {
 		c.Name = c.Tenant + "-spot"
 	}
@@ -222,37 +245,70 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	switch c.LLMAuth {
-	case AuthKey:
-		req(c.AnthropicKeyFile, "anthropic-key-file")
-		only(AuthFederation, federation)
-		only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
-	case AuthFederation:
-		if c.AnthropicKeyFile != "" {
-			errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=federation: the key would shadow federation"))
+	switch c.LLMProvider {
+	case ProviderAnthropic:
+		if c.GeminiKeyFile != "" {
+			errs = append(errs, errors.New("--gemini-key-file only applies with --llm-provider=gemini"))
 		}
-		only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
-		req(c.IdentityTokenFile, "anthropic-identity-token-file")
-		req(c.FederationRuleID, "anthropic-federation-rule-id")
-		req(c.AnthropicOrgID, "anthropic-org-id")
-		req(c.AnthropicServiceAcctID, "anthropic-service-account-id")
-		for flagName, v := range map[string]string{
-			"anthropic-federation-rule-id": c.FederationRuleID, "anthropic-org-id": c.AnthropicOrgID,
-			"anthropic-service-account-id": c.AnthropicServiceAcctID, "anthropic-workspace-id": c.AnthropicWorkspaceID,
-		} {
-			if strings.ContainsAny(v, " \t\n/\\") {
-				errs = append(errs, fmt.Errorf("--%s must not contain spaces or slashes", flagName))
+		switch c.LLMAuth {
+		case AuthKey:
+			req(c.AnthropicKeyFile, "anthropic-key-file")
+			only(AuthFederation, federation)
+			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
+		case AuthFederation:
+			if c.AnthropicKeyFile != "" {
+				errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=federation: the key would shadow federation"))
+			}
+			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
+			req(c.IdentityTokenFile, "anthropic-identity-token-file")
+			req(c.FederationRuleID, "anthropic-federation-rule-id")
+			req(c.AnthropicOrgID, "anthropic-org-id")
+			req(c.AnthropicServiceAcctID, "anthropic-service-account-id")
+			for flagName, v := range map[string]string{
+				"anthropic-federation-rule-id": c.FederationRuleID, "anthropic-org-id": c.AnthropicOrgID,
+				"anthropic-service-account-id": c.AnthropicServiceAcctID, "anthropic-workspace-id": c.AnthropicWorkspaceID,
+			} {
+				if strings.ContainsAny(v, " \t\n/\\") {
+					errs = append(errs, fmt.Errorf("--%s must not contain spaces or slashes", flagName))
+				}
+			}
+		case AuthVertex:
+			if c.AnthropicKeyFile != "" {
+				errs = append(errs, errors.New("--anthropic-key-file only applies with --llm-auth=key"))
+			}
+			only(AuthFederation, federation)
+			req(c.VertexProject, "vertex-project")
+			req(c.VertexRegion, "vertex-region")
+		default:
+			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex", c.LLMAuth))
+		}
+	case ProviderGemini:
+		anthropic := map[string]string{"anthropic-key-file": c.AnthropicKeyFile}
+		for k, v := range federation {
+			anthropic[k] = v
+		}
+		for flagName, v := range anthropic {
+			if v != "" {
+				errs = append(errs, fmt.Errorf("--%s only applies with --llm-provider=anthropic", flagName))
 			}
 		}
-	case AuthVertex:
-		if c.AnthropicKeyFile != "" {
-			errs = append(errs, errors.New("--anthropic-key-file only applies with --llm-auth=key"))
+		switch c.LLMAuth {
+		case AuthKey:
+			req(c.GeminiKeyFile, "gemini-key-file")
+			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
+		case AuthVertex:
+			if c.GeminiKeyFile != "" {
+				errs = append(errs, errors.New("--gemini-key-file only applies with --llm-auth=key"))
+			}
+			req(c.VertexProject, "vertex-project")
+			req(c.VertexRegion, "vertex-region")
+		case AuthFederation:
+			errs = append(errs, errors.New("--llm-auth=federation is an Anthropic auth mode: use key or vertex with --llm-provider=gemini"))
+		default:
+			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, vertex", c.LLMAuth))
 		}
-		only(AuthFederation, federation)
-		req(c.VertexProject, "vertex-project")
-		req(c.VertexRegion, "vertex-region")
 	default:
-		errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex", c.LLMAuth))
+		errs = append(errs, fmt.Errorf("--llm-provider %q is not one of anthropic, gemini", c.LLMProvider))
 	}
 	req(c.Model, "model")
 	switch c.Effort {

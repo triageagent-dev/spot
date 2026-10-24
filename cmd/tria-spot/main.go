@@ -83,7 +83,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	tel, err := telemetry.New(ctx, telemetry.Options{
 		Endpoint: cfg.OtelEndpoint, TokenFile: cfg.OtelTokenFile, Name: cfg.Name,
 		Tenant: cfg.OtelTenant, TenantAttr: cfg.OtelTenantAttr, TenantName: cfg.OtelTenantName,
-		ToolDetails: cfg.OtelToolDetails, LogContent: cfg.LogContent,
+		ToolDetails: cfg.OtelToolDetails, LogContent: cfg.LogContent, Provider: cfg.LLMProvider,
 	})
 	if err != nil {
 		log.Error("telemetry", "err", err)
@@ -141,9 +141,20 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	return 0
 }
 
-// newModel builds the model client for the configured auth mode. It fails at
-// once on a key file it cannot read or a mode with missing ids.
-func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (*llm.Anthropic, error) {
+// newModel builds the model client for the configured provider and auth mode.
+// It fails at once on a key file it cannot read or a mode with missing ids.
+func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Client, error) {
+	log.Info("model", "provider", cfg.LLMProvider, "id", cfg.Model, "effort", cfg.Effort, "maxSteps", cfg.MaxSteps)
+	if cfg.LLMProvider == config.ProviderGemini {
+		o := llm.GeminiOptions{Auth: cfg.LLMAuth, Model: cfg.Model, KeyFile: cfg.GeminiKeyFile}
+		if cfg.LLMAuth == config.AuthVertex {
+			o.VertexProject, o.VertexLocation = cfg.VertexProject, cfg.VertexRegion
+			log.Info("model auth: Gemini on Google Vertex AI with application default credentials", "project", cfg.VertexProject, "location", cfg.VertexRegion)
+		} else {
+			log.Info("model auth: Gemini API key from a file")
+		}
+		return llm.NewGemini(ctx, o)
+	}
 	o := llm.Options{Auth: cfg.LLMAuth, Model: cfg.Model, KeyFile: cfg.AnthropicKeyFile}
 	switch cfg.LLMAuth {
 	case config.AuthFederation:
@@ -162,7 +173,6 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (*llm.An
 	default:
 		log.Info("model auth: API key from a file")
 	}
-	log.Info("model", "id", cfg.Model, "effort", cfg.Effort, "maxSteps", cfg.MaxSteps)
 	return llm.NewAnthropic(ctx, o)
 }
 

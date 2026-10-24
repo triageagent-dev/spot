@@ -46,6 +46,9 @@ type Options struct {
 	ToolDetails bool
 	// LogContent adds the first prompt and the final text to the root span.
 	LogContent bool
+	// Provider is the model provider, the value of gen_ai.provider.name on the
+	// chat spans: "anthropic" (also the default when empty) or "gemini".
+	Provider string
 
 	// exporter replaces the OTLP exporter, for tests.
 	exporter sdktrace.SpanExporter
@@ -217,6 +220,13 @@ func messagesJSON(role, text, finish string) string {
 	return string(b)
 }
 
+func (p *Provider) provider() string {
+	if p.o.Provider == "" {
+		return "anthropic"
+	}
+	return p.o.Provider
+}
+
 // Chat is the span of one model request.
 type Chat struct {
 	t     *Turn
@@ -231,7 +241,7 @@ func (t *Turn) Chat(model string) *Chat {
 	}
 	_, span := t.p.tracer.Start(t.ctx, "chat "+model, trace.WithAttributes(
 		attribute.String("gen_ai.operation.name", "chat"),
-		attribute.String("gen_ai.provider.name", "anthropic"),
+		attribute.String("gen_ai.provider.name", t.p.provider()),
 		attribute.String("gen_ai.request.model", model),
 	))
 	return &Chat{t: t, span: span, model: model}

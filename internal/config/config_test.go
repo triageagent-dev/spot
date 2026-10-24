@@ -24,8 +24,54 @@ func TestDefaults(t *testing.T) {
 	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
 		t.Errorf("model and loop defaults: %+v", c)
 	}
-	if c.LLMAuth != AuthKey || c.VertexRegion != "global" {
+	if c.LLMAuth != AuthKey || c.VertexRegion != "global" || c.LLMProvider != ProviderAnthropic {
 		t.Errorf("auth defaults: %+v", c)
+	}
+	// An empty model is the provider's default.
+	if c, err = Parse(with(required, "--model", ""), io.Discard); err != nil || c.Model != DefaultAnthropicModel {
+		t.Errorf("empty --model: %q %v", c.Model, err)
+	}
+	if c, err = Parse(with(required, "--model", "claude-example"), io.Discard); err != nil || c.Model != "claude-example" {
+		t.Errorf("explicit --model: %q %v", c.Model, err)
+	}
+}
+
+var geminiKey = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
+	"--core-token-file", "/s/token", "--llm-provider", "gemini", "--gemini-key-file", "/s/gemini"}
+
+func TestGeminiProvider(t *testing.T) {
+	c, err := Parse(geminiKey, io.Discard)
+	if err != nil || c.LLMProvider != ProviderGemini || c.LLMAuth != AuthKey || c.GeminiKeyFile != "/s/gemini" || c.Model != DefaultGeminiModel {
+		t.Fatalf("key mode: %+v %v", c, err)
+	}
+	if c, err = Parse(with(geminiKey, "--model", "gemini-3-pro-preview"), io.Discard); err != nil || c.Model != "gemini-3-pro-preview" {
+		t.Fatalf("explicit model: %q %v", c.Model, err)
+	}
+	vertex := []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp", "--core-token-file", "/s/token",
+		"--llm-provider", "gemini", "--llm-auth", "vertex", "--vertex-project", "example-project", "--vertex-region", "europe-west1"}
+	if c, err = Parse(vertex, io.Discard); err != nil || c.LLMAuth != AuthVertex || c.VertexProject != "example-project" || c.VertexRegion != "europe-west1" || c.GeminiKeyFile != "" || c.Model != DefaultGeminiModel {
+		t.Fatalf("vertex mode: %+v %v", c, err)
+	}
+	base := []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp", "--core-token-file", "/s/token"}
+	for name, args := range map[string][]string{
+		"unknown provider":         with(base, "--llm-provider", "openai", "--anthropic-key-file", "/s/key"),
+		"federation":               with(base, "--llm-provider", "gemini", "--llm-auth", "federation"),
+		"federation with ids":      with(federation, "--llm-provider", "gemini"),
+		"key mode, no key file":    with(base, "--llm-provider", "gemini"),
+		"an anthropic key file":    with(geminiKey, "--anthropic-key-file", "/s/key"),
+		"project in key mode":      with(geminiKey, "--vertex-project", "p"),
+		"vertex, no project":       with(base, "--llm-provider", "gemini", "--llm-auth", "vertex"),
+		"vertex with a key file":   with(vertex, "--gemini-key-file", "/s/gemini"),
+		"vertex, anthropic file":   with(vertex, "--anthropic-key-file", "/s/key"),
+		"gemini key for anthropic": with(required, "--gemini-key-file", "/s/gemini"),
+		"unknown auth":             with(base, "--llm-provider", "gemini", "--llm-auth", "oauth"),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	if _, err := Parse(with(base, "--llm-provider", "gemini", "--llm-auth", "federation"), io.Discard); err == nil || !strings.Contains(err.Error(), "Anthropic auth mode") {
+		t.Errorf("federation message: %v", err)
 	}
 }
 
@@ -41,7 +87,6 @@ func TestValidation(t *testing.T) {
 		"no args":        nil,
 		"max < min":      append(append([]string{}, required...), "--min-wake", "1h", "--max-wake", "1m"),
 		"bad effort":     append(append([]string{}, required...), "--effort", "extreme"),
-		"empty model":    append(append([]string{}, required...), "--model", ""),
 		"zero tool time": append(append([]string{}, required...), "--tool-timeout", "0s"),
 		"zero result":    append(append([]string{}, required...), "--tool-result-max-bytes", "0"),
 		"bad level":      append(append([]string{}, required...), "--log-level", "loud"),
