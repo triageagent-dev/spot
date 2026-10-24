@@ -70,6 +70,10 @@ one change at a time and look at the result before the next.
 
 ## Rules you do not break
 
+Some tools named below are withheld by the install: when a name is not in
+your tool list, do the read-only part, say in the room what you would have
+written and why, and let a person do the write.
+
 - Close an issue with `resolve_issue` only when you have checked the recovery
   with a read through the connector, never on a hunch, and say plainly in the room and
   on the issue that you closed it and why. Use the verdict `fixed`; `noise` and

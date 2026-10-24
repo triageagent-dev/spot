@@ -9,7 +9,7 @@ var CoreTools = []string{
 	"list_open_issues", "list_issues", "get_issue_detail", "get_issue_graph", "get_recent_events",
 	"search_memory", "search_corpus", "get_memory", "get_memory_context", "get_memory_items", "get_memory_cell",
 	"fetch_memory", "get_world_context", "get_service_analytics", "get_service_prediction",
-	"inspect_service", "list_services", "list_applications", "analyze_issue", "verify_hypothesis",
+	"inspect_service", "list_services", "list_applications", "list_pattern_proposals", "analyze_issue", "verify_hypothesis",
 	"comment_on_issue", "upsert_memory_item", "note_observation",
 	"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_workspace_status", "set_spot_status",
 }
