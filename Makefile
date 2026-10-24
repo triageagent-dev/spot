@@ -47,7 +47,7 @@ CLAUDE_CODE_INTEGRITY ?= sha512-yZ/zZk3y7e0zbkMs740y9Z+bs40MmWApwM9qHQ8Adis01Syc
 JQ_VERSION            ?= 1.7.1
 JQ_SHA256             ?= 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
 # The sandbox for the agent's Bash tool needs bubblewrap and socat (and the
-# one library socat needs that the base image lacks). Debian bookworm packages,
+# libraries socat needs that the base image lacks: libwrap, libnsl, libtirpc). Debian bookworm packages,
 # the release the base image is, from a fixed snapshot of the archive and
 # pinned by digest.
 DEB_SNAPSHOT := https://snapshot.debian.org/archive/debian/20260901T000000Z/pool/main
@@ -57,6 +57,10 @@ SOCAT_DEB    := s/socat/socat_1.7.4.4-2_amd64.deb
 SOCAT_SHA256 := 2bf3094e16ce0aab245193eb6b7cb6b6e086f68d321b757e2090901b4cd7f826
 LIBWRAP_DEB  := t/tcp-wrappers/libwrap0_7.6.q-32_amd64.deb
 LIBWRAP_SHA256 := cbce2669a3ba4d74cfdc52b14f38014893e23d85a33d109a3422c342eefc55f8
+LIBNSL_DEB   := libn/libnsl/libnsl2_1.3.0-2_amd64.deb
+LIBNSL_SHA256 := c0d83437fdb016cb289436f49f28a36be44b3e8f1f2498c7e3a095f709c0d6f8
+LIBTIRPC_DEB := libt/libtirpc/libtirpc3_1.3.3%2Bds-1_amd64.deb
+LIBTIRPC_SHA256 := 2a46d5a5e9486da11ffeff5740931740d6deae4f92cd6098df060dc5dff1e1c7
 
 .PHONY: kodata
 kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
@@ -72,7 +76,7 @@ kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	 curl -fsSL -o "$$tmp/jq" "https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-linux-amd64"; \
 	 echo "$(JQ_SHA256)  $$tmp/jq" | shasum -a 256 -c -; \
 	 install -m 0755 "$$tmp/jq" $(KODATA)/jq; \
-	 for d in "$(BWRAP_DEB) $(BWRAP_SHA256)" "$(SOCAT_DEB) $(SOCAT_SHA256)" "$(LIBWRAP_DEB) $(LIBWRAP_SHA256)"; do \
+	 for d in "$(BWRAP_DEB) $(BWRAP_SHA256)" "$(SOCAT_DEB) $(SOCAT_SHA256)" "$(LIBWRAP_DEB) $(LIBWRAP_SHA256)" "$(LIBNSL_DEB) $(LIBNSL_SHA256)" "$(LIBTIRPC_DEB) $(LIBTIRPC_SHA256)"; do \
 	   set -- $$d; f="$$tmp/$$(basename $$1 | sed 's/%2B/+/')"; \
 	   curl -fsSL -o "$$f" "$(DEB_SNAPSHOT)/$$1"; \
 	   echo "$$2  $$f" | shasum -a 256 -c -; \
@@ -82,6 +86,8 @@ kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
 	 install -m 0755 "$$tmp/x-$(BWRAP_SHA256)/usr/bin/bwrap" $(KODATA)/bwrap; \
 	 install -m 0755 "$$tmp/x-$(SOCAT_SHA256)/usr/bin/socat" $(KODATA)/socat.bin; \
 	 install -m 0644 "$$tmp/x-$(LIBWRAP_SHA256)/usr/lib/x86_64-linux-gnu/libwrap.so.0.7.6" $(KODATA)/lib/libwrap.so.0; \
+	 install -m 0644 "$$tmp/x-$(LIBNSL_SHA256)/usr/lib/x86_64-linux-gnu/libnsl.so.2.0.1" $(KODATA)/lib/libnsl.so.2; \
+	 install -m 0644 "$$tmp/x-$(LIBTIRPC_SHA256)/lib/x86_64-linux-gnu/libtirpc.so.3.0.0" $(KODATA)/lib/libtirpc.so.3; \
 	 printf '%s\n' '#!/bin/sh' '# socat needs libwrap, which the base image lacks; it travels next to the binary.' 'd=$$(dirname "$$0")' 'LD_LIBRARY_PATH="$$d/lib" exec "$$d/socat.bin" "$$@"' > $(KODATA)/socat; \
 	 chmod 0755 $(KODATA)/socat
 	@test "$$(ls -A $(KODATA) | grep -v '^\.gitkeep$$' | sort | tr '\n' ' ')" = "bwrap claude jq lib socat socat.bin " || { echo "kodata holds more than claude, jq and the sandbox's bwrap and socat:"; ls -A $(KODATA); exit 1; }
