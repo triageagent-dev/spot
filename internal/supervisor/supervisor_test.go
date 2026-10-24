@@ -322,11 +322,11 @@ func TestStartupTickAndResume(t *testing.T) {
 	if h.turns() != 1 {
 		t.Fatalf("woke before its schedule: %d turns", h.turns())
 	}
-	// Due: a tick turn that resumes the same conversation and carries the reason.
+	// Due: a tick turn in a new conversation that carries the reason.
 	h.clock.Advance(1 * time.Minute)
 	h.waitIdle(2)
-	if argv := h.file("argv", 2); !strings.Contains(argv, "--resume\nsess-1") {
-		t.Errorf("tick must resume the conversation:\n%s", argv)
+	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
+		t.Errorf("a tick must start an empty conversation:\n%s", argv)
 	}
 	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "Your reason: fake") {
 		t.Errorf("tick prompt:\n%s", in)
@@ -747,7 +747,7 @@ func TestDailyCeilingStopsWakesUntilUTCMidnight(t *testing.T) {
 	}
 }
 
-func TestRestartResumesConversationAndLedger(t *testing.T) {
+func TestRestartStartsAnEmptyConversationAndKeepsTheLedger(t *testing.T) {
 	h := newHarness(t, nil)
 	h.set("next", `{"after":"2h"}`)
 	h.start()
@@ -757,11 +757,11 @@ func TestRestartResumesConversationAndLedger(t *testing.T) {
 	h.start() // a new process over the same /state
 	defer h.stop()
 	h.waitIdle(2)
-	if argv := h.file("argv", 2); !strings.Contains(argv, "--resume\nsess-1") {
-		t.Errorf("restart must resume the saved conversation:\n%s", argv)
+	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
+		t.Errorf("a restart must not resume a conversation:\n%s", argv)
 	}
 	in := h.file("stdin", 2)
-	if !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "conversation was resumed") {
+	if !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "new, empty conversation") {
 		t.Errorf("restart prompt:\n%s", in)
 	}
 	if strings.Contains(in, "cut off") {
@@ -1105,24 +1105,22 @@ func TestDailyCostCeilingPausesLikeTheTokenOne(t *testing.T) {
 	}
 }
 
-func TestConversationRotatesPastTheContextLimit(t *testing.T) {
-	h := newHarness(t, func(c *config.Config) { c.MaxContextTokens = 50 })
-	h.set("tokens", "100 120") // the last request's context is 100 tokens: over the limit
+func TestEveryWakeStartsAnEmptyConversation(t *testing.T) {
+	h := newHarness(t, nil)
 	h.set("next", `{"after":"3m"}`)
 	h.core.setIssues(issue("a", "warning", 0))
 	h.start()
 	defer h.stop()
 	h.waitIdle(1)
-	if got := h.status().LastTurn.ContextTokens; got != 100 {
-		t.Fatalf("context tokens on the turn = %d", got)
-	}
-	h.clock.Advance(4 * time.Minute)
-	h.waitIdle(2)
-	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
-		t.Fatalf("a conversation past the limit must not be resumed:\n%s", argv)
-	}
-	if in := h.file("stdin", 2); strings.Contains(in, "conversation was resumed") {
-		t.Fatalf("the wake prompt must not claim a resumed conversation:\n%s", in)
+	for n := 2; n <= 3; n++ {
+		h.clock.Advance(4 * time.Minute)
+		h.waitIdle(n)
+		if argv := h.file("argv", n); strings.Contains(argv, "--resume") {
+			t.Fatalf("wake %d resumed a conversation:\n%s", n, argv)
+		}
+		if in := h.file("stdin", n); !strings.Contains(in, "new, empty conversation") {
+			t.Fatalf("wake %d prompt must say the conversation is empty:\n%s", n, in)
+		}
 	}
 }
 

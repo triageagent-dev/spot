@@ -20,7 +20,7 @@ supervisor works without them.
    |  tria-spot (supervisor, entrypoint)                      |
    |    renders /run/tria-spot/{mcp.json,settings.json,...}   |
    |    polls the core (MCP, model-free) for edges            |
-   |    claude -p --resume ... (one turn per wake)  ----+     |
+   |    claude -p (an empty conversation per wake)  ----+     |
    |                                                    v     |
    |  Claude Code CLI -- MCP --> core /mcp, connectors        |
    |  /state: notes/, next.json (the agent's)                 |
@@ -31,7 +31,7 @@ supervisor works without them.
 ## The loop
 
 1. **Startup.** The supervisor renders the CLI's configuration (below), then
-   runs a `startup` turn that resumes the saved conversation.
+   runs a `startup` turn. No wake resumes a conversation (see below).
 2. **A turn** is `claude -p` with the prompt on stdin: why it woke (`startup`,
    `tick`, `edge`, `human`), the facts behind it, the token budget left, and
    the path to write `next.json`. The agent looks with the core's tools first,
@@ -91,17 +91,27 @@ supervisor works without them.
 8. **SIGTERM** stops the running CLI (SIGTERM to its process group, kill after
    30 s), counts the tokens seen so far, marks the session as cut off, writes
    `status.json` and exits. The next start tells the agent its last turn was
-   cut off. A killed pod resumes the same conversation from `/state`.
+   cut off. A killed pod keeps its notes, ledger and schedule in `/state`.
+
+## Every wake is an empty conversation
+
+The spot manages its own context. Nothing is resumed: each wake starts a new
+conversation (no `--resume`), so a model call never pays again for the tool
+output of earlier wakes. Continuity is what the spot reads at the start of the
+wake: the room's last few messages (`read_workspace_room` with a `limit`), the
+open issues (`list_open_issues` with a `limit`), its notes under `/state/notes`
+and the `why` it left in `next.json`, and the core's memory. There is no
+hand-over note and no compaction: the notes the agent keeps are its memory.
 
 ## One process between turns
 
-By default each wake starts `claude -p`, resumes the session and exits. With
+By default each wake starts `claude -p` and it exits. With
 `--persistent` (`agent.persistent`) the supervisor starts one process with
 `--input-format stream-json` and writes every turn to its stdin as a user
 message (`{"type":"user","message":{"role":"user","content":...},"parent_tool_use_id":null,"uuid":...}`),
 reading the stream until that turn's `result`. The supervisor itself is
-unchanged: it still decides when a turn runs, what it says, when the context
-is rotated and what a turn may spend.
+unchanged: it still decides when a turn runs, what it says and what a turn
+may spend.
 
 What was measured against the CLI (2.1.309), and what the code relies on:
 
@@ -113,8 +123,8 @@ What was measured against the CLI (2.1.309), and what the code relies on:
   `error_during_execution` and every count zero although the model had
   answered; the runner then counts the assistant messages' usage instead.
 
-The process is replaced, and the session resumed, when a fresh conversation is
-asked for (a rotation), when another session is asked for, when the arguments
+The process is replaced at every wake (a fresh conversation is asked for), and
+also when the arguments
 change (the permission-mode fallback), when the MCP file changes (the core
 token rotated: it is read once at start), when the process exited or crashed,
 and after 12 hours. A turn past its timeout is interrupted and the process is
@@ -421,8 +431,7 @@ paths. Logs and metrics exporters are off.
 Claude Code does not set `gen_ai.usage.*` on its spans (it exports
 `input_tokens` without the cached ones), so the receiver has to map them; ego
 does. The traces carry no spend control: that is the workspace spend limit, the
-supervisor's `--daily-token-ceiling` and `--daily-cost-ceiling-usd`, and
-`--max-context-tokens`.
+supervisor's `--daily-token-ceiling` and `--daily-cost-ceiling-usd`.
 
 ## Spend
 
@@ -430,11 +439,8 @@ supervisor's `--daily-token-ceiling` and `--daily-cost-ceiling-usd`, and
   Cache reads are not counted, so it under-reports a long conversation.
 - `--daily-cost-ceiling-usd`: the CLI's own dollar estimate per UTC day, which
   includes cache reads. Either ceiling pauses all wakes until UTC midnight.
-- `--max-context-tokens`: a resumed conversation grows with every turn and each
-  turn pays for all of it (a cold cache re-creates the whole context). When a
-  turn ends with a context larger than this, the next wake starts a fresh
-  conversation and the agent carries on from its notes. `status.json` shows
-  each turn's `contextTokens`.
+- **No conversation grows.** Every wake starts empty, so the context of a turn
+  is what that wake reads. `status.json` shows each turn's `contextTokens`.
 - **The core's cap.** The supervisor's ceilings are the spot's own. The core
   keeps one it enforces (policy `budgets.spotTenantDailyTokens` over
   `budgets.spotDailyDefaultTokens`, tokens per workspace per UTC day, new input

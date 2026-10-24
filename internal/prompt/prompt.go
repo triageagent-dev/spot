@@ -63,7 +63,6 @@ type Wake struct {
 	Facts       []string // edges or messages that caused it
 	ScheduledBy string   // the "why" the agent left for itself (tick)
 	ChatName    string   // what the messenger calls the spot now; empty = unknown
-	Resumed     bool     // a conversation is being resumed
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
 	TokensUsed  int64
@@ -78,13 +77,10 @@ func Turn(w Wake) string {
 	if w.ChatName != "" {
 		fmt.Fprintf(&b, "In the messenger you appear as %s: people write to you by that name.\n", w.ChatName)
 	}
+	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is your notes, the core's memory and what the core and the room show you now.\n")
 	switch w.Reason {
 	case Startup:
-		if w.Resumed {
-			b.WriteString("The pod (re)started and your conversation was resumed. Read your notes, then look at the tenant.\n")
-		} else {
-			b.WriteString("This is your first turn in a new conversation. Read your notes if there are any, then look at the tenant.\n")
-		}
+		b.WriteString("The pod (re)started. Read your notes, then look at the tenant.\n")
 	case Tick:
 		if w.ScheduledBy != "" {
 			fmt.Fprintf(&b, "You scheduled this wake. Your reason: %s\n", w.ScheduledBy)

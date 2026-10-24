@@ -79,11 +79,10 @@ type Supervisor struct {
 	status       Status
 
 	// What the core is told about how the spot is doing (counted per UTC day).
-	statsDay  string
-	wakes     map[string]int64
-	rotations int64
-	statsAt   time.Time
-	coreHeld  bool // the core's cap holds the spot back
+	statsDay string
+	wakes    map[string]int64
+	statsAt  time.Time
+	coreHeld bool // the core's cap holds the spot back
 }
 
 type heldEdge struct {
@@ -864,7 +863,11 @@ func (s *Supervisor) interject(ctx context.Context, inj Interjector) {
 func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	sess := s.led.LoadSession()
 	interrupted := sess.Running
-	resume := sess.ID
+	// Every wake is an empty conversation: nothing is resumed. What the spot
+	// knows comes from the room and the issues it reads from the core at the
+	// start of the wake, its notes and the core's memory. A long conversation
+	// would be paid for again on every model call.
+	const resume = ""
 
 	if len(s.held) > 0 && p.reason != prompt.Startup {
 		for _, e := range s.held {
@@ -877,7 +880,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.refreshIdentity(ctx, false, identityEvery)
 	text := prompt.Turn(prompt.Wake{
 		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
-		Resumed: resume != "", Interrupted: interrupted, Note: p.note,
+		Interrupted: interrupted, Note: p.note,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil, StateDir: s.cfg.StateDir,
 	})
 
@@ -886,7 +889,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Error("saving session", "err", err)
 	}
 	s.setState("running")
-	s.log.Info("turn start", "reason", p.reason, "resume", resume != "", "facts", len(p.facts))
+	s.log.Info("turn start", "reason", p.reason, "facts", len(p.facts))
 	s.rollDay()
 	s.wakes[string(p.reason)]++
 
@@ -936,18 +939,6 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// Running out of agentic turns is the work stopping, not failing.
 	maxTurns := sum.GotResult && sum.Subtype == "error_max_turns"
 	failed := (!maxTurns && (res.Err != nil || sum.IsError || !sum.GotResult)) || res.CoreDown
-	if failed && resume != "" && sessionLost(res) {
-		s.log.Warn("the saved conversation cannot be resumed; the next turn starts a new one", "session", resume)
-		sess = ledger.Session{}
-	}
-	// A resumed conversation grows with every turn and each turn pays for all
-	// of it. Past the limit, the next wake starts a fresh conversation and
-	// carries on from the agent's own notes.
-	if !failed && s.cfg.MaxContextTokens > 0 && sum.LastContext > s.cfg.MaxContextTokens {
-		s.log.Info("conversation rotated: the next wake starts a fresh one", "contextTokens", sum.LastContext, "limit", s.cfg.MaxContextTokens)
-		s.rotations++
-		sess = ledger.Session{}
-	}
 	if err := s.led.SaveSession(sess); err != nil {
 		s.log.Error("saving session", "err", err)
 	}
@@ -1084,14 +1075,6 @@ func (s *Supervisor) backoff() time.Duration {
 	return d
 }
 
-// sessionLost reports whether the CLI said the saved conversation is gone.
-// Nothing else drops it: an outage or an authentication failure is not a
-// reason to forget the conversation and its cost baseline.
-func sessionLost(res runner.Result) bool {
-	return strings.Contains(res.Stderr, "No conversation found") ||
-		strings.Contains(strings.Join(res.Summary.Errors, " "), "No conversation found")
-}
-
 // federationHint is what to read when federation auth fails. The API answers
 // every denied exchange with the same opaque 401; the reason is only in the
 // Claude Console's authentication history.
@@ -1216,7 +1199,7 @@ func modelLabel(m string) string {
 func (s *Supervisor) rollDay() {
 	day := s.now().UTC().Format("2006-01-02")
 	if s.wakes == nil || day != s.statsDay {
-		s.statsDay, s.wakes, s.rotations = day, map[string]int64{}, 0
+		s.statsDay, s.wakes = day, map[string]int64{}
 	}
 }
 
@@ -1231,8 +1214,8 @@ func (s *Supervisor) reportStats(force bool) {
 	u := s.led.Usage()
 	st := triggers.Stats{
 		State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
-		EdgeWakesHour: int64(s.status.EdgeWakesHour), Rotations: s.rotations,
-		Tokens: u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
+		EdgeWakesHour: int64(s.status.EdgeWakesHour),
+		Tokens:        u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
 	}
 	for k, v := range s.wakes {
 		st.Wakes[k] = v

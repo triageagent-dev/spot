@@ -15,7 +15,6 @@ anthropic:
     serviceAccountId: svac_example
 agent:
   dailyCostCeilingUSD: 10
-  maxContextTokens: 60000
 telemetry:
   enabled: true
   endpoint: http://collector.example-obs.svc:4318

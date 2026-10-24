@@ -69,8 +69,10 @@ func TestTurnPrompt(t *testing.T) {
 			t.Errorf("tick prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if !strings.Contains(Turn(Wake{Reason: Startup, Resumed: true, Now: now, StateDir: "/s"}), "resumed") {
-		t.Error("resumed startup not mentioned")
+	for _, r := range []Reason{Startup, Tick, Edge, Human} {
+		if !strings.Contains(Turn(Wake{Reason: r, Now: now, StateDir: "/s"}), "new, empty conversation") {
+			t.Errorf("%s: the prompt must say the conversation is empty", r)
+		}
 	}
 }
 

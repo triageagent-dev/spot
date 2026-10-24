@@ -126,7 +126,6 @@ agent:
   turnTimeout: 20m
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
   dailyCostCeilingUSD: 0      # dollars per UTC day (the CLI's own estimate); 0 = no ceiling
-  maxContextTokens: 0         # start a fresh conversation after a turn whose context passed this; 0 = never
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
   # text at any level. true lets debug logs include it (and the raw CLI lines).

@@ -54,7 +54,6 @@ type Config struct {
 	TurnTimeout            time.Duration
 	DailyTokenCeil         int64
 	DailyCostCeilUSD       float64 // dollars per UTC day after which no wake starts; 0 = none
-	MaxContextTokens       int64   // start a fresh conversation after a turn whose context passed this; 0 = never
 	PollInterval           time.Duration
 	EdgeCooldown           time.Duration
 	// ChatBatch is how long a room message that does not name the spot may
@@ -133,7 +132,6 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
 	fs.Float64Var(&c.DailyCostCeilUSD, "daily-cost-ceiling-usd", 0, "dollars (the CLI's own estimate) per UTC day after which no wake starts; 0 disables it")
-	fs.Int64Var(&c.MaxContextTokens, "max-context-tokens", 0, "start a fresh conversation after a turn whose context passed this many tokens; 0 never rotates")
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
@@ -210,8 +208,8 @@ func (c *Config) Validate() error {
 	if c.OtelEndpoint == "" && (c.OtelTokenFile != "" || c.OtelToolDetails) {
 		errs = append(errs, errors.New("--otel-token-file and --otel-tool-details need --otel-endpoint"))
 	}
-	if c.DailyCostCeilUSD < 0 || c.MaxContextTokens < 0 {
-		errs = append(errs, errors.New("--daily-cost-ceiling-usd and --max-context-tokens cannot be negative"))
+	if c.DailyCostCeilUSD < 0 {
+		errs = append(errs, errors.New("--daily-cost-ceiling-usd cannot be negative"))
 	}
 	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))

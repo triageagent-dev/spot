@@ -97,9 +97,6 @@ spec:
             {{- if .Values.agent.dailyCostCeilingUSD }}
             - --daily-cost-ceiling-usd={{ .Values.agent.dailyCostCeilingUSD }}
             {{- end }}
-            {{- if .Values.agent.maxContextTokens }}
-            - --max-context-tokens={{ int64 .Values.agent.maxContextTokens }}
-            {{- end }}
             {{- if .Values.telemetry.enabled }}
             - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
             {{- if .Values.telemetry.tenant }}
