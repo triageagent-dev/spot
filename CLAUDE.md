@@ -7,7 +7,7 @@ Guidance for agents working in this repo.
 `tria-spot` is the supervisor, the agent loop, the image and the chart for the
 Tria spot (ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
 workspace of the Triage core, running as its own Go agent loop over the
-Anthropic Go SDK, with tools taken from the core's MCP server and connectors.
+Anthropic Go SDK or the Google GenAI Go SDK, with tools taken from the core's MCP server and connectors.
 Read the ADRs and `README.md` before changing behaviour.
 
 ## Rules
@@ -32,6 +32,10 @@ Read the ADRs and `README.md` before changing behaviour.
   `internal/llm`, for the SDK to find the federation ids and the path of the
   identity token file (not credentials); it also unsets the variables that
   would shadow federation. Keep it so.
+- **Two providers, anthropic and gemini, both behind `llm.Client`.** A Gemini
+  key is a file (`--gemini-key-file`), never `GOOGLE_API_KEY` or
+  `GEMINI_API_KEY`; the client passes the key and the host to the SDK explicitly
+  and fails on an empty key file. Federation is an Anthropic auth mode only.
 - **The model is called only through `internal/llm`; tools only through
   `internal/tools`; the spot has no shell, no filesystem tools and no cluster
   RBAC.** Do not add a tool that runs a command, reads or writes a file, or

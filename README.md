@@ -8,13 +8,14 @@ let it fix, and tells the team what it saw and did (ADR-095, ADR-098).
 The binary is two things in one process. A **supervisor** wakes the agent in
 turns, watches the core between turns without a model, and keeps the schedule,
 the budget and the heartbeat. The **agent** is the spot's own loop in Go: it
-sends the wake prompt to Claude through the official Anthropic Go SDK, runs the
-tools Claude asks for, and sends the results back until Claude is done. The
+sends the wake prompt to the model (Claude through the official Anthropic Go
+SDK, or Gemini through the Google GenAI Go SDK), runs the tools the model asks
+for, and sends the results back until the model is done. The
 spot has no shell, no filesystem tools and no cluster RBAC. The core gets no
 Kubernetes client.
 
 ```
-                    model API (Anthropic, or Vertex AI)
+                    model API (Anthropic, Gemini, or Vertex AI)
                             ^
    +------- pod ------------|--------------------------------+
    |  tria-spot                                              |
@@ -132,8 +133,11 @@ the first user message. A second, short breakpoint on the last block of the
 latest message lets the steps of one turn read the conversation so far.
 Cache reads and writes are recorded in the usage and in the spans.
 
-- `--model` (`claude-opus-5-5`; on Vertex AI the same id, no prefix) and
-  `--effort` (`low`, `medium`, the default, `high`, `xhigh`, `max`, sent as
+The rest of this section describes the Anthropic provider; Model providers
+below covers Gemini.
+
+- `--model` (`claude-opus-5-5` when empty; on Vertex AI the same id, no prefix)
+  and `--effort` (`low`, `medium`, the default, `high`, `xhigh`, `max`, sent as
   `output_config.effort`).
 - Thinking is not configured: the model thinks adaptively by itself, and its
   thinking blocks go back with the tool results unchanged. No `tool_choice` is
@@ -142,6 +146,73 @@ Cache reads and writes are recorded in the usage and in the spans.
   middle is dropped); a second one fails the turn. A `refusal` ends the turn as
   failed with the policy category in the error. A `pause_turn` is resent once.
 - 429 and 5xx are retried twice by the SDK, then the turn fails.
+
+## Model providers
+
+The loop talks to `llm.Client`, which has two implementations: Anthropic
+(`internal/llm/anthropic.go`) and Gemini (`internal/llm/gemini.go`, Google
+GenAI Go SDK). `--llm-provider` (chart: `llm.provider`) picks one; the default
+is `anthropic`. The loop, the tools, the prompt and the budget are the same for
+both.
+
+| | `anthropic` | `gemini` |
+|---|---|---|
+| Auth modes (`--llm-auth`) | `key`, `federation`, `vertex` | `key`, `vertex` |
+| Key file | `--anthropic-key-file` | `--gemini-key-file` |
+| Default model (`--model` empty) | `claude-opus-5-5` | `gemini-2.5-flash` |
+| Vertex AI location | `--vertex-region` | `--vertex-region` (one flag for both; `global` by default) |
+
+`federation` is an Anthropic mode and is refused with `gemini`.
+
+**Gemini key.** The key is a file (`--gemini-key-file`), read again on every
+request, so a rotated Secret is picked up without a restart. It is passed to the
+SDK explicitly. An empty or missing key file stops the start, so the SDK never
+falls back to `GOOGLE_API_KEY` or `GEMINI_API_KEY`; no variable is read for
+the key, the project, the location or the host (the host is passed explicitly
+too, so a `GOOGLE_GEMINI_BASE_URL` in the environment cannot redirect a
+request). **Gemini on Vertex AI** uses Application Default Credentials, the
+pod's Workload Identity; no key file.
+
+**Requests.** The system strings become one system instruction. The tools are
+one `Tool` with a function declaration per tool, sorted by name, each carrying
+the server's JSON schema unchanged (`parametersJsonSchema`); the tool choice is
+automatic. Tool results go back as function responses (`{"result": ...}`, or
+`{"error": ...}` for a failed tool). Gemini 3 returns a thought signature on
+function calls and needs it back unchanged with that call; the client keeps it
+on the block and sends it back. A function call the API gave no id gets a
+`call_<n>` id of this client, which is never sent back to the API.
+
+**Effort and thinking.** `--effort` maps to the model's thinking, and thoughts
+are not requested in the answer:
+
+| effort | `gemini-3*` (thinking level) | other models (thinking budget, tokens) |
+|---|---|---|
+| `low` | `LOW` | 1024 |
+| `medium` | `MEDIUM` | 4096 |
+| `high` | `HIGH` | 8192 |
+| `xhigh`, `max` | `HIGH` | -1 (dynamic) |
+
+Models without thinking (Gemini 2.0 and earlier) reject a thinking config; use
+a 2.5 or 3 model. Not every Gemini 3 model accepts every level.
+
+**Stops and usage.** A function call in the answer is a tool use. `STOP` ends
+the turn, `MAX_TOKENS` is the cut-off case described above, and `SAFETY`,
+`RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` and a blocked prompt are
+a refusal with the reason as category. Usage is the prompt tokens minus the
+cached ones, the cached ones as cache reads (no cache writes), and the answer
+plus thought tokens as output. The SDK retries 408, 429 and 5xx up to three
+tries; there is no other retry layer.
+
+**Caching.** Gemini caches a stable prefix implicitly on 2.5 models and later,
+and the sorted tools plus the system instruction are that prefix, so nothing is
+done explicitly. Explicit `CachedContent` with a TTL is a follow-up.
+
+**Chart.** `llm.provider` (`anthropic` | `gemini`); `llm.model` (empty = the
+provider's default, and then no `--model` is passed); `llm.geminiKeySecret.{name,key}`
+(gemini with `key`: a Secret mounted as a file at `/secrets/gemini/<key>`);
+`llm.vertex.{project,region}` (vertex, either provider). Egress to Google's APIs
+is `networkPolicy.google` (see Chart): required for the `gemini` provider in any
+mode and for `anthropic` with `vertex`.
 
 ## Tools
 
@@ -223,16 +294,18 @@ Flags only. No credential is a flag value or an environment variable.
 | `--core-tools` | `curated` | `curated` or `all` (see Tools) |
 | `--connectors-file` | none | JSON list of connectors, more MCP servers with the tools the spot may call (see Connectors) |
 | `--ego-mcp-url` | empty | ego's MCP endpoint, read with the `--otel-token-file` token |
-| `--llm-auth` | `key` | `key`, `federation` or `vertex` (see How credentials flow) |
-| `--anthropic-key-file` | required with `key` | file holding the Anthropic API key; rejected with the others |
+| `--llm-provider` | `anthropic` | `anthropic` or `gemini` (see Model providers) |
+| `--llm-auth` | `key` | `key`, `federation` (anthropic only) or `vertex` (see How credentials flow) |
+| `--anthropic-key-file` | required with `anthropic` and `key` | file holding the Anthropic API key; rejected with the others |
+| `--gemini-key-file` | required with `gemini` and `key` | file holding the Gemini API key, re-read on every request; rejected with the others |
 | `--anthropic-identity-token-file` | required with `federation` | the projected identity token (a JWT), re-read on every exchange |
 | `--anthropic-federation-rule-id` | required with `federation` | federation rule id (`fdrl_...`) |
 | `--anthropic-org-id` | required with `federation` | Anthropic organization id |
 | `--anthropic-service-account-id` | required with `federation` | Anthropic service account id (`svac_...`) |
 | `--anthropic-workspace-id` | | workspace id (`wrkspc_...`); optional when the rule spans one workspace |
-| `--vertex-project` | required with `vertex` | the Google Cloud project that serves Claude |
-| `--vertex-region` | `global` | the Vertex AI region, or `global` |
-| `--model` | `claude-opus-5-5` | the model id |
+| `--vertex-project` | required with `vertex` | the Google Cloud project that serves the model |
+| `--vertex-region` | `global` | the Vertex AI region, or `global`, for either provider |
+| `--model` | empty | the model id; empty = `claude-opus-5-5` (anthropic) or `gemini-2.5-flash` (gemini) |
 | `--effort` | `medium` | `low`, `medium`, `high`, `xhigh` or `max` |
 | `--max-steps` | `40` | model requests per wake |
 | `--turn-timeout` | `20m` | wall-clock cap per wake |
@@ -259,8 +332,9 @@ Flags only. No credential is a flag value or an environment variable.
 
 ## How credentials flow
 
-Three model auth modes, chosen with `--llm-auth`. The ids federation needs are
-not secrets, but they are flags.
+Three model auth modes, chosen with `--llm-auth` (federation is for the
+Anthropic provider only; the Gemini provider takes `key` and `vertex`, see Model
+providers). The ids federation needs are not secrets, but they are flags.
 
 - **Anthropic key (`key`, the default).** A Secret mounted as a file, read with
   `--anthropic-key-file` and sent as the API key. The file is read again on
@@ -280,7 +354,10 @@ not secrets, but they are flags.
   `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN` and `ANTHROPIC_PROFILE`
   are unset in this mode, because each of them outranks federation and would
   silently replace it. An `--anthropic-key-file` is refused.
-- **Vertex AI (`vertex`).** Claude on Google Vertex AI through Application
+- **Gemini key (`key`, with `--llm-provider=gemini`).** A Secret mounted as a
+  file, read with `--gemini-key-file` on every request. Never an environment
+  variable.
+- **Vertex AI (`vertex`).** Claude or Gemini on Google Vertex AI through Application
   Default Credentials: the pod's Workload Identity. Annotate the ServiceAccount
   (`serviceAccount.annotations`, `iam.gke.io/gcp-service-account`) with a Google
   service account that may call Vertex AI in `--vertex-project`; no Secret is
@@ -401,7 +478,7 @@ Spans, per turn:
 - `invoke_agent <name>`: the root, with `gen_ai.operation.name`,
   `gen_ai.conversation.id` (a fresh UUID per turn), `gen_ai.agent.name` and
   `tria.wake.reason`;
-- `chat <model>` for each model request: `gen_ai.provider.name=anthropic`,
+- `chat <model>` for each model request: `gen_ai.provider.name` (`anthropic` or `gemini`),
   the request and response model, `gen_ai.usage.input_tokens` (the uncached
   input), `output_tokens`, `cache_read.input_tokens`,
   `cache_creation.input_tokens`, `gen_ai.response.finish_reasons`;
@@ -462,7 +539,9 @@ the core identity (a projected ServiceAccount token with audience `triage-core`
 plus the `<name>-core` Role and RoleBinding, or a Secret mounted as a file, mode
 0440 with `fsGroup`; see Identity towards the core), and per `llm.auth`:
 
-- `key` (default): the key Secret from `llm.keySecret`, mounted as a file;
+- `key` (default): the key Secret from `llm.keySecret` (provider `anthropic`) or
+  `llm.geminiKeySecret` (provider `gemini`, mounted at `/secrets/gemini/<key>`),
+  as a file;
 - `federation`: a projected `serviceAccountToken` volume at
   `/var/run/secrets/anthropic.com` (audience `https://api.anthropic.com`,
   `tokenExpirationSeconds` 600; no Secret mounted); `llm.federation.ruleId`,
@@ -470,26 +549,30 @@ plus the `<name>-core` Role and RoleBinding, or a Secret mounted as a file, mode
 - `vertex`: nothing mounted; `llm.vertex.project` is required, `region` defaults
   to `global`; the Workload Identity binding goes in `serviceAccount.annotations`.
 
-`llm.model`, `llm.effort` and `llm.maxSteps` set the model, the effort and the
+`llm.provider` is `anthropic` (default) or `gemini`; `federation` is refused with
+`gemini`. `llm.model` (empty = the provider's default, and no `--model` is
+passed), `llm.effort` and `llm.maxSteps` set the model, the effort and the
 step cap; `agent.toolTimeout` and `agent.toolResultMaxBytes` set the tool
 limits. Resources default to 100m/128Mi requested and 500m/512Mi as the limit.
 
 The NetworkPolicy allows egress to cluster DNS, the model API, the core, the
 connectors and, with `telemetry.enabled`, the OTLP endpoint from
 `networkPolicy.telemetry`; nothing in. NetworkPolicy has no host names, so for
-`key` and `federation` the model API addresses are the CIDRs Anthropic publishes
-(`160.79.104.0/23`, `2607:6bc0::/48`, platform.claude.com/docs/en/api/ip-addresses).
-For `vertex` they are the Google API ranges you name in
-`networkPolicy.vertex.cidrs` (required then; for example the Private Google
-Access range), plus the node's metadata server for the Workload Identity token
-(`networkPolicy.vertex.metadata`, GKE's addresses by default). The core is
+the Anthropic provider with `key` or `federation` the model API addresses are the
+CIDRs Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`,
+platform.claude.com/docs/en/api/ip-addresses). For the Gemini provider (any
+mode) and for `vertex` with either provider they are the Google API ranges you
+name in `networkPolicy.google.cidrs` (required then; for example the Private
+Google Access range); with `vertex` the egress adds the node's metadata server
+for the Workload Identity token (`networkPolicy.google.metadata`, GKE's addresses
+by default). The core is
 selected by namespace and pod selector or CIDR. The chart fails to render when a
 required value is missing.
 
 `make chart-lint` runs `helm lint` and `helm template` with the flag off (must
 render nothing) and with every values file in `charts/tria-spot/ci` (placeholders
 only): key mode (`enabled-values.yaml`, `key-values.yaml`), federation, Vertex
-AI, telemetry, the ServiceAccount identity and connectors. It checks that the pod
+AI, the Gemini provider with a key and on Vertex AI, telemetry, the ServiceAccount identity and connectors. It checks that the pod
 has no `env`, that no rule names Secrets, that no ClusterRole renders, that the
 ServiceAccount token is not mounted, that nothing in the pod is loosened for a
 shell, that each mode mounts and opens only its own, and that a missing required
@@ -557,7 +640,7 @@ The spot reaches no cluster unless `--connectors-file` names a connector.
 ```
 cmd/tria-spot            entrypoint: flags, wiring, `version`
 internal/config          flags, validation, connectors file
-internal/llm             the model client (Anthropic SDK: key, federation, Vertex), a scripted fake
+internal/llm             the model client (Anthropic SDK: key, federation, Vertex; Google GenAI SDK: key, Vertex), a scripted fake
 internal/tools           the model's tools: core, ego, connectors over MCP, schedule_next, finish
 internal/mcptools        the MCP session the tools use (raw tools/list and tools/call)
 internal/agent           one turn: the loop, steps, injection, results
@@ -590,6 +673,11 @@ against a local HTTP server and the loop against a scripted fake.
   `token exchange` and `federation` in the error text.
 - Vertex AI: the Workload Identity binding, the egress ranges and the model id
   on a real project.
+- Gemini, against the real API: the request and response mapping is tested
+  against a local HTTP server only. A full turn on a Gemini 3 model (thought
+  signatures with parallel function calls, which levels each model accepts),
+  how often implicit caching hits across wakes, and Gemini on Vertex AI with the
+  pod's Workload Identity.
 - How ego maps the span attributes; the GenAI conventions are followed, and the
   resource attributes are the ones the receiver is documented to read.
 - The core side of phase 3: the reply shape of `read_workspace_room` is read

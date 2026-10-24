@@ -84,6 +84,11 @@ loop, one per workspace.** The supervisor stays. The CLI is replaced by
   the path of the token file are set in the process environment for the SDK to
   find; they are not credentials, there is no child process, and the variables
   that would shadow federation are unset.
+- **The loop is provider-neutral.** It talks to `llm.Client` and ships two
+  implementations: Anthropic (key, federation, Vertex AI) and Gemini through the
+  Google GenAI Go SDK (key, Vertex AI), chosen with `--llm-provider`. The
+  request model, the tool surface, the budget and the spans are the same for
+  both; a Gemini key is a file like every other credential.
 - **The spot emits its own spans** to ego: a root span per wake, a span per
   model request and one per tool call, with the resource attributes ego reads.
 - **The pod is stateless.** The spot's memory is the core's memory
