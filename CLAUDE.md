@@ -8,7 +8,7 @@ Guidance for agents working in this repo.
 Tria spot (the core's ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
 workspace of the Triage core, running as its own Go agent loop over the
 Anthropic Go SDK or the Google GenAI Go SDK, with tools taken from the core's MCP server and connectors.
-Read the ADRs and `README.md` before changing behaviour.
+Read the ADRs, `README.md` and `docs/spec.html` before changing behaviour.
 
 ## Rules
 
@@ -67,7 +67,7 @@ Read the ADRs and `README.md` before changing behaviour.
 
 ## Layout
 
-See the README's Layout section. The supervisor's tests drive the loop with a
+See the Layout section of `docs/spec.html`. The supervisor's tests drive the loop with a
 scripted `Turner` in `internal/supervisor/supervisor_test.go`; the agent's
 tests use the scripted `llm.Fake`; the tools' tests use an in-process MCP
 server. Extend those rather than mocking around them.

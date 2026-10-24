@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMjAwIDIwMCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJzcG90IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxnIHRyYW5zZm9ybT0icm90YXRlKC05MCAxMDAgMTAwKSI+PGNpcmNsZSBjeD0iMTAwIiBjeT0iMTAwIiByPSI4NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI4YmYwIiBzdHJva2Utd2lkdGg9IjE2Ii8+PGNpcmNsZSBjeD0iMTAwIiBjeT0iMTAwIiByPSI1NiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjJkM2VlIiBzdHJva2Utd2lkdGg9IjE2IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1kYXNoYXJyYXk9IjI2NCAzNTIiLz48L2c+PGNpcmNsZSBjeD0iMTAwIiBjeT0iMTAwIiByPSIyNiIgZmlsbD0iI2U4NzlmOSIvPjwvc3ZnPg==">
+<title>Spot Specification</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --paper:      #F0EEE6;
+  --surface:    #FFFFFF;
+  --surface-2:  #E4E0D4;
+  --ink:        #191919;
+  --ink-2:      #3D3B36;
+  --muted:      #736F65;
+  --rule:       #D9D5C8;
+  --rule-strong:#B3AE9E;
+  --accent:     #9C4A26;
+  --accent-soft:#EBDBBC;
+  --alt:        #3F6478;
+  --alt-soft:   #D3DEE3;
+  --serif: 'Source Serif 4', Georgia, serif;
+  --sans:  'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono:  'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); scroll-behavior: smooth; font-size: 17px; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 16px/1.62 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+code { font: 400 .8em var(--mono); background: var(--surface-2); padding: .08em .35em; border-radius: 3px; hyphens: none; -webkit-hyphens: none; white-space: nowrap; }
+
+.shell { display: grid; grid-template-columns: 17rem minmax(0,1fr); max-width: 78rem; margin: 0 auto; align-items: start; }
+.sidebar { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; border-right: 1px solid var(--rule); padding: 2.5rem 1.4rem 3rem 1.75rem; }
+.sidebar h2 { font: 500 .68rem var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 .7rem .6rem; }
+.sidebar h2.group { margin-top: 1.6rem; }
+.sidebar nav { display: flex; flex-direction: column; }
+.sidebar a { display: flex; align-items: baseline; gap: .7rem; padding: .45rem .6rem; border-radius: 6px; text-decoration: none; color: var(--ink); font: 500 .9rem var(--sans); }
+.sidebar a:hover, .sidebar a.on { background: var(--surface); }
+.sidebar a.on .n { color: var(--accent); }
+.sidebar .n { font: 400 .74rem var(--mono); color: var(--muted); width: 1.1rem; flex: none; }
+.sidebar .chev { margin-left: auto; color: var(--rule-strong); align-self: center; flex: none; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { position: static; max-height: none; overflow: visible; border-right: 0; border-bottom: 1px solid var(--rule); padding: 1.5rem 1.25rem; }
+  .sidebar nav { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+  .sidebar .chev { display: none; }
+}
+
+main { padding: 3.5rem 3.5rem 6rem; min-width: 0; }
+@media (max-width: 900px) { main { padding: 2rem 16px 4rem; } }
+.eyebrow { font: 500 .72rem var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 0 0 1.2rem; }
+h1 { font: 700 clamp(2.1rem, 4.4vw, 3rem)/1.12 var(--serif); letter-spacing: -.018em; text-wrap: balance; margin: 0 0 1.2rem; }
+.standfirst strong { font-weight: 500; color: var(--ink); }
+.standfirst { font: 400 1.06rem/1.62 var(--sans); color: var(--ink-2); margin: 0 0 1.4rem; }
+.meta { font: 400 .95rem var(--sans); color: var(--ink-2); margin: 0 0 1rem; }
+
+.roles { display: grid; gap: 10px; margin: 2.2rem 0 0; }
+.role { display: grid; grid-template-columns: 9rem 1fr auto; gap: 1rem; align-items: baseline; padding: .9rem 1.1rem; border: 1px solid var(--rule); border-radius: 8px; }
+.role .tag { font: 500 .7rem var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.role .what { font: 400 .92rem/1.5 var(--sans); color: var(--ink-2); }
+.role .what b { color: var(--ink); font-weight: 600; }
+.role .where { font: 400 .72rem var(--mono); color: var(--muted); white-space: nowrap; }
+@media (max-width: 700px) { .role { grid-template-columns: 1fr; gap: .2rem; } .role .where { white-space: normal; } }
+
+section { margin-top: 4.5rem; scroll-margin-top: 1.5rem; }
+.sechead { display: grid; grid-template-columns: 3rem 1fr; align-items: baseline; border-bottom: 1px solid var(--rule-strong); padding-bottom: .6rem; margin-bottom: 1.6rem; }
+.ord { font: 400 .85rem var(--mono); color: var(--accent); }
+.sechead h2 { font: 600 1.65rem/1.25 var(--serif); letter-spacing: -.012em; margin: 0; }
+.owner { grid-column: 2; font: 400 .74rem var(--mono); color: var(--muted); margin-top: .35rem; }
+.faq { border-bottom: 1px solid var(--rule); }
+.faq summary { font: 600 1.02rem/1.4 var(--sans); padding: .9rem 0; cursor: pointer; list-style-position: outside; }
+.faq[open] summary { padding-bottom: .5rem; }
+h3 { font: 600 1.02rem/1.4 var(--sans); margin: 2.2rem 0 .6rem; }
+p { margin: 0 0 1.1rem; }
+ul, ol { margin: 0 0 1.1rem; padding-left: 1.3em; }
+li { margin-bottom: .45rem; }
+p, li, figcaption, .standfirst { text-align: justify; hyphens: auto; -webkit-hyphens: auto; }
+@media (max-width: 640px) { p, li, figcaption, .standfirst { text-align: left; } }
+.src { font: 400 .7rem var(--mono); color: var(--muted); white-space: nowrap; margin-left: .25em; }
+
+figure { margin: 2rem 0 2.2rem; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption { font: 400 .85rem/1.55 var(--sans); color: var(--muted); margin-top: .8rem; }
+.figscroll { overflow-x: auto; }
+.figscroll svg { min-width: 640px; }
+
+.tablewrap { overflow-x: auto; margin: 1.4rem 0 2rem; }
+table { border-collapse: collapse; width: 100%; font: 400 .85rem/1.5 var(--sans); color: var(--ink-2); }
+th { font: 500 .66rem var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule-strong); vertical-align: bottom; }
+td { padding: .6rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; text-align: left; }
+tr:hover td { background: var(--surface); }
+td code { white-space: normal; }
+td.k { font: 400 .78rem var(--mono); color: var(--ink); }
+.pill { font: 500 .66rem var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: .15em .5em; border-radius: 4px; white-space: nowrap; }
+.pill.hi { background: var(--accent); color: #fff; }
+.pill.md { background: var(--accent-soft); color: var(--accent); }
+.pill.lo { background: var(--alt-soft); color: var(--alt); }
+.pill.ok { background: var(--surface-2); color: var(--ink-2); }
+
+pre { background: #191919; border: 1px solid #191919; border-radius: 8px; padding: 1rem 1.2rem; overflow-x: auto; margin: 1rem 0 1.6rem; }
+pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-space: pre; color: #F0EEE6; }
+.titlerow { display: flex; align-items: center; gap: .9rem; margin: 0 0 1.2rem; }
+.titlerow h1 { margin: 0; }
+.titlerow svg { width: 40px; height: 40px; flex: none; }
+blockquote { margin: 0 0 1.1rem; padding: .1rem 0 .1rem 1.1rem; border-left: 3px solid var(--rule-strong); color: var(--ink-2); }
+blockquote p { margin: 0; }
+.sources { font: 400 .8rem/1.6 var(--mono); color: var(--ink-2); columns: 2; column-gap: 2.5rem; padding: 0; list-style: none; }
+.sources li { break-inside: avoid; text-align: left; margin: 0 0 .3rem; }
+@media (max-width: 700px) { .sources { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside class="sidebar">
+  <h2>Specification</h2>
+  <nav>
+    <a href="#s1"><span class="n">01</span>The loop<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s2"><span class="n">02</span>The model<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s3"><span class="n">03</span>Model providers<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s4"><span class="n">04</span>Tools<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s5"><span class="n">05</span>Names<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s6"><span class="n">06</span>Live conversation<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s7"><span class="n">07</span>Flags<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s8"><span class="n">08</span>How credentials flow<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s9"><span class="n">09</span>Boundary<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s10"><span class="n">10</span>Kill switches<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s11"><span class="n">11</span>Status<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s12"><span class="n">12</span>Image<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s13"><span class="n">13</span>Traces<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s14"><span class="n">14</span>Spend<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s15"><span class="n">15</span>Logs<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s16"><span class="n">16</span>Chart<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s17"><span class="n">17</span>Connectors<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s18"><span class="n">18</span>Run it locally<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s19"><span class="n">19</span>Layout<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s20"><span class="n">20</span>Not verified<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s21"><span class="n">21</span>License<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+</aside>
+
+<main>
+<header>
+  <p class="eyebrow">Specification · tria-spot repository</p>
+  <div class="titlerow"><svg width="40" height="40" aria-hidden="true" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"><g transform="rotate(-90 100 100)"><circle cx="100" cy="100" r="84" fill="none" stroke="#8b8bf0" stroke-width="16"/><circle cx="100" cy="100" r="56" fill="none" stroke="#22d3ee" stroke-width="16" stroke-linecap="round" stroke-dasharray="264 352"/></g><circle cx="100" cy="100" r="26" fill="#e879f9"/></svg><h1>Spot Specification</h1></div>
+  <p class="standfirst">The Triage core (<a href="https://triageagent.dev">triageagent.dev</a>) is an incident triage platform; its ADRs, such as the ADR-095 this README cites, live with the core. <a href="https://github.com/triageagent-dev/ego">ego</a> is the evaluation service that scores agents from their telemetry. A "workspace" is one tenant of the core.</p>
+  <p class="standfirst">The Tria spot for one workspace (the core calls it a tenant): an always-on teammate that watches the workspace's cluster through the core's MCP tools and its connectors (MCP servers that hold their own credentials), fixes what they let it fix, and tells the team what it saw and did (the core's ADR-095, and ADR-098 in <code>docs/adr</code>).</p>
+  <p class="standfirst">The binary is two things in one process. A <strong>supervisor</strong> wakes the agent in turns, watches the core between turns without a model, and keeps the schedule, the budget and the heartbeat. The <strong>agent</strong> is the spot's own loop in Go: it sends the wake prompt to the model (Claude through the official Anthropic Go SDK, or Gemini through the Google GenAI Go SDK), runs the tools the model asks for, and sends the results back until the model is done. The spot has no shell, no filesystem tools and no cluster RBAC. The core gets no Kubernetes client.</p>
+  <pre><code>                    model API (Anthropic, Gemini, or Vertex AI)
+                            ^
+   +------- pod ------------|--------------------------------+
+   |  tria-spot                                              |
+   |    supervisor  - polls or is told by the core (no model)|
+   |       |            schedule, ceilings, heartbeat, status|
+   |       v                                                 |
+   |    agent loop  - one empty conversation per wake        |
+   |       |              model request -&gt; tool_use -&gt; ...   |
+   |       v                                                 |
+   |    tools  ---- MCP ---&gt; core /mcp, ego, connectors      |
+   |    spans  ---- OTLP --&gt; ego                             |
+   |  /state/supervisor: usage, cursors, status              |
+   +---------------------------------------------------------+</code></pre>
+</header>
+
+<!-- 01 -->
+<section id="s1">
+  <div class="sechead"><span class="ord">01</span><h2>The loop</h2></div>
+  <ol>
+    <li><strong>A wake</strong> is why the supervisor starts a turn: <code>startup</code>, <code>tick</code> (the agent scheduled it), <code>edge</code> (the core changed) or <code>human</code> (someone wrote to the spot). It builds the wake prompt: the reason, the facts behind it, the token budget left. That is the first user message.</li>
+    <li><strong>A turn</strong> is the agent loop (<code>internal/agent</code>): list the tools, send the system prompt, the tools and the wake prompt, and while the answer asks for tools, run them and send all the results of one answer back in one user message. The turn ends when the model ends its answer (<code>end_turn</code>) or calls <code>finish</code>, at <code>--max-steps</code> model requests (40), or at <code>--turn-timeout</code> (20m). The model looks with the core's tools first, then the connectors' reads, verifies its hypothesis before any write, and records what it did on the issue.</li>
+    <li><strong>Every wake is an empty conversation.</strong> Nothing is resumed, so a model call never pays again for the tool output of earlier wakes. Continuity is what the spot reads at the start of a wake (the room's last messages, the open issues with a <code>limit</code>) and the core's memory: the spot's own notes are memory items (<code>upsert_memory_item</code>, <code>search_memory</code>). Nothing lives on a disk for the model, so a pod that starts with an empty <code>/state</code> starts fresh and loses nothing but the day's token count and room cursors.</li>
+    <li><strong>The schedule</strong> is the agent's <code>schedule_next</code> call, last in the turn: <code>{"after": "15m", "why": "check the rollout"}</code>. It is clamped to <code>[--min-wake, --max-wake]</code> (2m to 2h). If the model never calls it, or the duration is not one, the next wake is <code>--min-wake</code> and the supervisor logs why. <code>finish</code> is the other built-in: <code>{"summary": "&lt;one line&gt;"}</code> ends the turn and the line shows in the status file. It is optional.</li>
+    <li><strong>Between turns</strong> the supervisor watches the core without a model. With <code>--core-api-url</code> the core tells it: a websocket (<code>/v2/messenger/spot/ws</code>) carries content-free frames (issues changed, a room has a message), and the supervisor reads the core only then, after a 1.5 s pause so a burst is read once. While the stream is down, or without the flag, it polls the core every <code>--poll-interval</code> instead; <code>status.json</code> <code>triggers</code> says which (<code>stream</code> or <code>poll</code>). Either way it reads <code>list_open_issues</code> for the tenant and wakes the agent early on a new issue, a reopened issue, a severity change or a new comment. After each turn it compares the issue list with the one from before the turn: new issues, reopens and severity changes that landed during the turn are held like any edge; comment counts are re-baselined, because the agent comments itself. If the core offers <code>read_workspace_room</code>, messages from anyone but the spot are edges too. A message that names the spot (<code>@&lt;name&gt;</code> or the name) wakes it after <code>--edge-cooldown</code>; a person's message that does not waits up to <code>--chat-batch</code> (10m) and then wakes; a machine's message (Tria, another spot) never wakes on its own and is only a fact in the next prompt, and one with a hop count of 2 or more is dropped. Early wakes are capped at <code>--max-edge-wakes-per-hour</code> (12); past the cap, and inside the failure backoff, edges wait for the scheduled wake. Room cursors are saved under <code>/state/supervisor</code>, so a message sent while the pod was down is news on the next start; only the very first read of a room sets the cursor without waking. At most 20 edges are held; past that, machine messages are dropped first, then the oldest. A turn that fails before its first model request (no core tools, a rejected credential, a timeout) never showed the wake to the model, so the facts of that wake, a person's message above all, are put back and carried by the next wake; an edge put back three times is dropped, with a log line naming its kind.</li>
+    <li><strong>The heartbeat</strong> (<code>upsert_memory_item</code>, kind <code>note</code>, <code>stale_after</code> of twice the next sleep, at least 5m) is refreshed after every turn that succeeded. A failed turn does not refresh it: the agent is dark, so reflection should resume (docs/todo/system2-loop-contract.md in the core). A turn that could not connect to the core's MCP server or list its tools is a failed turn (<code>coreDown</code> in the status): the model would have run without its tools, so the loop does not start the model at all, and a stale core token must not look like a healthy spot.</li>
+    <li><strong>Spend.</strong> Each turn's tokens (input + output + cache writes, from the API's usage; cache reads are tracked but not counted) go into a UTC-day counter held in memory and written through to <code>/state/supervisor/usage.json</code>; the file is read once, at start. Once it reaches <code>--daily-token-ceiling</code> no wake starts, edges are held, and the loop sleeps to UTC midnight. A turn in flight can overshoot by up to one turn (bounded by <code>--max-steps</code> and <code>--turn-timeout</code>). The spend limit on the Anthropic workspace (or the Google project) that serves the model is the real stop.</li>
+    <li><strong>Failure.</strong> A failed turn (an API error after the SDK's two retries, a refusal, an answer cut at the output cap twice, a timeout, no core tools) backs the next wake off from <code>--min-wake</code>, doubling to <code>--max-wake</code>; edges wait for the backoff too. Running out of <code>--max-steps</code> is not a failure (<code>stepsExhausted</code> in the status). A 401 or 403 from the model API sets <code>authFailed</code> and says which credential to look at. A tool that errors or times out is not a failed turn: the model gets the error as the tool's result. A timed-out turn is reported as cut off on the next wake.</li>
+    <li><strong>SIGTERM</strong> cancels the running turn, counts the tokens seen so far, marks it as cut off, flushes the spans, writes <code>status.json</code> and exits. The next start tells the agent its last turn was cut off.</li>
+  </ol>
+  <h3>A message while a turn runs</h3>
+  <p>With the stream up, a person's message in a room that arrives during a turn is handed to the running turn: the model sees it with the next tool results, or before the turn would have ended, and answers in the same turn. The turn runs in its own goroutine, so the supervisor keeps reading the stream and everything it owns stays on one goroutine. A machine's message, or a person's that does not name the spot while chat batching is on, is held for the next wake; the issues are not read mid-turn. If the turn ends without having shown a handed-over message to the model (it failed, or the step cap came first), the supervisor holds it and the next wake starts with it.</p>
+</section>
+
+<!-- 02 -->
+<section id="s2">
+  <div class="sechead"><span class="ord">02</span><h2>The model</h2></div>
+  <p>All model traffic goes through <code>internal/llm</code>. The request is built for a prefix cache: the tools (sorted by name, with each server's input schema unchanged) and the system prompt come first, and the system prompt's last block carries a one-hour <code>cache_control</code> breakpoint, so the same prefix is read again by wakes up to an hour apart (the schedule is 2m to 2h). Nothing volatile is in the prefix: the time, the wake facts, the budget and the step cap are in the first user message. A second, short breakpoint on the last block of the latest message lets the steps of one turn read the conversation so far. Cache reads and writes are recorded in the usage and in the spans.</p>
+  <p>The rest of this section describes the Anthropic provider; Model providers below covers Gemini.</p>
+  <ul>
+    <li><code>--model</code> (<code>claude-opus-5-5</code> when empty; on Vertex AI the same id, no prefix) and <code>--effort</code> (<code>low</code>, <code>medium</code>, the default, <code>high</code>, <code>xhigh</code>, <code>max</code>, sent as <code>output_config.effort</code>).</li>
+    <li>Thinking is not configured: the model thinks adaptively by itself, and its thinking blocks go back with the tool results unchanged. No <code>tool_choice</code> is sent (auto). <code>max_tokens</code> is 16000 per request, not streamed.</li>
+    <li>A <code>max_tokens</code> stop is answered once with "continue" (a tool call cut in the middle is dropped); a second one fails the turn. A <code>refusal</code> ends the turn as failed with the policy category in the error. A <code>pause_turn</code> is resent once.</li>
+    <li>429 and 5xx are retried twice by the SDK, then the turn fails.</li>
+  </ul>
+</section>
+
+<!-- 03 -->
+<section id="s3">
+  <div class="sechead"><span class="ord">03</span><h2>Model providers</h2></div>
+  <p>The loop talks to <code>llm.Client</code>, which has two implementations: Anthropic (<code>internal/llm/anthropic.go</code>) and Gemini (<code>internal/llm/gemini.go</code>, Google GenAI Go SDK). <code>--llm-provider</code> (chart: <code>llm.provider</code>) picks one; the default is <code>anthropic</code>. The loop, the tools, the prompt and the budget are the same for both.</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th><code>anthropic</code></th><th><code>gemini</code></th></tr>
+    <tr><td class="k">Auth modes (<code>--llm-auth</code>)</td><td><code>key</code>, <code>federation</code>, <code>vertex</code></td><td><code>key</code>, <code>vertex</code></td></tr>
+    <tr><td class="k">Key file</td><td><code>--anthropic-key-file</code></td><td><code>--gemini-key-file</code></td></tr>
+    <tr><td class="k">Default model (<code>--model</code> empty)</td><td><code>claude-opus-5-5</code></td><td><code>gemini-3-flash-preview</code></td></tr>
+    <tr><td class="k">Vertex AI location</td><td><code>--vertex-region</code></td><td><code>--vertex-region</code> (one flag for both; <code>global</code> by default)</td></tr>
+  </table></div>
+  <p><code>federation</code> is an Anthropic mode and is refused with <code>gemini</code>.</p>
+  <p><strong>Gemini key.</strong> The key is a file (<code>--gemini-key-file</code>), read again on every request, so a rotated Secret is picked up without a restart. It is passed to the SDK explicitly. An empty or missing key file stops the start, so the SDK never falls back to <code>GOOGLE_API_KEY</code> or <code>GEMINI_API_KEY</code>; no variable is read for the key, the project, the location or the host (the host is passed explicitly too, so a <code>GOOGLE_GEMINI_BASE_URL</code> in the environment cannot redirect a request). <strong>Gemini on Vertex AI</strong> uses Application Default Credentials, the pod's Workload Identity; no key file.</p>
+  <p><strong>Requests.</strong> The system strings become one system instruction. The tools are one <code>Tool</code> with a function declaration per tool, sorted by name, each carrying the server's JSON schema unchanged (<code>parametersJsonSchema</code>); the tool choice is automatic. Tool results go back as function responses (<code>{"result": ...}</code>, or <code>{"error": ...}</code> for a failed tool). Gemini 3 returns a thought signature on function calls and needs it back unchanged with that call; the client keeps it on the block and sends it back. A function call the API gave no id gets a <code>call_&lt;n&gt;</code> id of this client, which is never sent back to the API.</p>
+  <p><strong>Effort and thinking.</strong> <code>--effort</code> maps to the model's thinking, and thoughts are not requested in the answer:</p>
+  <div class="tablewrap"><table>
+    <tr><th>effort</th><th><code>gemini-3*</code> (thinking level)</th><th>other models (thinking budget, tokens)</th></tr>
+    <tr><td class="k"><code>low</code></td><td><code>LOW</code></td><td>1024</td></tr>
+    <tr><td class="k"><code>medium</code></td><td><code>MEDIUM</code></td><td>4096</td></tr>
+    <tr><td class="k"><code>high</code></td><td><code>HIGH</code></td><td>8192</td></tr>
+    <tr><td class="k"><code>xhigh</code>, <code>max</code></td><td><code>HIGH</code></td><td>-1 (dynamic)</td></tr>
+  </table></div>
+  <p>Models without thinking (Gemini 2.0 and earlier) reject a thinking config; use a 2.5 or 3 model. Not every Gemini 3 model accepts every level.</p>
+  <p><strong>Stops and usage.</strong> A function call in the answer is a tool use. <code>STOP</code> ends the turn, <code>MAX_TOKENS</code> is the cut-off case described above, and <code>SAFETY</code>, <code>RECITATION</code>, <code>BLOCKLIST</code>, <code>PROHIBITED_CONTENT</code>, <code>SPII</code> and a blocked prompt are a refusal with the reason as category. Usage is the prompt tokens minus the cached ones, the cached ones as cache reads (no cache writes), and the answer plus thought tokens as output. The SDK retries 408, 429 and 5xx up to three tries; there is no other retry layer.</p>
+  <p><strong>Caching.</strong> Gemini caches a stable prefix implicitly on 2.5 models and later, and the sorted tools plus the system instruction are that prefix, so nothing is done explicitly. Explicit <code>CachedContent</code> with a TTL is a follow-up.</p>
+  <p><strong>Chart.</strong> <code>llm.provider</code> (<code>anthropic</code> | <code>gemini</code>); <code>llm.model</code> (empty = the provider's default, and then no <code>--model</code> is passed); <code>llm.geminiKeySecret.{name,key}</code> (gemini with <code>key</code>: a Secret mounted as a file at <code>/secrets/gemini/&lt;key&gt;</code>); <code>llm.vertex.{project,region}</code> (vertex, either provider). Egress to Google's APIs is <code>networkPolicy.google</code> (see Chart): required for the <code>gemini</code> provider in any mode and for <code>anthropic</code> with <code>vertex</code>.</p>
+</section>
+
+<!-- 04 -->
+<section id="s4">
+  <div class="sechead"><span class="ord">04</span><h2>Tools</h2></div>
+  <p>The model is offered the tools of the core's MCP server, of ego when <code>--ego-mcp-url</code> is set, and of each connector, named <code>&lt;server&gt;__&lt;tool&gt;</code> (<code>core__list_open_issues</code>, <code>&lt;connector&gt;__get_pods</code>), sorted, with the server's JSON input schema passed through as the server wrote it. The core's token is read from <code>--core-token-file</code> on every request, so a rotated Secret needs no restart. Two tools are the spot's own and have no prefix: <code>schedule_next</code> and <code>finish</code>.</p>
+  <ul>
+    <li><strong>Core.</strong> By default the core's tools are allowed by exact name (<code>tools.CoreTools</code>) and the destructive ones are refused by name (<code>tools.CoreToolsDenied</code>: <code>resolve_issue</code>, <code>forget_issue</code>, <code>update_issue_severity</code>, <code>set_tenant_goals</code>, <code>run_rsi</code>, the event, pattern, memory-editing and test tools); a denied name stays denied even if it is also in the allow list. <code>--core-tools all</code> offers every tool the core offers: an operator's choice for an install, with the core's Role (<code>core.verbs</code>) as the bound.</li>
+    <li><strong>Ego</strong> (<code>tools.EgoTools</code>): the read-only ones that show sessions, usage, quality and findings.</li>
+    <li><strong>Connectors</strong>: only the tools named in the connector's <code>tools</code>, by exact name.</li>
+    <li>A tool call has <code>--tool-timeout</code> (60s). Its result is the text blocks joined; an image or a resource becomes a one-line placeholder; a result past <code>--tool-result-max-bytes</code> (32768) is cut at a character boundary and ends with a line saying how many bytes were dropped. A tool error (the server's <code>isError</code>, a transport error, a timeout, an unknown tool) goes back to the model as an error result and never aborts the turn.</li>
+    <li>The connection is opened at the start of each turn. A core that cannot be reached fails the turn (<code>coreDown</code>). A connector or ego that cannot be reached is logged and left out of that turn, and the wake prompt names it.</li>
+  </ul>
+</section>
+
+<!-- 05 -->
+<section id="s5">
+  <div class="sechead"><span class="ord">05</span><h2>Names</h2></div>
+  <p>Two names meet. <code>--name</code> is the deployment's technical name (Deployment, volume, ServiceAccount, memory-note tags, ego thread); people never see it. The name people see and write to in the messenger belongs to the workspace: its owner sets <code>spotName</code> on the workspace in the core (empty means <code>&lt;workspace name&gt;-spot</code>), and the spot reads it with <code>get_spot_identity</code> at start, when the trigger stream reconnects, at most every five minutes while it works, and when a person writes an <code>@</code> it does not recognise. Every wake prompt says "In the messenger you appear as ...", and a message naming that name, the technical name or <code>--chat-name</code> (the fallback for a core that cannot say) wakes the spot at once. A rename needs no restart.</p>
+</section>
+
+<!-- 06 -->
+<section id="s6">
+  <div class="sechead"><span class="ord">06</span><h2>Live conversation</h2></div>
+  <p>The messenger is a conversation, so the spot answers first and works after.</p>
+  <ul>
+    <li><strong>Typing.</strong> While a turn runs, the supervisor shows the spot's "typing..." indicator through the core's <code>set_workspace_typing</code> (model-free, renewed every 20 seconds, cleared when the turn ends). A turn started by a person shows it in the team room; other turns show it in the agents room. A core without the tool, or a failed call, costs only the indicator.</li>
+    <li><strong>Answer first.</strong> The system prompt tells the spot to reply to a person before it investigates, to slice long work (report what it found, note the rest, wake itself in two minutes) so the next message reaches it, and to report when done.</li>
+    <li><strong>Fast wakes.</strong> A message that wakes the spot (it names the spot, or <code>--chat-batch</code> has passed; <code>0s</code> wakes for every message) waits only a few seconds after the last turn, not the edge cooldown. Lower <code>--poll-interval</code> to notice messages sooner.</li>
+    <li><strong>Files.</strong> A message that carries a file is marked in the wake, and the spot looks at it with <code>read_workspace_file</code> (an image comes back as an image).</li>
+  </ul>
+</section>
+
+<!-- 07 -->
+<section id="s7">
+  <div class="sechead"><span class="ord">07</span><h2>Flags</h2></div>
+  <p>Flags only. No credential is a flag value or an environment variable.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Flag</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td class="k"><code>--tenant</code></td><td>required</td><td>tenant this spot works for</td></tr>
+    <tr><td class="k"><code>--name</code></td><td><code>&lt;tenant&gt;-spot</code></td><td>spot name (messenger name, machine identity)</td></tr>
+    <tr><td class="k"><code>--chat-name</code></td><td>empty</td><td>fallback for the name the messenger shows, used until the core says</td></tr>
+    <tr><td class="k"><code>--core-mcp-url</code></td><td>required</td><td>the core's <code>/mcp</code> (streamable HTTP)</td></tr>
+    <tr><td class="k"><code>--core-api-url</code></td><td>empty</td><td>the core's HTTP API; with it the core pushes triggers over a websocket and nothing polls while it is up</td></tr>
+    <tr><td class="k"><code>--core-token-file</code></td><td>required</td><td>file holding the core bearer token</td></tr>
+    <tr><td class="k"><code>--core-tools</code></td><td><code>curated</code></td><td><code>curated</code> or <code>all</code> (see Tools)</td></tr>
+    <tr><td class="k"><code>--connectors-file</code></td><td>none</td><td>JSON list of connectors, more MCP servers with the tools the spot may call (see Connectors)</td></tr>
+    <tr><td class="k"><code>--ego-mcp-url</code></td><td>empty</td><td>ego's MCP endpoint, read with the <code>--otel-token-file</code> token</td></tr>
+    <tr><td class="k"><code>--llm-provider</code></td><td><code>anthropic</code></td><td><code>anthropic</code> or <code>gemini</code> (see Model providers)</td></tr>
+    <tr><td class="k"><code>--llm-auth</code></td><td><code>key</code></td><td><code>key</code>, <code>federation</code> (anthropic only) or <code>vertex</code> (see How credentials flow)</td></tr>
+    <tr><td class="k"><code>--anthropic-key-file</code></td><td>required with <code>anthropic</code> and <code>key</code></td><td>file holding the Anthropic API key; rejected with the others</td></tr>
+    <tr><td class="k"><code>--gemini-key-file</code></td><td>required with <code>gemini</code> and <code>key</code></td><td>file holding the Gemini API key, re-read on every request; rejected with the others</td></tr>
+    <tr><td class="k"><code>--anthropic-identity-token-file</code></td><td>required with <code>federation</code></td><td>the projected identity token (a JWT), re-read on every exchange</td></tr>
+    <tr><td class="k"><code>--anthropic-federation-rule-id</code></td><td>required with <code>federation</code></td><td>federation rule id (<code>fdrl_...</code>)</td></tr>
+    <tr><td class="k"><code>--anthropic-org-id</code></td><td>required with <code>federation</code></td><td>Anthropic organization id</td></tr>
+    <tr><td class="k"><code>--anthropic-service-account-id</code></td><td>required with <code>federation</code></td><td>Anthropic service account id (<code>svac_...</code>)</td></tr>
+    <tr><td class="k"><code>--anthropic-workspace-id</code></td><td></td><td>workspace id (<code>wrkspc_...</code>); optional when the rule spans one workspace</td></tr>
+    <tr><td class="k"><code>--vertex-project</code></td><td>required with <code>vertex</code></td><td>the Google Cloud project that serves the model</td></tr>
+    <tr><td class="k"><code>--vertex-region</code></td><td><code>global</code></td><td>the Vertex AI region, or <code>global</code>, for either provider</td></tr>
+    <tr><td class="k"><code>--model</code></td><td>empty</td><td>the model id; empty = <code>claude-opus-5-5</code> (anthropic) or <code>gemini-3-flash-preview</code> (gemini)</td></tr>
+    <tr><td class="k"><code>--effort</code></td><td><code>medium</code></td><td><code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code> or <code>max</code></td></tr>
+    <tr><td class="k"><code>--max-steps</code></td><td><code>40</code></td><td>model requests per wake</td></tr>
+    <tr><td class="k"><code>--turn-timeout</code></td><td><code>20m</code></td><td>wall-clock cap per wake</td></tr>
+    <tr><td class="k"><code>--tool-timeout</code></td><td><code>60s</code></td><td>cap on one tool call</td></tr>
+    <tr><td class="k"><code>--tool-result-max-bytes</code></td><td><code>32768</code></td><td>cap on one tool result the model sees</td></tr>
+    <tr><td class="k"><code>--state-dir</code></td><td><code>/state</code></td><td>the supervisor's files: usage, cursors, status</td></tr>
+    <tr><td class="k"><code>--min-wake</code> / <code>--max-wake</code></td><td><code>2m</code> / <code>2h</code></td><td>clamp for the agent's schedule</td></tr>
+    <tr><td class="k"><code>--daily-token-ceiling</code></td><td><code>2000000</code></td><td>tokens per UTC day; <code>0</code> = none</td></tr>
+    <tr><td class="k"><code>--poll-interval</code></td><td><code>30s</code></td><td>edge polling between turns, or only while the trigger stream is down</td></tr>
+    <tr><td class="k"><code>--edge-cooldown</code></td><td><code>1m</code></td><td>minimum gap between a turn's end and an edge wake</td></tr>
+    <tr><td class="k"><code>--chat-batch</code></td><td><code>10m</code></td><td>how long a room message that does not name the spot waits before it wakes a turn; <code>0</code> wakes at once</td></tr>
+    <tr><td class="k"><code>--max-edge-wakes-per-hour</code></td><td><code>12</code></td><td>cap on early wakes per hour; <code>0</code> = no cap</td></tr>
+    <tr><td class="k"><code>--heartbeat-id</code></td><td><code>system2-heartbeat-&lt;tenant&gt;</code></td><td>memory cell id of the heartbeat</td></tr>
+    <tr><td class="k"><code>--otel-endpoint</code></td><td>empty</td><td>OTLP/HTTP endpoint for the spans; empty = telemetry off</td></tr>
+    <tr><td class="k"><code>--otel-token-file</code></td><td>empty</td><td>file holding the sender's bearer token for the endpoint</td></tr>
+    <tr><td class="k"><code>--otel-tenant</code></td><td>the spot's name</td><td>tenant label of the spans in ego</td></tr>
+    <tr><td class="k"><code>--otel-tenant-attr</code></td><td><code>triage.tenant</code></td><td>the attribute ego reads the label from</td></tr>
+    <tr><td class="k"><code>--otel-tenant-name</code></td><td>the label</td><td>display name ego shows for the tenant</td></tr>
+    <tr><td class="k"><code>--otel-content</code></td><td><code>true</code></td><td>put the turn's content on the spans: prompts, answers, tool arguments and results; <code>--otel-content=false</code> leaves names, timings and token counts</td></tr>
+    <tr><td class="k"><code>--log-level</code></td><td><code>info</code></td><td><code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code></td></tr>
+    <tr><td class="k"><code>--log-content</code></td><td>off</td><td>let debug logs carry message, issue, tool input and model text (the spans are governed by <code>--otel-content</code>)</td></tr>
+  </table></div>
+  <p><code>tria-spot version</code> prints the build.</p>
+</section>
+
+<!-- 08 -->
+<section id="s8">
+  <div class="sechead"><span class="ord">08</span><h2>How credentials flow</h2></div>
+  <p>Three model auth modes, chosen with <code>--llm-auth</code> (federation is for the Anthropic provider only; the Gemini provider takes <code>key</code> and <code>vertex</code>, see Model providers). The ids federation needs are not secrets, but they are flags.</p>
+  <ul>
+    <li><strong>Anthropic key (<code>key</code>, the default).</strong> A Secret mounted as a file, read with <code>--anthropic-key-file</code> and sent as the API key. The file is read again on every request, so a rotated Secret needs no restart. The key is never in an environment variable or an argument, and the SDK is built without its environment defaults, so a stray <code>ANTHROPIC_*</code> variable cannot replace it.</li>
+    <li><strong>Workload Identity Federation (<code>federation</code>).</strong> No Anthropic secret at all. The pod gets a Kubernetes projected ServiceAccount token (audience <code>https://api.anthropic.com</code>, mounted at <code>/var/run/secrets/anthropic.com/token</code>) and the SDK exchanges it for a short-lived access token. The SDK finds federation in the process environment: <code>ANTHROPIC_FEDERATION_RULE_ID</code>, <code>ANTHROPIC_ORGANIZATION_ID</code>, <code>ANTHROPIC_SERVICE_ACCOUNT_ID</code>, <code>ANTHROPIC_IDENTITY_TOKEN_FILE</code> and, if set, <code>ANTHROPIC_WORKSPACE_ID</code>. The process sets these for itself from its own flags just before it builds the client. They are ids and the path of the token file, never a credential, and there is no child process to inherit them. <code>ANTHROPIC_API_KEY</code>, <code>ANTHROPIC_AUTH_TOKEN</code>, <code>ANTHROPIC_IDENTITY_TOKEN</code> and <code>ANTHROPIC_PROFILE</code> are unset in this mode, because each of them outranks federation and would silently replace it. An <code>--anthropic-key-file</code> is refused.</li>
+    <li><strong>Gemini key (<code>key</code>, with <code>--llm-provider=gemini</code>).</strong> A Secret mounted as a file, read with <code>--gemini-key-file</code> on every request. Never an environment variable.</li>
+    <li><strong>Vertex AI (<code>vertex</code>).</strong> Claude or Gemini on Google Vertex AI through Application Default Credentials: the pod's Workload Identity. Annotate the ServiceAccount (<code>serviceAccount.annotations</code>, <code>iam.gke.io/gcp-service-account</code>) with a Google service account that may call Vertex AI in <code>--vertex-project</code>; no Secret is mounted. The model id takes no prefix.</li>
+    <li><strong>Core token.</strong> A file: by default the pod's own projected ServiceAccount token with audience <code>triage-core</code>, which the kubelet rotates (chart <code>core.identity: serviceAccount</code>); or a Secret (<code>core.identity: secret</code>). It is read from the file on every request to the core.</li>
+    <li><strong>ServiceAccount token.</strong> The pod's default ServiceAccount token is not mounted (<code>automountServiceAccountToken: false</code>); nothing in the pod talks to the API server. The projected tokens above are separate volumes.</li>
+  </ul>
+  <h3>The identity token must be fresh at every exchange</h3>
+  <p>The projected token carries a <code>jti</code> claim, and Anthropic rejects a <code>jti</code> it has already seen (reason <code>jti_reused</code> in the Console's authentication history). The kubelet rewrites the file when about 80% of <code>tokenExpirationSeconds</code> has passed (600 s by default, the minimum), and the SDK reads the file on every exchange, so a second exchange inside the same token's life can send a token that was already used. Whether the SDK's cached access token lasts long enough for that not to happen has <strong>not</strong> been tested against the real API, and this repo does not work around it. When a turn fails and looks like an authentication failure in federation mode, the supervisor logs and records in <code>status.json</code> (<code>lastError</code>):</p>
+  <blockquote><p>Anthropic authentication failed in federation mode; check the authentication history in the Claude Console (jti_reused / match_*)</p></blockquote>
+  <p>The opaque 401 (<code>Authentication failed</code>) gives no reason; the reason is only in the Console history: <code>jti_reused</code>, <code>match_subject_prefix</code> and the other <code>match_*</code> rules, <code>workspace_id_required</code>.</p>
+  <p><strong>Limit, stated plainly.</strong> There is no shell and no file tool, so the model cannot read a mounted token. What bounds the rest is: the model credential has a spend limit, the core identity has <code>r</code> and <code>w</code> on one tenant and nothing else, the connector's own identity is whatever its operator gave it, and the NetworkPolicy lets egress reach only the model API, the core, the connectors and the OTLP endpoint. The supervisor's counters are held in memory.</p>
+</section>
+
+<!-- 09 -->
+<section id="s9">
+  <div class="sechead"><span class="ord">09</span><h2>Boundary</h2></div>
+  <p>The spot holds no cluster RBAC. A cluster is reached through a connector, whose own identity is the boundary. The tool layer narrows further: only the tools in the lists above are offered, and a call to a name that was not offered is answered with an error and never sent. The model has no web tool, no subagents, no shell and no file tool, because none exists in <code>internal/tools</code>. The prompt is best effort; the lists and the connector are what hold.</p>
+  <h3>Identity towards the core</h3>
+  <p>By default (<code>core.identity: serviceAccount</code>) the spot authenticates to the core with its own ServiceAccount: the chart mounts a projected token with audience <code>triage-core</code> (no core Secret), the kubelet rotates it, and the core validates it by TokenReview. The chart renders a Role and RoleBinding named <code>&lt;spot name&gt;-core</code>, labelled <code>triageagent.dev/managed: "true"</code>, that grant the ServiceAccount <code>core.verbs</code> (default get, list, create, update) on the one tenant; set <code>core.rbac.create: false</code> if the grant is made elsewhere. The core only accepts ServiceAccounts from its own namespace and reads the grants from that namespace, so in this mode the chart must be installed in the core's namespace. <code>core.identity: secret</code> reads a bearer token from the Secret named in <code>core.tokenSecret</code>, usable from any namespace. A per-spot minted token is the next step (ADR-098).</p>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+  <div class="sechead"><span class="ord">10</span><h2>Kill switches</h2></div>
+  <p>Any one is enough: <code>spot.enabled=false</code>; delete the Deployment; delete the connector's egress or the connector itself (it can read and write nothing in the cluster); revoke the core token (it can neither read nor speak). The spend limit on the model credential stops the model regardless of the pod.</p>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+  <div class="sechead"><span class="ord">11</span><h2>Status</h2></div>
+  <p><code>/state/supervisor/status.json</code> (world-readable, no secrets) shows:</p>
+  <ul>
+    <li><code>state</code>: <code>starting</code>, <code>running</code>, <code>idle</code>, <code>paused-ceiling</code>, <code>stopping</code>, <code>stopped</code>; when it started and was last updated;</li>
+    <li><code>lastTurn</code>: when, why it woke, seconds, billable tokens, model requests (<code>steps</code>), <code>toolCalls</code>, the <code>model</code> that answered, the <code>summary</code> line the model gave to <code>finish</code>, <code>contextTokens</code> (the conversation size at the last request), and the flags <code>isError</code>, <code>stepsExhausted</code>, <code>timedOut</code>, <code>authFailed</code>, <code>coreDown</code>;</li>
+    <li><code>nextWake</code>: time, why, source (<code>agent</code>, <code>agent-clamped</code>, <code>default-missing</code>, <code>default-garbled</code>, <code>ceiling</code>) and a note when it was changed;</li>
+    <li><code>tokensToday</code> against the ceiling, with cache reads and the turn count;</li>
+    <li><code>lastError</code> and <code>consecutiveFailures</code>, <code>coreError</code>;</li>
+    <li>the heartbeat time and id, the edges held for the next wake, the early wakes in the last hour, and how the core is watched (<code>stream</code> or <code>poll</code>).</li>
+  </ul>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+  <div class="sechead"><span class="ord">12</span><h2>Image</h2></div>
+  <p>The image is built with ko only; there is no Dockerfile and no Docker. It is the Go binary on <code>gcr.io/distroless/static</code>, pinned by digest in <code>.ko.yaml</code>: CA certificates, no shell, no package manager, nothing else. <code>make image</code> writes an OCI layout to <code>bin/image</code> and pushes nothing; <code>make push REGISTRY=&lt;registry&gt;</code> pushes. The pod runs as uid 10001 with a read-only root filesystem and the runtime's default seccomp profile; every write goes to <code>/state</code> or <code>/tmp</code>.</p>
+</section>
+
+<!-- 13 -->
+<section id="s13">
+  <div class="sechead"><span class="ord">13</span><h2>Traces</h2></div>
+  <p>With <code>telemetry.enabled</code> (flag <code>--otel-endpoint</code>) the spot exports its own OpenTelemetry spans over OTLP/HTTP, in batches, flushed at the end of each turn and at shutdown. The sender's bearer token is a Secret mounted as a file (<code>--otel-token-file</code>), read on every export.</p>
+  <p>Resource attributes, which ego reads: <code>service.name</code>, <code>gen_ai.agent.name</code> and <code>ego.thread</code> are the spot's name (every wake is a segment of one thread); the tenant label is under the attribute <code>--otel-tenant-attr</code> (<code>triage.tenant</code>, ego's <code>--usage-tenant-attr</code>) with the value <code>--otel-tenant</code> (default the spot's name, so each spot is its own tenant in ego); <code>ego.tenant.name</code> is <code>--otel-tenant-name</code> (default the label; ego keeps the first name it sees for a tenant and drops an invalid one silently, so the spot refuses a name over 80 characters, with control characters, commas or equals signs). The tenant in ego is <code>&lt;sender&gt;/&lt;label&gt;</code>, the sender coming from the token.</p>
+  <p>Spans, per turn:</p>
+  <ul>
+    <li><code>invoke_agent &lt;name&gt;</code>: the root, with <code>gen_ai.operation.name</code>, <code>gen_ai.conversation.id</code> (a fresh UUID per turn), <code>gen_ai.agent.name</code> and <code>tria.wake.reason</code>;</li>
+    <li><code>chat &lt;model&gt;</code> for each model request: <code>gen_ai.provider.name</code> (<code>anthropic</code> or <code>gemini</code>), the request and response model, <code>gen_ai.usage.input_tokens</code> (the whole prompt of the call: uncached input plus cache reads plus cache writes, which is how ego counts a call), <code>output_tokens</code>, <code>cache_read.input_tokens</code> and <code>cache_creation.input_tokens</code> (the split ego prices with), <code>gen_ai.response.finish_reasons</code>;</li>
+    <li><code>execute_tool &lt;name&gt;</code> for each tool call: <code>gen_ai.tool.name</code>, <code>gen_ai.tool.call.id</code>, an error status when the tool errored.</li>
+  </ul>
+  <p><strong>Content.</strong> By default (<code>telemetry.content: true</code>, <code>--otel-content</code>) the spans carry what the turn said and did, because ego builds one conversation turn per <code>invoke_agent</code> root span and cannot evaluate a turn without it: the receiver gets the prompts, the answers, and every tool call's arguments and result. Set <code>telemetry.content: false</code> (<code>--otel-content=false</code>) to send names, timings and token counts only; then none of the attributes below is set, and ego reports a turn it cannot score. Do this when the workspace's data must not leave the pod for the receiver.</p>
+  <ul>
+    <li>Each <code>chat</code> span carries <code>gen_ai.input.messages</code>, the request's messages as a JSON array in the GenAI shape (<code>role</code>, and <code>parts</code> of <code>text</code>, <code>tool_call</code> and <code>tool_call_response</code>; thinking is left out), and <code>gen_ai.output.messages</code>, the answer as one assistant message. The first <code>chat</code> span of a turn also carries <code>gen_ai.system_instructions</code>, the system prompt.</li>
+    <li>Each <code>execute_tool</code> span carries <code>gen_ai.tool.call.arguments</code> (the input as a JSON object string) and <code>gen_ai.tool.call.result</code> (<code>{"result": &lt;text&gt;, "isError": &lt;bool&gt;}</code> as a string).</li>
+    <li>The root span carries the wake prompt as <code>gen_ai.input.messages</code> and the final text as <code>gen_ai.output.messages</code>, which the receiver falls back to.</li>
+    <li>An attribute value is cut at 64 KiB. A message array loses its oldest messages first and starts with a user message saying how many were left out, so the latest message and the answer survive; a single long string is cut in the middle with a marker.</li>
+  </ul>
+  <p><code>--log-content</code> is separate: it governs only the process log. The traces carry no spend control: that is the spend limit on the model credential and the supervisor's <code>--daily-token-ceiling</code>.</p>
+</section>
+
+<!-- 14 -->
+<section id="s14">
+  <div class="sechead"><span class="ord">14</span><h2>Spend</h2></div>
+  <ul>
+    <li><code>--daily-token-ceiling</code>: input + output + cache-write tokens per UTC day. Cache reads are not counted. It pauses all wakes until UTC midnight.</li>
+    <li><strong>No conversation grows.</strong> Every wake starts empty, so the context of a turn is what that wake reads. <code>status.json</code> shows each turn's <code>contextTokens</code>.</li>
+    <li><strong>The core's cap.</strong> The supervisor's ceiling is the spot's own. The core keeps one it enforces (policy <code>budgets.spotTenantDailyTokens</code> over <code>budgets.spotDailyDefaultTokens</code>, tokens per workspace per UTC day, new input plus output). After every turn the supervisor sends the core a <code>turn</code> frame on the trigger stream (model, input with cache reads and writes included, cached, output, duration, failed): the core books it in its usage ring as kind <code>spot</code>, so the TUI usage panel shows it, and answers with the budget. Over the cap the core refuses <code>say_in_workspace</code> and <code>set_workspace_status</code>, and the supervisor pauses all wakes until the budget lifts or UTC midnight. A turn sent while the stream is down waits for the next connection (the last 100 are kept).</li>
+    <li><strong>Stats.</strong> A <code>stats</code> frame (state, turns and wakes by reason today, failures in a row, context size, own token counts, next wake) goes to the core after each turn, on a change of trigger mode and every two minutes, for the TUI's workspace panel. Counts and labels only, never content.</li>
+    <li>There is no dollar ceiling: the spot has no price table. Use the spend limit of the model credential.</li>
+  </ul>
+</section>
+
+<!-- 15 -->
+<section id="s15">
+  <div class="sechead"><span class="ord">15</span><h2>Logs</h2></div>
+  <p>Logs carry what happened, never what was said. At every level the supervisor and the agent log counts, kinds, ids, tool names, token numbers and timings: an <code>edges</code> line says <code>kinds="room-message=1" human=true</code>, not the message. The text of a person's message or an issue, tool input and the model's words are content, and reach the log only with <code>--log-content</code> (chart: <code>agent.logContent</code>) at debug level. An error the model API or a tool produced is operational and is logged, because it is what diagnoses a failed login. <code>--log-level</code> is <code>debug</code>, <code>info</code> (default), <code>warn</code> or <code>error</code>.</p>
+  <p><code>status.json</code> <code>nextWake.why</code> and <code>lastTurn.summary</code> are text the model wrote itself. They stay in the pod's volume.</p>
+</section>
+
+<!-- 16 -->
+<section id="s16">
+  <div class="sechead"><span class="ord">16</span><h2>Chart</h2></div>
+  <p><code>charts/tria-spot</code>: renders nothing unless <code>spot.enabled=true</code>. Deployment (1 replica, <code>Recreate</code>, read-only root, non-root, all capabilities dropped, the runtime's seccomp profile), a ServiceAccount, a PVC for <code>/state</code> (small: it only holds the counter, the cursors and the status), an emptyDir for <code>/tmp</code>, the core identity (a projected ServiceAccount token with audience <code>triage-core</code> plus the <code>&lt;name&gt;-core</code> Role and RoleBinding, or a Secret mounted as a file, mode 0440 with <code>fsGroup</code>; see Identity towards the core), and per <code>llm.auth</code>:</p>
+  <ul>
+    <li><code>key</code> (default): the key Secret from <code>llm.keySecret</code> (provider <code>anthropic</code>) or <code>llm.geminiKeySecret</code> (provider <code>gemini</code>, mounted at <code>/secrets/gemini/&lt;key&gt;</code>), as a file;</li>
+    <li><code>federation</code>: a projected <code>serviceAccountToken</code> volume at <code>/var/run/secrets/anthropic.com</code> (audience <code>https://api.anthropic.com</code>, <code>tokenExpirationSeconds</code> 600; no Secret mounted); <code>llm.federation.ruleId</code>, <code>orgId</code> and <code>serviceAccountId</code> are required, <code>workspaceId</code> is optional;</li>
+    <li><code>vertex</code>: nothing mounted; <code>llm.vertex.project</code> is required, <code>region</code> defaults to <code>global</code>; the Workload Identity binding goes in <code>serviceAccount.annotations</code>.</li>
+  </ul>
+  <p><code>llm.provider</code> is <code>anthropic</code> (default) or <code>gemini</code>; <code>federation</code> is refused with <code>gemini</code>. <code>llm.model</code> (empty = the provider's default, and no <code>--model</code> is passed), <code>llm.effort</code> and <code>llm.maxSteps</code> set the model, the effort and the step cap; <code>agent.toolTimeout</code> and <code>agent.toolResultMaxBytes</code> set the tool limits. Resources default to 100m/128Mi requested and 500m/512Mi as the limit.</p>
+  <p>The NetworkPolicy allows egress to cluster DNS, the model API, the core, the connectors and, with <code>telemetry.enabled</code>, the OTLP endpoint from <code>networkPolicy.telemetry</code>; nothing in. NetworkPolicy has no host names, so for the Anthropic provider with <code>key</code> or <code>federation</code> the model API addresses are the CIDRs Anthropic publishes (<code>160.79.104.0/23</code>, <code>2607:6bc0::/48</code>, platform.claude.com/docs/en/api/ip-addresses). For the Gemini provider (any mode) and for <code>vertex</code> with either provider they are the Google API ranges you name in <code>networkPolicy.google.cidrs</code> (required then; for example the Private Google Access range); with <code>vertex</code> the egress adds the node's metadata server for the Workload Identity token (<code>networkPolicy.google.metadata</code>, GKE's addresses by default). The core is selected by namespace and pod selector or CIDR. The chart fails to render when a required value is missing.</p>
+  <p><code>make chart-lint</code> runs <code>helm lint</code> and <code>helm template</code> with the flag off (must render nothing) and with every values file in <code>charts/tria-spot/ci</code> (placeholders only): key mode (<code>enabled-values.yaml</code>, <code>key-values.yaml</code>), federation, Vertex AI, the Gemini provider with a key and on Vertex AI, telemetry, the ServiceAccount identity and connectors. It checks that the pod has no <code>env</code>, that no rule names Secrets, that no ClusterRole renders, that the ServiceAccount token is not mounted, that nothing in the pod is loosened for a shell, that each mode mounts and opens only its own, and that a missing required value or an unknown mode fails to render.</p>
+</section>
+
+<!-- 17 -->
+<section id="s17">
+  <div class="sechead"><span class="ord">17</span><h2>Connectors</h2></div>
+  <p>A connector is one more MCP server beside the core: a service that holds its own credentials and limits and that the spot reaches by URL. A Kubernetes tool server for another cluster, a code host or a metrics API is a connector; the spot has no code for any of them and carries no credential for them.</p>
+  <pre><code>connectors:
+  - name: example-kube
+    url: http://tools.example.svc:8084/mcp
+    tools: [k8s_get_resources, k8s_describe_resource, k8s_get_pod_logs]
+    hint: The workspace's cluster, read-only.
+    egress:
+      namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: example}}
+      podSelector: {matchLabels: {app.kubernetes.io/name: tools}}
+      ports: [8084]</code></pre>
+  <ul>
+    <li>The chart renders the list into a ConfigMap read by <code>--connectors-file</code> (names, URLs, tool names and hints; no credential).</li>
+    <li>The model is offered only the tools named in <code>tools</code>, by exact name, as <code>&lt;name&gt;__&lt;tool&gt;</code>; the file is refused when a connector names none, uses <code>core</code> or <code>ego</code>, repeats a name, or lists a tool that is not a plain name. A tool the connector offers and <code>tools</code> does not name is not in the model's list, and a call to it is refused.</li>
+    <li><code>hint</code> goes into the prompt's Connectors section, and the prompt also lists the connector's named tools by exact name, so the spot knows a tool it was not given is not "missing". What a connector returns is data, not instructions.</li>
+    <li><code>egress</code> opens the NetworkPolicy to that connector and nothing else; the chart fails to render without it.</li>
+    <li>Who the connector trusts is the connector's own business: its identity, its RBAC or IAM, and the network. The list is never the boundary: the connector's own limits are. A connector is the only way to any cluster: the spot holds no cluster RBAC of its own.</li>
+  </ul>
+</section>
+
+<!-- 18 -->
+<section id="s18">
+  <div class="sechead"><span class="ord">18</span><h2>Run it locally</h2></div>
+  <p>You need a core you can reach and your own credentials in files. Nothing below is a real name.</p>
+  <pre><code>make build
+mkdir -p /tmp/spot/state &amp;&amp; umask 077
+printf '%s' "$CORE_TOKEN" &gt; /tmp/spot/core-token          # a token for a tenant identity
+printf '%s' "$ANTHROPIC_KEY" &gt; /tmp/spot/anthropic-key
+./bin/tria-spot --tenant &lt;tenant&gt; \
+  --core-mcp-url https://&lt;core-host&gt;/mcp \
+  --core-token-file /tmp/spot/core-token --anthropic-key-file /tmp/spot/anthropic-key \
+  --state-dir /tmp/spot/state \
+  --min-wake 2m --daily-token-ceiling 200000 --log-level debug</code></pre>
+  <p>The spot reaches no cluster unless <code>--connectors-file</code> names a connector. <code>Ctrl-C</code> stops it gracefully. Check <code>/tmp/spot/state/supervisor/status.json</code>.</p>
+</section>
+
+<!-- 19 -->
+<section id="s19">
+  <div class="sechead"><span class="ord">19</span><h2>Layout</h2></div>
+  <pre><code>cmd/tria-spot            entrypoint: flags, wiring, `version`
+internal/config          flags, validation, connectors file
+internal/llm             the model client (Anthropic SDK: key, federation, Vertex; Google GenAI SDK: key, Vertex), a scripted fake
+internal/tools           the model's tools: core, ego, connectors over MCP, schedule_next, finish
+internal/mcptools        the MCP session the tools use (raw tools/list and tools/call)
+internal/agent           one turn: the loop, steps, injection, results
+internal/telemetry       spans to ego over OTLP/HTTP
+internal/prompt          the system prompt (instruction.md, embedded) and turn prompts
+internal/supervisor      the wake loop, edges, schedule, ceilings, heartbeat, status
+internal/schedule        the schedule_next request, clamped
+internal/triggers        the core's websocket trigger stream
+internal/corecli         the supervisor's own MCP client (list_open_issues, heartbeat, rooms)
+internal/edges           edge detection between issue snapshots
+internal/ledger          /state/supervisor: daily usage (in memory, written through), room cursors, status
+charts/tria-spot         Helm chart
+docs/adr                 the decision records of this repo</code></pre>
+</section>
+
+<!-- 20 -->
+<section id="s20">
+  <div class="sechead"><span class="ord">20</span><h2>Not verified</h2></div>
+  <p>No model API credential was used while this runtime was written, so the whole path from the SDK to a real model is unexercised; the SDK calls are tested against a local HTTP server and the loop against a scripted fake.</p>
+  <ul>
+    <li>A full turn against the real API: that adaptive thinking blocks round-trip with tool results, how often the one-hour prefix cache is hit across wakes, and what the usage numbers look like on a real answer.</li>
+    <li>The federation exchange from a pod with a valid rule, service account and identity token, how long the exchanged access token lives and whether it is reused between requests (this decides whether <code>jti_reused</code> shows up), and what a rejected exchange looks like in the SDK's error. The supervisor's hint matches <code>Authentication failed</code>, <code>authentication_error</code>, <code>jti_reused</code>, <code>token exchange</code> and <code>federation</code> in the error text.</li>
+    <li>Vertex AI: the Workload Identity binding, the egress ranges and the model id on a real project.</li>
+    <li>Gemini, against the real API: the request and response mapping is tested against a local HTTP server only. A full turn on a Gemini 3 model (thought signatures with parallel function calls, which levels each model accepts), how often implicit caching hits across wakes, and Gemini on Vertex AI with the pod's Workload Identity.</li>
+    <li>How ego maps the span attributes; the GenAI conventions are followed, and the resource attributes are the ones the receiver is documented to read.</li>
+    <li>The core side of phase 3: the reply shape of <code>read_workspace_room</code> is read loosely (an object with <code>messages</code>, or an array; <code>id</code>, <code>sender|from|author</code>, <code>text|body|message</code>, <code>ts|time</code>). Re-check it when the tool changes.</li>
+    <li>The heartbeat against the core: the ADR says <code>system2-heartbeat-&lt;tenant&gt;</code>; the core today looks only for the global id <code>system2-heartbeat</code> (<code>System2HeartbeatCellID</code>), so until the core reads the per-tenant id, this heartbeat does not change reflection. <code>--heartbeat-id</code> sets either.</li>
+    <li><code>list_open_issues</code> carries a comment count but not who wrote the comments (all MCP comments are attributed to <code>mcp-client</code>), so every new comment is a <code>human</code> wake and the agent reads the issue to see who. Machine and spot comments made during a turn are absorbed by the post-turn baseline.</li>
+    <li>Hop counts and caps are enforced by the core; the prompt only tells the agent to pass and respect them.</li>
+    <li>Running the image, <code>helm install</code>, kubeconform, and <code>golangci-lint</code> (not installed where this was written; <code>make lint</code> runs it when present).</li>
+  </ul>
+</section>
+
+<!-- 21 -->
+<section id="s21">
+  <div class="sechead"><span class="ord">21</span><h2>License</h2></div>
+  <p>Apache 2.0, see <a href="../LICENSE">LICENSE</a>.</p>
+</section>
+
+</main>
+</div>
+<script>
+(function () {
+  var links = document.querySelectorAll('.sidebar a');
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        links.forEach(function (a) { a.classList.remove('on'); });
+        var a = map[e.target.id]; if (a) a.classList.add('on');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  document.querySelectorAll('main section[id]').forEach(function (s) { io.observe(s); });
+})();
+</script>
+</body>
+</html>

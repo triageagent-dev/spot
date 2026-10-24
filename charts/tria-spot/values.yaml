@@ -131,7 +131,7 @@ telemetry:
     key: token
   content: true
 
-# Supervisor settings (see the README for each flag).
+# Supervisor settings (see docs/spec.html for each flag).
 agent:
   coreTools: curated          # curated: the tools the loop names, destructive ones (resolve_issue, forget_issue, ...) refused; all: every core tool, bounded by core.verbs
   minWake: 2m

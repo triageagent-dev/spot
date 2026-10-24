@@ -1,7 +1,7 @@
 # Contributing to the Tria spot
 
 Thanks for your interest. The spot is an always-on agent for one workspace of the
-[Triage core](https://github.com/triageagent-dev/core). Read the [README](README.md) and
+[Triage core](https://triageagent.dev). Read the [README](README.md), [docs/spec.html](docs/spec.html) and
 [docs/adr](docs/adr) before changing behavior.
 
 **Status: work in progress.** Expect breaking changes between releases.
