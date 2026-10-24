@@ -1,13 +1,12 @@
-// Package ledger keeps the supervisor's small durable state under /state: the
-// session id the conversation resumes from, the daily token counter, the room
+// Package ledger keeps the supervisor's small durable state under the state
+// directory: whether a turn was in flight, the daily token counter, the room
 // cursors, and the status file the core and humans read. Writes are atomic.
+// All of it can be lost without harm: the spot starts fresh from the core's
+// memory, and the counter resets at UTC midnight anyway.
 //
-// The state volume has two areas. The agent's area is the notes directory,
-// next.json and the working directory; the agent may edit those. Everything
-// the supervisor relies on lives in the supervisor directory, which the
-// agent's Edit and Write tools are denied, and the counters that gate the
-// agent (the daily usage) are held in memory and only written through, so a
-// rewritten file changes nothing until the next restart.
+// The model has no filesystem tool and no shell, so nothing here is its to
+// edit; the counters that gate it are still held in memory and only written
+// through, so a rewritten file changes nothing until the next restart.
 package ledger
 
 import (
@@ -21,16 +20,8 @@ import (
 
 // Directories and files under the state directory.
 const (
-	// SupervisorDir holds the supervisor's own files. The agent cannot edit it.
+	// SupervisorDir holds the supervisor's own files.
 	SupervisorDir = "supervisor"
-	// NotesDir is the agent's notes; the agent reads and writes it freely.
-	NotesDir = "notes"
-	// WorkDir is the CLI's working directory: an empty directory of its own,
-	// so the CLI picks up no project settings or instructions from the state
-	// root.
-	WorkDir = "work"
-	// NextFile is the agent's schedule request, at the state root.
-	NextFile = "next.json"
 
 	SessionFile = "session.json"
 	UsageFile   = "usage.json"
@@ -56,10 +47,8 @@ type Ledger struct {
 // New returns a Ledger rooted at dir, creating the layout.
 func New(dir string) (*Ledger, error) {
 	sup := filepath.Join(dir, SupervisorDir)
-	for _, d := range []string{dir, filepath.Join(dir, NotesDir), filepath.Join(dir, WorkDir)} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return nil, err
-		}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(sup, 0o700); err != nil {
 		return nil, err
@@ -88,15 +77,10 @@ func (l *Ledger) Dir() string { return l.dir }
 // Path joins name onto the supervisor directory.
 func (l *Ledger) Path(name string) string { return filepath.Join(l.sup, name) }
 
-// AgentPath joins name onto the state root, the agent's area.
-func (l *Ledger) AgentPath(name string) string { return filepath.Join(l.dir, name) }
-
-// Session is what a restart resumes from.
+// Session is what a restart knows of the last turn. No conversation is kept:
+// every wake starts an empty one.
 type Session struct {
-	ID      string  `json:"id,omitempty"`
-	Running bool    `json:"running,omitempty"` // a turn was in flight when this was written
-	Since   string  `json:"since,omitempty"`   // when the id was first used
-	CostUSD float64 `json:"costUsd,omitempty"` // last total_cost_usd the CLI reported for this conversation
+	Running bool `json:"running,omitempty"` // a turn was in flight when this was written
 }
 
 // LoadSession returns the saved session; a missing or unreadable file is an
@@ -118,12 +102,11 @@ func (l *Ledger) SaveSession(s Session) error {
 
 // Usage is the day's spend as the supervisor counts it.
 type Usage struct {
-	Date      string  `json:"date"` // UTC, 2006-01-02
-	Tokens    int64   `json:"tokens"`
-	CacheRead int64   `json:"cacheReadTokens"`
-	Output    int64   `json:"outputTokens"`
-	CostUSD   float64 `json:"costUsd"`
-	Turns     int     `json:"turns"`
+	Date      string `json:"date"` // UTC, 2006-01-02
+	Tokens    int64  `json:"tokens"`
+	CacheRead int64  `json:"cacheReadTokens"`
+	Output    int64  `json:"outputTokens"`
+	Turns     int    `json:"turns"`
 }
 
 // Day formats t's UTC date the way Usage.Date does.
@@ -145,16 +128,15 @@ func (l *Ledger) usageLocked() Usage {
 }
 
 // AddUsage adds one turn's tokens (input + output + cache creation), cache
-// reads, the output part of tokens on its own, and estimated cost to today's
-// counter and returns the new totals.
-func (l *Ledger) AddUsage(tokens, cacheRead, output int64, cost float64) (Usage, error) {
+// reads and the output part of tokens on its own to today's counter and
+// returns the new totals.
+func (l *Ledger) AddUsage(tokens, cacheRead, output int64) (Usage, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	u := l.usageLocked()
 	u.Tokens += tokens
 	u.CacheRead += cacheRead
 	u.Output += output
-	u.CostUSD += cost
 	u.Turns++
 	l.usage = u
 	return u, writeJSON(l.Path(UsageFile), u, 0o600)
@@ -163,11 +145,6 @@ func (l *Ledger) AddUsage(tokens, cacheRead, output int64, cost float64) (Usage,
 // CeilingReached reports whether ceiling (> 0) is used up today.
 func (l *Ledger) CeilingReached(ceiling int64) bool {
 	return ceiling > 0 && l.Usage().Tokens >= ceiling
-}
-
-// CostCeilingReached reports whether ceiling dollars (> 0) are used up today.
-func (l *Ledger) CostCeilingReached(ceiling float64) bool {
-	return ceiling > 0 && l.Usage().CostUSD >= ceiling
 }
 
 // NextUTCMidnight is the first instant after now that is 00:00 UTC.

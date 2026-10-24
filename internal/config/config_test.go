@@ -18,11 +18,14 @@ func TestDefaults(t *testing.T) {
 	if c.Name != "example-spot" || c.HeartbeatID != "system2-heartbeat-example" {
 		t.Errorf("derived names: %q %q", c.Name, c.HeartbeatID)
 	}
-	if c.StateDir != "/state" || c.RunDir != "/run/tria-spot" || c.MinWake != 2*time.Minute || c.MaxWake != 2*time.Hour {
+	if c.StateDir != "/state" || c.MinWake != 2*time.Minute || c.MaxWake != 2*time.Hour {
 		t.Errorf("defaults: %+v", c)
 	}
-	if c.PermissionMode != "auto" || c.FallbackPermMode != "dontAsk" {
-		t.Errorf("permission defaults: %+v", c)
+	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
+		t.Errorf("model and loop defaults: %+v", c)
+	}
+	if c.LLMAuth != AuthKey || c.VertexRegion != "global" {
+		t.Errorf("auth defaults: %+v", c)
 	}
 }
 
@@ -37,10 +40,14 @@ func TestValidation(t *testing.T) {
 	bad := map[string][]string{
 		"no args":        nil,
 		"max < min":      append(append([]string{}, required...), "--min-wake", "1h", "--max-wake", "1m"),
-		"bad mode":       append(append([]string{}, required...), "--permission-mode", "bypassPermissions"),
-		"bad fallback":   append(append([]string{}, required...), "--fallback-permission-mode", "auto"),
+		"bad effort":     append(append([]string{}, required...), "--effort", "extreme"),
+		"empty model":    append(append([]string{}, required...), "--model", ""),
+		"zero tool time": append(append([]string{}, required...), "--tool-timeout", "0s"),
+		"zero result":    append(append([]string{}, required...), "--tool-result-max-bytes", "0"),
 		"bad level":      append(append([]string{}, required...), "--log-level", "loud"),
-		"zero turns":     append(append([]string{}, required...), "--max-turns", "0"),
+		"zero steps":     append(append([]string{}, required...), "--max-steps", "0"),
+		"old flag":       append(append([]string{}, required...), "--max-turns", "5"),
+		"cli flag":       append(append([]string{}, required...), "--permission-mode", "auto"),
 		"negative ceil":  append(append([]string{}, required...), "--daily-token-ceiling", "-1"),
 		"tenant slash":   {"--tenant", "a/b", "--core-mcp-url", "u", "--core-token-file", "t", "--anthropic-key-file", "k"},
 		"stray argument": append(append([]string{}, required...), "extra"),
@@ -67,7 +74,7 @@ func TestNoCredentialFlags(t *testing.T) {
 }
 
 var federation = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
-	"--core-token-file", "/s/token", "--anthropic-auth", "federation",
+	"--core-token-file", "/s/token", "--llm-auth", "federation",
 	"--anthropic-identity-token-file", "/var/run/secrets/anthropic.com/token",
 	"--anthropic-federation-rule-id", "fdrl_example", "--anthropic-org-id", "00000000-0000-0000-0000-000000000000",
 	"--anthropic-service-account-id", "svac_example"}
@@ -78,7 +85,7 @@ func with(base []string, extra ...string) []string {
 
 func TestAuthDefaultsToKey(t *testing.T) {
 	c, err := Parse(required, io.Discard)
-	if err != nil || c.AnthropicAuth != AuthKey {
+	if err != nil || c.LLMAuth != AuthKey {
 		t.Fatalf("%+v %v", c, err)
 	}
 }
@@ -88,7 +95,7 @@ func TestFederationModeAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.AnthropicAuth != AuthFederation || c.AnthropicKeyFile != "" || c.FederationRuleID != "fdrl_example" ||
+	if c.LLMAuth != AuthFederation || c.AnthropicKeyFile != "" || c.FederationRuleID != "fdrl_example" ||
 		c.AnthropicServiceAcctID != "svac_example" || c.IdentityTokenFile == "" || c.AnthropicWorkspaceID != "" {
 		t.Fatalf("%+v", c)
 	}
@@ -101,7 +108,7 @@ func TestFederationModeAccepted(t *testing.T) {
 func TestFederationValidation(t *testing.T) {
 	bad := map[string][]string{
 		"key file with federation":    with(federation, "--anthropic-key-file", "/s/key"),
-		"unknown mode":                with(required, "--anthropic-auth", "oauth"),
+		"unknown mode":                with(required, "--llm-auth", "oauth"),
 		"id with a space":             with(federation, "--anthropic-workspace-id", "a b"),
 		"federation flag in key mode": with(required, "--anthropic-federation-rule-id", "fdrl_x"),
 		"token file in key mode":      with(required, "--anthropic-identity-token-file", "/t"),
@@ -145,26 +152,23 @@ func TestNoFederationSecretFlags(t *testing.T) {
 
 func TestTelemetryAndBudgetFlags(t *testing.T) {
 	c, err := Parse(append(append([]string{}, required...),
-		"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/secrets/otel/token", "--otel-tool-details",
-		"--daily-cost-ceiling-usd", "12.5"), io.Discard)
+		"--otel-endpoint", "http://ego.example.svc:4318", "--otel-token-file", "/secrets/otel/token", "--otel-tool-details"), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.OtelEndpoint != "http://ego.example.svc:4318" || c.OtelTokenFile != "/secrets/otel/token" || !c.OtelToolDetails ||
-		c.DailyCostCeilUSD != 12.5 {
+	if c.OtelEndpoint != "http://ego.example.svc:4318" || c.OtelTokenFile != "/secrets/otel/token" || !c.OtelToolDetails {
 		t.Fatalf("%+v", c)
 	}
 	for name, extra := range map[string][]string{
 		"token file without an endpoint":   {"--otel-token-file", "/t"},
 		"tool details without an endpoint": {"--otel-tool-details"},
 		"endpoint without a scheme":        {"--otel-endpoint", "ego:4318"},
-		"negative cost ceiling":            {"--daily-cost-ceiling-usd", "-1"},
 	} {
 		if _, err := Parse(append(append([]string{}, required...), extra...), io.Discard); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
 	}
-	if c, _ := Parse(required, io.Discard); c.OtelEndpoint != "" || c.DailyCostCeilUSD != 0 {
+	if c, _ := Parse(required, io.Discard); c.OtelEndpoint != "" {
 		t.Fatalf("telemetry and the new limits must default to off: %+v", c)
 	}
 }
@@ -196,11 +200,11 @@ func TestWakeFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ChatBatch != 10*time.Minute || c.MaxEdgeWakesHr != 12 || c.ExtraDisallowed != "" {
+	if c.ChatBatch != 10*time.Minute || c.MaxEdgeWakesHr != 12 {
 		t.Fatalf("defaults: %+v", c)
 	}
-	c, err = Parse(append(append([]string{}, required...), "--chat-batch", "0", "--max-edge-wakes-per-hour", "0", "--disallowed-tools", "Bash(curl *)"), io.Discard)
-	if err != nil || c.ChatBatch != 0 || c.MaxEdgeWakesHr != 0 || c.ExtraDisallowed != "Bash(curl *)" {
+	c, err = Parse(append(append([]string{}, required...), "--chat-batch", "0", "--max-edge-wakes-per-hour", "0"), io.Discard)
+	if err != nil || c.ChatBatch != 0 || c.MaxEdgeWakesHr != 0 {
 		t.Fatalf("%v %+v", err, c)
 	}
 	if _, err := Parse(append(append([]string{}, required...), "--max-edge-wakes-per-hour", "-1"), io.Discard); err == nil {
@@ -232,5 +236,37 @@ func TestCoreToolsIsCuratedOrAll(t *testing.T) {
 	}
 	if _, err := Parse(append(append([]string{}, required...), "--core-tools", "most"), io.Discard); err == nil {
 		t.Fatal("an unknown value must fail")
+	}
+}
+
+func TestVertexMode(t *testing.T) {
+	vertex := []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp", "--core-token-file", "/s/token",
+		"--llm-auth", "vertex", "--vertex-project", "example-project"}
+	c, err := Parse(vertex, io.Discard)
+	if err != nil || c.LLMAuth != AuthVertex || c.VertexProject != "example-project" || c.VertexRegion != "global" || c.AnthropicKeyFile != "" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if c, err = Parse(with(vertex, "--vertex-region", "europe-west1"), io.Discard); err != nil || c.VertexRegion != "europe-west1" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for name, args := range map[string][]string{
+		"no project":                 {"--tenant", "example", "--core-mcp-url", "u", "--core-token-file", "t", "--llm-auth", "vertex"},
+		"a key file":                 with(vertex, "--anthropic-key-file", "/s/key"),
+		"federation flag":            with(vertex, "--anthropic-org-id", "org"),
+		"project in key mode":        with(required, "--vertex-project", "p"),
+		"project in federation mode": with(federation, "--vertex-project", "p"),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestNoCLIFlagsRemain(t *testing.T) {
+	for _, f := range []string{"--claude-bin", "--sandbox", "--persistent", "--run-dir", "--allowed-tools", "--disallowed-tools",
+		"--fallback-permission-mode", "--daily-cost-ceiling-usd", "--anthropic-auth"} {
+		if _, err := Parse(with(required, f, "x"), io.Discard); err == nil {
+			t.Errorf("%s must no longer exist", f)
+		}
 	}
 }

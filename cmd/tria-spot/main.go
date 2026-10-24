@@ -1,6 +1,6 @@
 // Command tria-spot is the supervisor and container entrypoint of the Tria
-// spot (ADR-095): it wakes a Claude Code agent in turns, gives it the core's
-// MCP tools and its connectors, and keeps its schedule, budget and
+// spot (ADR-095, ADR-098): it wakes the spot's own agent loop in turns, gives it
+// the core's MCP tools and its connectors, and keeps its schedule, budget and
 // heartbeat.
 package main
 
@@ -12,17 +12,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/triageagent-dev/tria-spot/internal/agent"
 	"github.com/triageagent-dev/tria-spot/internal/config"
 	"github.com/triageagent-dev/tria-spot/internal/corecli"
 	"github.com/triageagent-dev/tria-spot/internal/ledger"
+	"github.com/triageagent-dev/tria-spot/internal/llm"
 	"github.com/triageagent-dev/tria-spot/internal/prompt"
-	"github.com/triageagent-dev/tria-spot/internal/render"
-	"github.com/triageagent-dev/tria-spot/internal/runner"
 	"github.com/triageagent-dev/tria-spot/internal/supervisor"
+	"github.com/triageagent-dev/tria-spot/internal/telemetry"
+	"github.com/triageagent-dev/tria-spot/internal/tools"
 	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
 
@@ -59,86 +61,69 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 }
 
 func supervise(cfg config.Config, errOut io.Writer) int {
-	reapOrphans()
 	log := slog.New(slog.NewTextHandler(errOut, &slog.HandlerOptions{Level: level(cfg.LogLevel)}))
 	log = log.With("spot", cfg.Name, "tenant", cfg.Tenant)
 	log.Info("starting", "version", version, "commit", gitCommit)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 
 	led, err := ledger.New(cfg.StateDir)
 	if err != nil {
 		log.Error("state dir", "err", err)
 		return 1
 	}
-	var fed *render.Federation
-	if cfg.AnthropicAuth == config.AuthFederation {
-		fed = &render.Federation{IdentityTokenFile: cfg.IdentityTokenFile, RuleID: cfg.FederationRuleID,
-			OrganizationID: cfg.AnthropicOrgID, ServiceAccountID: cfg.AnthropicServiceAcctID, WorkspaceID: cfg.AnthropicWorkspaceID}
-	}
-	if fed != nil {
-		// The kubelet projects the token; absent here only means it is not mounted yet.
-		if _, err := os.Stat(fed.IdentityTokenFile); err != nil {
-			log.Warn("identity token file is not readable yet; the first exchange will fail until it is", "err", err)
-		}
-		log.Info("anthropic auth: workload identity federation", "rule", fed.RuleID, "serviceAccount", fed.ServiceAccountID)
-	}
-	paths, err := render.Render(render.Input{
-		RunDir: cfg.RunDir, StateDir: cfg.StateDir, CoreMCPURL: cfg.CoreMCPURL,
-		CoreTokenFile: cfg.CoreTokenFile, AnthropicKeyFile: cfg.AnthropicKeyFile, Federation: fed,
-		OtelTokenFile: cfg.OtelTokenFile, Sandbox: cfg.Sandbox,
-		Instruction: prompt.Instruction(prompt.Params{
-			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
-			Connectors: promptConnectors(cfg.Connectors),
-		}),
-	})
+
+	model, err := newModel(ctx, cfg, log)
 	if err != nil {
-		log.Error("rendering config", "err", err)
+		log.Error("model client", "err", err)
 		return 1
 	}
 
-	allowed := appendRules(runner.DefaultAllowed(cfg.StateDir), cfg.ExtraAllowed)
-	if cfg.EgoMCPURL != "" {
-		allowed = append(allowed, runner.EgoAllowed()...)
+	tel, err := telemetry.New(ctx, telemetry.Options{
+		Endpoint: cfg.OtelEndpoint, TokenFile: cfg.OtelTokenFile, Name: cfg.Name,
+		Tenant: cfg.OtelTenant, TenantAttr: cfg.OtelTenantAttr, TenantName: cfg.OtelTenantName,
+		ToolDetails: cfg.OtelToolDetails, LogContent: cfg.LogContent,
+	})
+	if err != nil {
+		log.Error("telemetry", "err", err)
+		return 1
 	}
-	var servers []render.Server
+	if tel != nil {
+		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
+		defer func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := tel.Shutdown(sctx); err != nil {
+				log.Warn("flushing spans at shutdown", "err", err)
+			}
+		}()
+	}
+
+	registry := tools.New(tools.Options{
+		Core: coreServer(cfg), Others: otherServers(cfg),
+		CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, Logger: log,
+	})
 	for _, c := range cfg.Connectors {
-		allowed = append(allowed, c.AllowedRules()...)
-		servers = append(servers, render.Server{Name: c.Name, URL: c.URL, Tools: c.Tools})
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
-	disallowed := appendRules(runner.Disallowed(cfg.CoreTools == "all"), cfg.ExtraDisallowed)
 	if cfg.CoreTools == "all" {
-		allowed = append(allowed, runner.CoreAllTool)
 		log.Info("core tools: all of them; the core's Role is the bound")
 	}
-	if cfg.Sandbox {
-		allowed, disallowed = runner.WithSandbox(allowed, disallowed)
-		log.Info("shell: Bash runs only inside the CLI's sandbox; the CLI refuses to start without it")
-	}
-	var tel *runner.Telemetry
-	if cfg.OtelEndpoint != "" {
-		tel = &runner.Telemetry{Endpoint: cfg.OtelEndpoint, Service: cfg.Name, Tenant: cfg.OtelTenant, TenantAttr: cfg.OtelTenantAttr, TenantName: cfg.OtelTenantName, ToolDetails: cfg.OtelToolDetails}
-		log.Info("telemetry: traces to an OTLP endpoint", "endpoint", cfg.OtelEndpoint, "toolDetails", cfg.OtelToolDetails)
-	}
-	ropts := runner.Options{
-		Bin: resolveClaudeBin(cfg.ClaudeBin, os.Getenv("KO_DATA_PATH")), Model: cfg.Model, MaxTurns: cfg.MaxTurns, Timeout: cfg.TurnTimeout,
-		StateDir: cfg.StateDir, Paths: paths, PermissionMode: cfg.PermissionMode,
-		AllowedTools: allowed, DisallowedTools: disallowed, Logger: log, LogContent: cfg.LogContent, Telemetry: tel,
-		CoreMCPURL: cfg.CoreMCPURL, CoreTokenFile: cfg.CoreTokenFile,
-		EgoMCPURL: cfg.EgoMCPURL, EgoTokenFile: cfg.OtelTokenFile, Connectors: servers,
-	}
-	var rn supervisor.Turner = runner.New(ropts)
-	if cfg.Persistent {
-		pr := runner.NewPersistent(ropts)
-		defer pr.Close()
-		rn = pr
-		log.Info("one claude process is kept alive between turns")
-	}
+
+	ag := agent.New(agent.Options{
+		LLM: model, Tools: registry, Model: cfg.Model, Effort: cfg.Effort,
+		System: []string{prompt.Instruction(prompt.Params{
+			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+			Connectors: promptConnectors(cfg.Connectors),
+		})},
+		MaxSteps: cfg.MaxSteps, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
+	})
+
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-	sup := supervisor.New(cfg, led, core, rn, log)
+	sup := supervisor.New(cfg, led, core, ag, log)
 	if cfg.CoreAPIURL != "" {
 		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
 		if err != nil {
@@ -156,55 +141,55 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	return 0
 }
 
-// appendRules adds the comma-separated extra rules to base.
-func appendRules(base []string, extra string) []string {
-	for _, r := range strings.Split(extra, ",") {
-		if r = strings.TrimSpace(r); r != "" {
-			base = append(base, r)
+// newModel builds the model client for the configured auth mode. It fails at
+// once on a key file it cannot read or a mode with missing ids.
+func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (*llm.Anthropic, error) {
+	o := llm.Options{Auth: cfg.LLMAuth, Model: cfg.Model, KeyFile: cfg.AnthropicKeyFile}
+	switch cfg.LLMAuth {
+	case config.AuthFederation:
+		o.Federation = llm.Federation{
+			RuleID: cfg.FederationRuleID, OrganizationID: cfg.AnthropicOrgID, ServiceAccountID: cfg.AnthropicServiceAcctID,
+			WorkspaceID: cfg.AnthropicWorkspaceID, IdentityTokenFile: cfg.IdentityTokenFile,
 		}
-	}
-	return base
-}
-
-// reapOrphans makes the supervisor reap re-parented children when it is PID 1
-// in the container: a shell the CLI left behind after a kill would
-// otherwise stay a zombie. Only children the runner is not waiting on are
-// reaped here; exec.Cmd.Wait collects its own.
-func reapOrphans() {
-	if os.Getpid() != 1 {
-		return
-	}
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGCHLD)
-	go func() {
-		for range ch {
-			for {
-				var ws syscall.WaitStatus
-				pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
-				if pid <= 0 || err != nil {
-					break
-				}
-			}
+		// The kubelet projects the token; absent here only means it is not mounted yet.
+		if _, err := os.Stat(cfg.IdentityTokenFile); err != nil {
+			log.Warn("identity token file is not readable yet; the first exchange will fail until it is", "err", err)
 		}
-	}()
+		log.Info("model auth: Anthropic workload identity federation", "rule", cfg.FederationRuleID, "serviceAccount", cfg.AnthropicServiceAcctID)
+	case config.AuthVertex:
+		o.VertexProject, o.VertexRegion = cfg.VertexProject, cfg.VertexRegion
+		log.Info("model auth: Google Vertex AI with application default credentials", "project", cfg.VertexProject, "region", cfg.VertexRegion)
+	default:
+		log.Info("model auth: API key from a file")
+	}
+	log.Info("model", "id", cfg.Model, "effort", cfg.Effort, "maxSteps", cfg.MaxSteps)
+	return llm.NewAnthropic(ctx, o)
 }
 
-// resolveClaudeBin returns the CLI to run. In the ko image the CLI lives in
-// kodata, so a default "claude" becomes the kodata copy when it exists; any
-// other value (an explicit --claude-bin) is used as given.
-func resolveClaudeBin(bin, koData string) string {
-	if bin != "claude" || koData == "" {
-		return bin
+// coreServer is the core's MCP server as the tool layer sees it: its tools
+// allowed by name and the destructive ones denied by name, or with
+// --core-tools all every tool it offers.
+func coreServer(cfg config.Config) tools.Server {
+	s := tools.Server{Name: tools.CoreServer, URL: cfg.CoreMCPURL, TokenFile: cfg.CoreTokenFile}
+	if cfg.CoreTools == "all" {
+		s.AllowAll = true
+		return s
 	}
-	if p := filepath.Join(koData, "claude"); fileExists(p) {
-		return p
-	}
-	return bin
+	s.Allow, s.Deny = tools.CoreTools, tools.CoreToolsDenied
+	return s
 }
 
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && st.Mode().IsRegular()
+// otherServers are ego, when configured, and the connectors. A connector holds
+// its own credentials, so the spot sends it none.
+func otherServers(cfg config.Config) []tools.Server {
+	var out []tools.Server
+	if cfg.EgoMCPURL != "" {
+		out = append(out, tools.Server{Name: tools.EgoServer, URL: cfg.EgoMCPURL, TokenFile: cfg.OtelTokenFile, Allow: tools.EgoTools})
+	}
+	for _, c := range cfg.Connectors {
+		out = append(out, tools.Server{Name: c.Name, URL: c.URL, Allow: c.Tools})
+	}
+	return out
 }
 
 func level(s string) slog.Level {

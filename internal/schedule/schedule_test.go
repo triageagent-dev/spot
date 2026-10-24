@@ -1,8 +1,7 @@
 package schedule
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,30 +11,29 @@ const (
 	max = 2 * time.Hour
 )
 
-func TestParseClamps(t *testing.T) {
+func TestRequestClamps(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want time.Duration
-		src  Source
+		name  string
+		after string
+		want  time.Duration
+		src   Source
 	}{
-		{"in range", `{"after":"15m","why":"check rollout"}`, 15 * time.Minute, SourceAgent},
-		{"too short", `{"after":"5s","why":"spin"}`, min, SourceClamped},
-		{"too long", `{"after":"48h","why":"sleep"}`, max, SourceClamped},
-		{"exactly min", `{"after":"2m"}`, min, SourceAgent},
-		{"exactly max", `{"after":"2h"}`, max, SourceAgent},
-		{"compound", `{"after":"1h30m"}`, 90 * time.Minute, SourceAgent},
-		{"not json", `after 15m`, min, SourceGarbled},
-		{"empty", ``, min, SourceGarbled},
-		{"missing after", `{"why":"x"}`, min, SourceGarbled},
-		{"number", `{"after":15}`, min, SourceGarbled},
-		{"bad duration", `{"after":"soon"}`, min, SourceGarbled},
-		{"negative", `{"after":"-5m"}`, min, SourceGarbled},
-		{"zero", `{"after":"0s"}`, min, SourceGarbled},
+		{"in range", "15m", 15 * time.Minute, SourceAgent},
+		{"too short", "5s", min, SourceClamped},
+		{"too long", "48h", max, SourceClamped},
+		{"exactly min", "2m", min, SourceAgent},
+		{"exactly max", "2h", max, SourceAgent},
+		{"compound", "1h30m", 90 * time.Minute, SourceAgent},
+		{"padded", " 10m ", 10 * time.Minute, SourceAgent},
+		{"empty", "", min, SourceGarbled},
+		{"bad duration", "soon", min, SourceGarbled},
+		{"a bare number", "15", min, SourceGarbled},
+		{"negative", "-5m", min, SourceGarbled},
+		{"zero", "0s", min, SourceGarbled},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := Parse([]byte(c.in), min, max)
+			w := Request(c.after, "why", min, max)
 			if w.After != c.want || w.Source != c.src {
 				t.Fatalf("got %s/%s (%s), want %s/%s", w.After, w.Source, w.Note, c.want, c.src)
 			}
@@ -47,32 +45,15 @@ func TestParseClamps(t *testing.T) {
 }
 
 func TestWhyIsBounded(t *testing.T) {
-	long := make([]byte, 5000)
-	for i := range long {
-		long[i] = 'x'
-	}
-	w := Parse([]byte(`{"after":"10m","why":"`+string(long)+`"}`), min, max)
+	w := Request("10m", strings.Repeat("x", 5000), min, max)
 	if len(w.Why) != maxWhy {
 		t.Fatalf("why length %d, want %d", len(w.Why), maxWhy)
 	}
 }
 
-func TestConsumeRemovesFileAndHandlesMissing(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "next.json")
-	if w := Consume(p, min, max); w.Source != SourceMissing || w.After != min {
-		t.Fatalf("missing: %+v", w)
-	}
-	if err := os.WriteFile(p, []byte(`{"after":"7m","why":"w"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	w := Consume(p, min, max)
-	if w.After != 7*time.Minute || w.Why != "w" {
-		t.Fatalf("got %+v", w)
-	}
-	if _, err := os.Stat(p); !os.IsNotExist(err) {
-		t.Fatalf("next.json must be consumed, stat err = %v", err)
-	}
-	if w := Consume(p, min, max); w.Source != SourceMissing {
-		t.Fatalf("second read must see it gone, got %+v", w)
+func TestDefault(t *testing.T) {
+	w := Default(min, SourceMissing, "no call")
+	if w.After != min || w.Source != SourceMissing || w.Note != "no call" {
+		t.Fatalf("%+v", w)
 	}
 }

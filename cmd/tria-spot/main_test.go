@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/triageagent-dev/tria-spot/internal/config"
 )
 
 func TestVersionAndUsage(t *testing.T) {
@@ -19,21 +21,41 @@ func TestVersionAndUsage(t *testing.T) {
 	}
 }
 
-func TestResolveClaudeBin(t *testing.T) {
-	kd := t.TempDir()
-	if got := resolveClaudeBin("claude", kd); got != "claude" {
-		t.Fatalf("no kodata copy: %q", got)
+func TestCoreServerDefaultsToTheCuratedListsAndAllOptsOut(t *testing.T) {
+	cfg := config.Config{CoreMCPURL: "http://core.invalid/mcp", CoreTokenFile: "/t", CoreTools: "curated"}
+	s := coreServer(cfg)
+	if s.AllowAll || len(s.Allow) == 0 || len(s.Deny) == 0 || s.Name != "core" || s.TokenFile != "/t" {
+		t.Fatalf("curated: %+v", s)
 	}
-	if err := os.WriteFile(filepath.Join(kd, "claude"), []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
+	cfg.CoreTools = "all"
+	if s = coreServer(cfg); !s.AllowAll || len(s.Deny) != 0 {
+		t.Fatalf("all: %+v", s)
 	}
-	if got := resolveClaudeBin("claude", kd); got != filepath.Join(kd, "claude") {
-		t.Fatalf("kodata copy not used: %q", got)
+}
+
+func TestOtherServersCarryNoTokenForConnectors(t *testing.T) {
+	cfg := config.Config{
+		EgoMCPURL: "http://ego.invalid/mcp", OtelTokenFile: "/otel",
+		Connectors: []config.Connector{{Name: "example-kube", URL: "http://kube.invalid/mcp", Tools: []string{"get_pods"}}},
 	}
-	if got := resolveClaudeBin("/opt/claude", kd); got != "/opt/claude" {
-		t.Fatalf("explicit --claude-bin overridden: %q", got)
+	got := otherServers(cfg)
+	if len(got) != 2 || got[0].Name != "ego" || got[0].TokenFile != "/otel" || got[1].Name != "example-kube" || got[1].TokenFile != "" ||
+		len(got[1].Allow) != 1 || got[1].Allow[0] != "get_pods" {
+		t.Fatalf("%+v", got)
 	}
-	if got := resolveClaudeBin("claude", ""); got != "claude" {
-		t.Fatalf("without KO_DATA_PATH: %q", got)
+	if len(otherServers(config.Config{})) != 0 {
+		t.Fatal("no ego, no connectors, no servers")
+	}
+}
+
+func TestBadAuthFailsFastAtStart(t *testing.T) {
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "token")
+	_ = os.WriteFile(tok, []byte("t"), 0o600)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--tenant", "example", "--core-mcp-url", "http://core.invalid/mcp", "--core-token-file", tok,
+		"--anthropic-key-file", filepath.Join(dir, "missing"), "--state-dir", filepath.Join(dir, "state")}, strings.NewReader(""), &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "model client") {
+		t.Fatalf("a missing key file must stop the start: %d %s", code, errOut.String())
 	}
 }

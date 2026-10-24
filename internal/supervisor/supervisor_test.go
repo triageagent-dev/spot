@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -14,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/triageagent-dev/tria-spot/internal/agent"
 	"github.com/triageagent-dev/tria-spot/internal/config"
 	"github.com/triageagent-dev/tria-spot/internal/corecli"
 	"github.com/triageagent-dev/tria-spot/internal/ledger"
-	"github.com/triageagent-dev/tria-spot/internal/render"
-	"github.com/triageagent-dev/tria-spot/internal/runner"
-	"github.com/triageagent-dev/tria-spot/internal/stream"
+	"github.com/triageagent-dev/tria-spot/internal/llm"
+	"github.com/triageagent-dev/tria-spot/internal/tools"
 	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
 
@@ -118,14 +119,108 @@ func (f *fakeCore) RoomMessages(_ context.Context, room, since string) ([]corecl
 func (f *fakeCore) setIssues(is ...corecli.Issue) { f.mu.Lock(); f.issues = is; f.mu.Unlock() }
 func (f *fakeCore) beatCount() int                { f.mu.Lock(); defer f.mu.Unlock(); return len(f.beats) }
 
+// scriptTurner stands in for the agent: it records the prompt of each turn
+// and answers as the harness has told it to. Behaviour is steered by values the
+// harness sets:
+//
+//	mode (or mode.N)  ok | fail | nonext | garble | sleep | authfail | coredown | maxsteps
+//	tokens            "<input> <output>" per turn, default "100 50"
+//	next              the schedule_next call as JSON, default {"after":"3m","why":"fake"}
+//	summary           the finish summary
+type scriptTurner struct {
+	mu      sync.Mutex
+	vals    map[string]string
+	count   int
+	prompts map[int]string
+	turns   map[int]agent.Turn
+	started map[int]bool
+	timeout time.Duration
+}
+
+func newScriptTurner(timeout time.Duration) *scriptTurner {
+	return &scriptTurner{vals: map[string]string{}, prompts: map[int]string{}, turns: map[int]agent.Turn{}, started: map[int]bool{}, timeout: timeout}
+}
+
+func (f *scriptTurner) set(name, v string) { f.mu.Lock(); f.vals[name] = v; f.mu.Unlock() }
+func (f *scriptTurner) get(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vals[name]
+}
+func (f *scriptTurner) turnCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.count }
+func (f *scriptTurner) prompt(n int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.prompts[n]
+}
+func (f *scriptTurner) hasStarted(n int) bool { f.mu.Lock(); defer f.mu.Unlock(); return f.started[n] }
+
+func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
+	f.mu.Lock()
+	f.count++
+	n := f.count
+	f.prompts[n], f.turns[n] = t.Prompt, t
+	mode := "ok"
+	if m := f.vals["mode"]; m != "" {
+		mode = m
+	}
+	if m := f.vals[fmt.Sprintf("mode.%d", n)]; m != "" {
+		mode = m
+	}
+	var tin, tout int64 = 100, 50
+	if v := f.vals["tokens"]; v != "" {
+		fmt.Sscan(v, &tin, &tout)
+	}
+	next, summary := f.vals["next"], f.vals["summary"]
+	f.mu.Unlock()
+
+	u := llm.Usage{Input: tin, Output: tout}
+	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second}
+	switch mode {
+	case "fail":
+		return agent.Result{Failed: true, Err: errors.New("boom: simulated failure")}
+	case "authfail":
+		return agent.Result{Failed: true, AuthFailed: true, Err: &llm.APIError{Status: 401}}
+	case "coredown":
+		return agent.Result{Failed: true, CoreDown: true, Err: fmt.Errorf("%w: refused", tools.ErrCoreDown)}
+	case "sleep":
+		f.mu.Lock()
+		f.started[n] = true
+		f.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			res.Canceled, res.Err = true, ctx.Err()
+		case <-time.After(f.timeout):
+			res.TimedOut, res.Failed, res.Err = true, true, errors.New("the turn timed out")
+		}
+		return res
+	case "maxsteps":
+		res.StepsExhausted = true
+	}
+	switch mode {
+	case "nonext":
+	case "garble":
+		res.Next = &agent.ScheduleRequest{After: "not a duration", Why: "x"}
+	default:
+		if next == "" {
+			next = `{"after":"3m","why":"fake"}`
+		}
+		var r agent.ScheduleRequest
+		var raw struct{ After, Why string }
+		_ = json.Unmarshal([]byte(next), &raw)
+		r.After, r.Why = raw.After, raw.Why
+		res.Next = &r
+	}
+	return res
+}
+
 type harness struct {
 	t      *testing.T
-	fake   string // FAKE_DIR
 	state  string
-	run    string
 	cfg    config.Config
 	core   *fakeCore
 	clock  *fakeClock
+	script *scriptTurner
 	cancel context.CancelFunc
 	done   chan error
 	sup    *Supervisor
@@ -134,32 +229,30 @@ type harness struct {
 	typingEvery time.Duration
 	// trig, when set, is the core's push channel the supervisor is given.
 	trig Trigger
-	// wrap, when set, puts something around the real runner.
+	// wrap, when set, puts something around the scripted turner.
 	wrap func(Turner) Turner
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
 	t.Helper()
 	root := t.TempDir()
-	h := &harness{t: t, fake: filepath.Join(root, "fake"), state: filepath.Join(root, "state"), run: filepath.Join(root, "run"),
+	h := &harness{t: t, state: filepath.Join(root, "state"),
 		core:  &fakeCore{roomMsgs: map[string][]corecli.RoomMessage{}},
 		clock: &fakeClock{t: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)}}
-	must(t, os.MkdirAll(h.fake, 0o755))
 	tok, key := filepath.Join(root, "token"), filepath.Join(root, "key")
 	must(t, os.WriteFile(tok, []byte("core-token\n"), 0o600))
 	must(t, os.WriteFile(key, []byte("sk-ant-key\n"), 0o600))
-	bin, err := filepath.Abs("testdata/fake-claude.sh")
-	must(t, err)
 	h.cfg = config.Config{
 		Tenant: "example", Name: "example-spot", CoreMCPURL: "http://core.invalid/mcp",
-		CoreTokenFile: tok, AnthropicKeyFile: key, StateDir: h.state, RunDir: h.run, ClaudeBin: bin,
-		MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour, MaxTurns: 7, TurnTimeout: 20 * time.Second,
-		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0, PermissionMode: "auto", FallbackPermMode: "dontAsk",
-		AnthropicAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", LogLevel: "debug",
+		CoreTokenFile: tok, AnthropicKeyFile: key, StateDir: h.state,
+		MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour, MaxSteps: 7, TurnTimeout: 20 * time.Second,
+		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0,
+		LLMAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", LogLevel: "debug",
 	}
 	if mut != nil {
 		mut(&h.cfg)
 	}
+	h.script = newScriptTurner(h.cfg.TurnTimeout)
 	return h
 }
 
@@ -174,28 +267,14 @@ func must(t *testing.T, err error) {
 // when called again) and runs it.
 func (h *harness) start() {
 	h.t.Helper()
-	in := render.Input{RunDir: h.run, StateDir: h.state, CoreMCPURL: h.cfg.CoreMCPURL,
-		CoreTokenFile: h.cfg.CoreTokenFile, AnthropicKeyFile: h.cfg.AnthropicKeyFile,
-		Instruction: "system prompt"}
-	if h.cfg.AnthropicAuth == config.AuthFederation {
-		in.AnthropicKeyFile = ""
-		in.Federation = &render.Federation{IdentityTokenFile: h.cfg.IdentityTokenFile, RuleID: "fdrl_example",
-			OrganizationID: "org", ServiceAccountID: "svac_example"}
-	}
-	paths, err := render.Render(in)
-	must(h.t, err)
 	led, err := ledger.New(h.state)
 	must(h.t, err)
 	led.SetClock(h.clock.Now)
 	h.logs = &safeBuf{}
 	log := slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rn := runner.New(runner.Options{Bin: h.cfg.ClaudeBin, MaxTurns: h.cfg.MaxTurns, Timeout: h.cfg.TurnTimeout,
-		StateDir: h.state, Paths: paths, PermissionMode: h.cfg.PermissionMode,
-		AllowedTools: runner.DefaultAllowed(h.state), Env: []string{"FAKE_DIR=" + h.fake}, Grace: 2 * time.Second, Logger: log,
-		LogContent: h.cfg.LogContent})
-	var tn Turner = rn
+	var tn Turner = h.script
 	if h.wrap != nil {
-		tn = h.wrap(rn)
+		tn = h.wrap(h.script)
 	}
 	h.sup = New(h.cfg, led, h.core, tn, log)
 	h.sup.SetClock(h.clock.Now)
@@ -220,14 +299,7 @@ func (h *harness) stop() {
 	}
 }
 
-func (h *harness) turns() int {
-	b, err := os.ReadFile(filepath.Join(h.fake, "count"))
-	if err != nil {
-		return 0
-	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	return n
-}
+func (h *harness) turns() int { return h.script.turnCount() }
 
 func (h *harness) status() Status {
 	var s Status
@@ -253,61 +325,46 @@ func (h *harness) waitFor(what string, cond func() bool) {
 // waitIdle waits until turn n has finished and the supervisor is waiting.
 func (h *harness) waitIdle(n int) {
 	h.t.Helper()
-	h.waitFor("turn "+strconv.Itoa(n)+" to finish", func() bool {
+	h.waitFor(fmt.Sprintf("turn %d to finish", n), func() bool {
 		st := h.status().State
 		return h.turns() == n && (st == "idle" || st == "paused-ceiling")
 	})
 }
 
+// file is the prompt of turn n (name "stdin").
 func (h *harness) file(name string, n int) string {
-	b, _ := os.ReadFile(filepath.Join(h.fake, name+"."+strconv.Itoa(n)))
-	return string(b)
+	if name != "stdin" {
+		h.t.Fatalf("no recorded %q", name)
+	}
+	return h.script.prompt(n)
 }
 
-func (h *harness) set(name, v string) {
-	must(h.t, os.WriteFile(filepath.Join(h.fake, name), []byte(v), 0o644))
-}
+func (h *harness) set(name, v string) { h.script.set(name, v) }
 
 func issue(id, sev string, comments int) corecli.Issue {
 	return corecli.Issue{ID: id, Severity: sev, Summary: "summary " + id, Comments: comments}
 }
 
-func TestStartupTickAndResume(t *testing.T) {
+func TestStartupTickAndEveryWakeIsEmpty(t *testing.T) {
 	h := newHarness(t, nil)
 	h.start()
 	defer h.stop()
 	h.waitIdle(1)
 
-	// Turn 1: startup, new conversation, nothing credential-like on the command line.
-	argv := h.file("argv", 1)
-	for _, want := range []string{"-p", "stream-json", "--verbose", "--permission-mode\nauto", "--permission-prompts\nnone",
-		"--strict-mcp-config", "--max-turns\n7", "--append-system-prompt-file", "--settings", "--mcp-config"} {
-		if !strings.Contains(argv, want) {
-			t.Errorf("argv lacks %q:\n%s", want, argv)
-		}
-	}
-	if strings.Contains(argv, "--resume") {
-		t.Errorf("a new conversation must not pass --resume:\n%s", argv)
-	}
-	for _, secret := range []string{"sk-ant-key", "core-token"} {
-		if strings.Contains(argv, secret) {
-			t.Errorf("credential on the command line")
-		}
-	}
-	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "schedule_next") {
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "schedule_next") || !strings.Contains(in, "new, empty conversation") {
 		t.Errorf("startup prompt:\n%s", in)
 	}
-	if cwd := strings.TrimSpace(h.file("cwd", 1)); !strings.HasSuffix(cwd, "/state/work") {
-		t.Errorf("cwd = %q, want the work dir under the state dir", cwd)
+	if tn := h.script.turns[1]; tn.Reason != "startup" || tn.Room != "" && tn.Room != "agents" {
+		t.Errorf("turn: %+v", tn)
 	}
 
-	// The schedule the agent wrote is consumed, taken and reflected in the heartbeat.
-	if _, err := os.Stat(filepath.Join(h.state, "next.json")); !os.IsNotExist(err) {
-		t.Error("next.json should be consumed")
-	}
+	// The schedule the agent asked for is taken and reflected in the heartbeat.
 	st := h.status()
-	if st.NextWake == nil || st.NextWake.Source != "agent" || st.NextWake.Why != "fake" || st.SessionID != "sess-1" {
+	if st.NextWake == nil || st.NextWake.Source != "agent" || st.NextWake.Why != "fake" {
 		t.Fatalf("status: %+v", st)
+	}
+	if lt := st.LastTurn; lt == nil || lt.Steps != 2 || lt.ToolCalls != 3 || lt.Model != "fake-model" || lt.Tokens != 150 || lt.IsError {
+		t.Fatalf("last turn: %+v", lt)
 	}
 	h.core.mu.Lock()
 	hb := h.core.beats[0]
@@ -325,10 +382,7 @@ func TestStartupTickAndResume(t *testing.T) {
 	// Due: a tick turn in a new conversation that carries the reason.
 	h.clock.Advance(1 * time.Minute)
 	h.waitIdle(2)
-	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
-		t.Errorf("a tick must start an empty conversation:\n%s", argv)
-	}
-	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "Your reason: fake") {
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "Your reason: fake") || !strings.Contains(in, "new, empty conversation") {
 		t.Errorf("tick prompt:\n%s", in)
 	}
 	if h.core.beatCount() != 2 {
@@ -757,9 +811,6 @@ func TestRestartStartsAnEmptyConversationAndKeepsTheLedger(t *testing.T) {
 	h.start() // a new process over the same /state
 	defer h.stop()
 	h.waitIdle(2)
-	if argv := h.file("argv", 2); strings.Contains(argv, "--resume") {
-		t.Errorf("a restart must not resume a conversation:\n%s", argv)
-	}
 	in := h.file("stdin", 2)
 	if !strings.Contains(in, "Wake reason: startup") || !strings.Contains(in, "new, empty conversation") {
 		t.Errorf("restart prompt:\n%s", in)
@@ -776,10 +827,7 @@ func TestSIGTERMMidTurnStopsGracefullyAndNextStartKnows(t *testing.T) {
 	h := newHarness(t, nil)
 	h.set("mode.1", "sleep")
 	h.start()
-	h.waitFor("the turn to be running", func() bool {
-		_, err := os.Stat(filepath.Join(h.fake, "sleeping.1"))
-		return err == nil
-	})
+	h.waitFor("the turn to be running", func() bool { return h.script.hasStarted(1) })
 	began := time.Now()
 	h.stop()
 	if time.Since(began) > 10*time.Second {
@@ -792,7 +840,7 @@ func TestSIGTERMMidTurnStopsGracefullyAndNextStartKnows(t *testing.T) {
 		t.Fatal("a cut-off turn must not refresh the heartbeat")
 	}
 	sess := h.sup.led.LoadSession()
-	if !sess.Running || sess.ID != "sess-1" {
+	if !sess.Running {
 		t.Fatalf("session: %+v", sess)
 	}
 	// The partial turn's tokens were still counted (assistant message seen).
@@ -841,46 +889,6 @@ func TestFailedTurnBacksOffAndSkipsHeartbeat(t *testing.T) {
 	}
 }
 
-func TestPermissionModeFallbackWhenAutoUnavailable(t *testing.T) {
-	h := newHarness(t, nil)
-	h.set("perm", "default") // the CLI starts in Manual although auto was requested
-	h.set("next", `{"after":"2m"}`)
-	h.start()
-	defer h.stop()
-	h.waitIdle(1)
-	st := h.status()
-	if !st.PermMode.FellBack || st.PermMode.Reported != "default" || st.PermMode.InUse != "dontAsk" {
-		t.Fatalf("perm status: %+v", st.PermMode)
-	}
-	h.clock.Advance(3 * time.Minute)
-	h.waitIdle(2)
-	if argv := h.file("argv", 2); !strings.Contains(argv, "--permission-mode\ndontAsk") {
-		t.Errorf("fallback mode not used:\n%s", argv)
-	}
-}
-
-func TestChildEnvironmentCarriesNoCredentials(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "sk-leak")
-	t.Setenv("SOME_SERVICE_TOKEN", "tok-leak")
-	t.Setenv("DB_PASSWORD", "pw-leak")
-	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
-	h := newHarness(t, nil)
-	h.start()
-	defer h.stop()
-	h.waitIdle(1)
-	env := h.file("env", 1)
-	for _, bad := range []string{"sk-leak", "tok-leak", "pw-leak", "ANTHROPIC_API_KEY", "sk-ant-key", "core-token"} {
-		if strings.Contains(env, bad) {
-			t.Errorf("child environment contains %q", bad)
-		}
-	}
-	for _, want := range []string{"KUBERNETES_SERVICE_HOST=10.0.0.1", "CLAUDE_CONFIG_DIR=" + h.state + "/claude", "HOME=" + h.state + "/home", "FAKE_DIR="} {
-		if !strings.Contains(env, want) {
-			t.Errorf("child environment lacks %q", want)
-		}
-	}
-}
-
 func TestTurnTimeout(t *testing.T) {
 	h := newHarness(t, func(c *config.Config) { c.TurnTimeout = 300 * time.Millisecond })
 	h.set("mode", "sleep")
@@ -892,17 +900,6 @@ func TestTurnTimeout(t *testing.T) {
 	})
 	if !strings.Contains(h.status().LastError, "timed out") {
 		t.Fatalf("status: %+v", h.status())
-	}
-}
-
-func TestMissingResultCountsAsFailure(t *testing.T) {
-	h := newHarness(t, nil)
-	h.set("mode", "noresult")
-	h.start()
-	defer h.stop()
-	h.waitIdle(1)
-	if st := h.status(); st.Failures != 1 || st.LastTurn == nil || !st.LastTurn.IsError {
-		t.Fatalf("status: %+v", st)
 	}
 }
 
@@ -921,20 +918,16 @@ func TestCoreDownDoesNotStopTheLoop(t *testing.T) {
 	}
 }
 
-func TestRepeated401StopsTheTurnEarly(t *testing.T) {
-	h := newHarness(t, nil) // turn timeout is 20s: the stop must come well before it
+func TestAuthFailureBacksOffAndBlamesTheKey(t *testing.T) {
+	h := newHarness(t, nil)
 	h.set("mode", "authfail")
 	h.start()
 	defer h.stop()
-	began := time.Now()
 	h.waitFor("an auth failure", func() bool {
 		st := h.status()
 		return st.LastTurn != nil && st.LastTurn.AuthFailed && st.State == "idle"
 	})
-	if time.Since(began) > 10*time.Second {
-		t.Fatal("the turn ran to its timeout instead of stopping on repeated 401s")
-	}
-	if st := h.status(); !strings.Contains(st.LastError, "rejected the key") || st.LastTurn.TimedOut {
+	if st := h.status(); !strings.Contains(st.LastError, "rejected the key") || st.LastTurn.TimedOut || st.Failures != 1 {
 		t.Fatalf("status: %+v", st)
 	}
 	if h.core.beatCount() != 0 {
@@ -944,7 +937,7 @@ func TestRepeated401StopsTheTurnEarly(t *testing.T) {
 
 func TestFederationAuthFailureSaysWhereToLook(t *testing.T) {
 	h := newHarness(t, func(c *config.Config) {
-		c.AnthropicAuth = config.AuthFederation
+		c.LLMAuth = config.AuthFederation
 		c.IdentityTokenFile = "/var/run/secrets/anthropic.com/token"
 	})
 	h.set("mode", "authfail")
@@ -960,19 +953,6 @@ func TestFederationAuthFailureSaysWhereToLook(t *testing.T) {
 	}
 	if strings.Contains(msg, "key Secret") {
 		t.Fatalf("a federation failure must not blame the key Secret: %q", msg)
-	}
-	// The CLI saw the profile and none of the key-mode credentials.
-	env := h.file("env", 1)
-	for _, want := range []string{"ANTHROPIC_PROFILE=spot", "ANTHROPIC_CONFIG_DIR=" + h.run + "/anthropic"} {
-		if !strings.Contains(env, want) {
-			t.Errorf("child env lacks %q", want)
-		}
-	}
-	if strings.Contains(env, "ANTHROPIC_API_KEY") || strings.Contains(env, "ANTHROPIC_IDENTITY_TOKEN") {
-		t.Errorf("child env carries a shadowing credential")
-	}
-	if _, err := os.Stat(filepath.Join(h.run, "api-key-helper.sh")); !os.IsNotExist(err) {
-		t.Error("federation mode must not render the key helper")
 	}
 }
 
@@ -990,29 +970,34 @@ func TestKeyModeAuthFailureBlamesTheKey(t *testing.T) {
 	}
 }
 
-func TestFailureTextFederationCatchesOpaqueAuthErrors(t *testing.T) {
-	res := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "WorkloadIdentityError: Authentication failed"}
-	if msg := failureText(res, config.AuthFederation, false); !strings.Contains(msg, "jti_reused / match_*") {
+func TestFailureTextByAuthMode(t *testing.T) {
+	denied := agent.Result{Failed: true, AuthFailed: true, Err: &llm.APIError{Status: 401}}
+	if msg := failureText(denied, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
 		t.Errorf("federation: %q", msg)
 	}
-	if msg := failureText(res, config.AuthKey, false); strings.Contains(msg, "jti_reused") {
+	if msg := failureText(denied, config.AuthKey); !strings.Contains(msg, "key Secret") || strings.Contains(msg, "jti_reused") {
+		t.Errorf("key mode must blame the key, not give the federation hint: %q", msg)
+	}
+	if msg := failureText(denied, config.AuthVertex); !strings.Contains(msg, "Vertex AI") || strings.Contains(msg, "key Secret") {
+		t.Errorf("vertex: %q", msg)
+	}
+	// A failed exchange the SDK reports without an API status.
+	exch := agent.Result{Failed: true, Err: errors.New("token exchange failed with status 401: Authentication failed")}
+	if msg := failureText(exch, config.AuthFederation); !strings.Contains(msg, "jti_reused / match_*") {
+		t.Errorf("exchange: %q", msg)
+	}
+	if msg := failureText(exch, config.AuthKey); strings.Contains(msg, "jti_reused") {
 		t.Errorf("key mode must not give the federation hint: %q", msg)
 	}
-	// The shape the real CLI printed for a rejected exchange (a 400 there); a
-	// 401 reads the same with "Authentication failed" as the message.
-	exch := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
-		ResultText: `API Error: Token exchange failed with status 401 (request-id req_x): {"error":{"message":"Authentication failed","type":"authentication_error"}}`}}
-	if msg := failureText(exch, config.AuthFederation, false); !strings.Contains(msg, "jti_reused / match_*") {
-		t.Errorf("exchange 401: %q", msg)
-	}
-	bad400 := runner.Result{Summary: stream.Summary{IsError: true, GotResult: true,
-		ResultText: `API Error: Token exchange failed with status 400 (request-id req_x): {"error":{"message":"federation_rule_id is not a well-formed fdrl_ tagged ID"}}`}}
-	if msg := failureText(bad400, config.AuthFederation, false); !strings.Contains(msg, "not a well-formed") || strings.Contains(msg, "jti_reused") {
-		t.Errorf("a 400 names its own cause: %q", msg)
-	}
-	other := runner.Result{Err: io.ErrUnexpectedEOF, Stderr: "disk full"}
-	if msg := failureText(other, config.AuthFederation, false); strings.Contains(msg, "federation") {
+	other := agent.Result{Failed: true, Err: errors.New("disk full")}
+	if msg := failureText(other, config.AuthFederation); strings.Contains(msg, "federation") || !strings.Contains(msg, "disk full") {
 		t.Errorf("an unrelated failure got the federation hint: %q", msg)
+	}
+	if msg := failureText(agent.Result{CoreDown: true, Failed: true}, config.AuthKey); !strings.Contains(msg, "core MCP server") {
+		t.Errorf("core down: %q", msg)
+	}
+	if msg := failureText(agent.Result{TimedOut: true, Failed: true}, config.AuthKey); !strings.Contains(msg, "timed out") {
+		t.Errorf("timeout: %q", msg)
 	}
 }
 
@@ -1058,9 +1043,6 @@ func TestLogsCarryNoContentByDefault(t *testing.T) {
 	if strings.Contains(logs, "hunter2") {
 		t.Fatalf("a person's message reached the log:\n%s", logs)
 	}
-	if strings.Contains(logs, "msg=claude") {
-		t.Fatalf("raw CLI lines (the model's words and tool output) reached the log:\n%s", logs)
-	}
 	if !strings.Contains(logs, "msg=edges") || !strings.Contains(logs, `kinds="room-message=1"`) || !strings.Contains(logs, "human=true") {
 		t.Fatalf("the edges line lost its metadata:\n%s", logs)
 	}
@@ -1071,37 +1053,12 @@ func TestLogContentFlagLetsDebugLogsCarryText(t *testing.T) {
 	if !strings.Contains(logs, "hunter2") {
 		t.Fatalf("--log-content should show the text at debug:\n%s", logs)
 	}
-	if !strings.Contains(logs, "msg=claude") {
-		t.Fatalf("--log-content should show the raw CLI lines at debug:\n%s", logs)
-	}
 }
 
-func TestFailureTextHidesTheModelsWordsUnlessAsked(t *testing.T) {
-	res := runner.Result{Summary: stream.Summary{IsError: true, ResultText: "the-password-is-hunter2"}}
-	if msg := failureText(res, config.AuthKey, false); strings.Contains(msg, "hunter2") {
-		t.Fatalf("model text in the failure: %q", msg)
-	}
-	if msg := failureText(res, config.AuthKey, true); !strings.Contains(msg, "hunter2") {
-		t.Fatalf("--log-content must show it: %q", msg)
-	}
-}
-
-func TestDailyCostCeilingPausesLikeTheTokenOne(t *testing.T) {
-	h := newHarness(t, func(c *config.Config) { c.DailyTokenCeil = 0; c.DailyCostCeilUSD = 0.01 })
-	h.set("next", `{"after":"3m"}`)
-	h.core.setIssues(issue("a", "warning", 0))
-	h.start()
-	defer h.stop()
-	h.waitIdle(1) // the fake CLI reports $0.01 for the turn
-	h.clock.Advance(4 * time.Minute)
-	h.waitFor("pause", func() bool { return h.status().State == "paused-ceiling" })
-	if st := h.status(); st.NextWake == nil || st.NextWake.Source != "ceiling" || !strings.Contains(st.NextWake.Why, "cost") {
-		t.Fatalf("next wake: %+v", st.NextWake)
-	}
-	h.core.setIssues(issue("a", "critical", 0))
-	time.Sleep(100 * time.Millisecond)
-	if h.turns() != 1 {
-		t.Fatalf("woke past the cost ceiling: %d turns", h.turns())
+func TestFailureTextNeverCarriesTheModelsWords(t *testing.T) {
+	res := agent.Result{Failed: true, Text: "the-password-is-hunter2", Err: errors.New("the model refused the request")}
+	if msg := failureText(res, config.AuthKey); strings.Contains(msg, "hunter2") || !strings.Contains(msg, "refused") {
+		t.Fatalf("failure text: %q", msg)
 	}
 }
 
@@ -1115,9 +1072,6 @@ func TestEveryWakeStartsAnEmptyConversation(t *testing.T) {
 	for n := 2; n <= 3; n++ {
 		h.clock.Advance(4 * time.Minute)
 		h.waitIdle(n)
-		if argv := h.file("argv", n); strings.Contains(argv, "--resume") {
-			t.Fatalf("wake %d resumed a conversation:\n%s", n, argv)
-		}
 		if in := h.file("stdin", n); !strings.Contains(in, "new, empty conversation") {
 			t.Fatalf("wake %d prompt must say the conversation is empty:\n%s", n, in)
 		}
@@ -1244,17 +1198,17 @@ func TestCoreDownTurnFailsAndSkipsHeartbeat(t *testing.T) {
 	}
 }
 
-func TestMaxTurnsIsNotAFailure(t *testing.T) {
+func TestMaxStepsIsNotAFailure(t *testing.T) {
 	h := newHarness(t, nil)
-	h.set("mode", "maxturns")
+	h.set("mode", "maxsteps")
 	h.start()
 	defer h.stop()
 	h.waitIdle(1)
-	if st := h.status(); st.Failures != 0 || st.LastTurn == nil || st.LastTurn.IsError || st.LastTurn.Subtype != "error_max_turns" {
+	if st := h.status(); st.Failures != 0 || st.LastTurn == nil || st.LastTurn.IsError || !st.LastTurn.StepsExhausted {
 		t.Fatalf("status: %+v last %+v", st, st.LastTurn)
 	}
 	if h.core.beatCount() != 1 {
-		t.Fatal("hitting max-turns is still a turn that ran")
+		t.Fatal("hitting max-steps is still a turn that ran")
 	}
 }
 
@@ -1265,7 +1219,7 @@ func TestChangesDuringATurnAreNotLost(t *testing.T) {
 	// Issue b appears once turn 2 has started, so the poll before the turn
 	// did not see it and only the look after the turn can.
 	h.core.late = func() []corecli.Issue {
-		if _, err := os.Stat(filepath.Join(h.fake, "stdin.2")); err == nil {
+		if h.script.hasPrompt(2) {
 			return []corecli.Issue{issue("b", "critical", 0)}
 		}
 		return nil
@@ -1332,7 +1286,7 @@ func TestTypingIsRenewedDuringALongTurnAndClearedOnShutdown(t *testing.T) {
 	h.typingEvery = 20 * time.Millisecond
 	h.set("mode", "sleep")
 	h.start()
-	h.waitFor("the turn to start", func() bool { _, err := os.Stat(filepath.Join(h.fake, "sleeping.1")); return err == nil })
+	h.waitFor("the turn to start", func() bool { return h.script.hasStarted(1) })
 	h.waitFor("a renewal", func() bool { return strings.Count(h.core.typingLog(), "agents|true") >= 3 })
 	h.stop()
 	if got := h.core.typingLog(); !strings.HasSuffix(got, "agents|false") {
@@ -1393,7 +1347,7 @@ func TestAPersonWaitingCutsTheEdgeCooldown(t *testing.T) {
 }
 
 // gateTurner holds a turn open until released and takes messages passed to it
-// meanwhile, as the persistent runner does.
+// meanwhile, as the agent does.
 type gateTurner struct {
 	inner   Turner
 	release chan struct{}
@@ -1407,7 +1361,7 @@ type gateTurner struct {
 
 func newGateTurner() *gateTurner { return &gateTurner{release: make(chan struct{}), accept: true} }
 
-func (g *gateTurner) Run(ctx context.Context, p, resume string) runner.Result {
+func (g *gateTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 	g.mu.Lock()
 	gated := g.gated
 	g.running = gated
@@ -1418,7 +1372,7 @@ func (g *gateTurner) Run(ctx context.Context, p, resume string) runner.Result {
 		case <-ctx.Done():
 		}
 	}
-	res := g.inner.Run(ctx, p, resume)
+	res := g.inner.Run(ctx, t)
 	g.mu.Lock()
 	g.running = false
 	g.mu.Unlock()
@@ -1512,4 +1466,54 @@ func TestAMachinesMessageDuringATurnIsHeldNotHandedOver(t *testing.T) {
 	g.set(func() { g.gated = false })
 	close(g.release)
 	h.waitIdle(2)
+}
+
+func (f *scriptTurner) hasPrompt(n int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.prompts[n]
+	return ok
+}
+
+// undeliveredTurner makes the first turn end with a message it never showed to
+// the model.
+type undeliveredTurner struct {
+	inner Turner
+	mu    sync.Mutex
+	n     int
+}
+
+func (u *undeliveredTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
+	res := u.inner.Run(ctx, t)
+	u.mu.Lock()
+	u.n++
+	if u.n == 1 {
+		res.Undelivered = []string{"Someone wrote to you while you were working:\n- and also the cart"}
+	}
+	u.mu.Unlock()
+	return res
+}
+
+func TestAMessageTheTurnEndedWithoutShowingWakesTheAgentNext(t *testing.T) {
+	h := newHarness(t, nil)
+	h.wrap = func(in Turner) Turner { return &undeliveredTurner{inner: in} }
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "and also the cart") {
+		t.Fatalf("an undelivered message must wake the agent next:\n%s", in)
+	}
+}
+
+func TestStatusShowsTheTurnsSummaryAndSteps(t *testing.T) {
+	h := newHarness(t, nil)
+	h.set("summary", "all quiet")
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	lt := h.status().LastTurn
+	if lt == nil || lt.Summary != "all quiet" || lt.Steps != 2 || lt.ToolCalls != 3 {
+		t.Fatalf("last turn: %+v", lt)
+	}
 }

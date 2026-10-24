@@ -14,7 +14,8 @@ import (
 // bounds (a Kubernetes tool server for another cluster, a code host, a
 // metrics API). The spot carries no credential for it; the connector's own
 // identity, RBAC and the NetworkPolicy are the boundary. Tools is the exact
-// list of its tool names the spot may call; anything else is refused by name.
+// list of its tool names the spot may call; any other tool the connector
+// offers is not given to the model. The model sees them as <name>__<tool>.
 type Connector struct {
 	Name  string   `json:"name"`
 	URL   string   `json:"url"`
@@ -72,13 +73,4 @@ func LoadConnectors(path string) ([]Connector, error) {
 		}
 	}
 	return cs, errors.Join(errs...)
-}
-
-// AllowedRules is the --allowedTools rules for the connector's tools.
-func (c Connector) AllowedRules() []string {
-	out := make([]string, 0, len(c.Tools))
-	for _, t := range c.Tools {
-		out = append(out, "mcp__"+c.Name+"__"+t)
-	}
-	return out
 }

@@ -1,5 +1,5 @@
-// Package supervisor runs the loop: wake the agent with `claude -p`, read the
-// schedule it left, poll the core cheaply for edges in between, keep the
+// Package supervisor runs the loop: wake the agent for a turn, take the
+// schedule it asked for, poll the core cheaply for edges in between, keep the
 // heartbeat and the daily token ledger, and stop cleanly on SIGTERM. It does
 // no triage of its own.
 package supervisor
@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/triageagent-dev/tria-spot/internal/agent"
 	"github.com/triageagent-dev/tria-spot/internal/config"
 	"github.com/triageagent-dev/tria-spot/internal/corecli"
 	"github.com/triageagent-dev/tria-spot/internal/edges"
 	"github.com/triageagent-dev/tria-spot/internal/ledger"
 	"github.com/triageagent-dev/tria-spot/internal/prompt"
-	"github.com/triageagent-dev/tria-spot/internal/runner"
 	"github.com/triageagent-dev/tria-spot/internal/schedule"
 	"github.com/triageagent-dev/tria-spot/internal/triggers"
 )
@@ -33,14 +33,14 @@ type Core interface {
 	Identity(ctx context.Context) (corecli.Identity, error)
 }
 
-// Turner runs one CLI turn.
+// Turner runs one turn of the agent. Every turn is an empty conversation.
 type Turner interface {
-	Run(ctx context.Context, prompt, resume string) runner.Result
+	Run(ctx context.Context, t agent.Turn) agent.Result
 }
 
 // Interjector is a Turner that can take a message while a turn is running. The
-// persistent runner is one; a Turner that is not never sees one, and a message
-// that arrives during its turn waits for the turn to end, as it always did.
+// agent is one; a Turner that is not never sees one, and a message that
+// arrives during its turn waits for the turn to end.
 type Interjector interface {
 	// Inject reports whether the message was handed to a running turn.
 	Inject(text string) bool
@@ -61,10 +61,9 @@ type Supervisor struct {
 
 	typingEvery time.Duration // zero = typingEvery; tests shorten it
 
-	tracker  edges.Tracker
-	held     []heldEdge
-	rooms    map[string]*roomState
-	permMode string
+	tracker edges.Tracker
+	held    []heldEdge
+	rooms   map[string]*roomState
 
 	trig        Trigger       // the core's push channel; nil = poll
 	chatName    string        // what the core says the messenger calls the spot; empty = not known
@@ -103,11 +102,9 @@ type Status struct {
 	State       string `json:"state"` // starting, idle, running, paused-ceiling, stopping, stopped
 	StartedAt   string `json:"startedAt"`
 	UpdatedAt   string `json:"updatedAt"`
-	SessionID   string `json:"sessionId,omitempty"`
 	LastTurn    *Turn  `json:"lastTurn,omitempty"`
 	NextWake    *Next  `json:"nextWake,omitempty"`
 	Tokens      Tokens `json:"tokensToday"`
-	PermMode    Perm   `json:"permissionMode"`
 	LastError   string `json:"lastError,omitempty"`
 	Failures    int    `json:"consecutiveFailures,omitempty"`
 	CoreError   string `json:"coreError,omitempty"`
@@ -124,20 +121,20 @@ type Status struct {
 
 // Turn summarises the last turn.
 type Turn struct {
-	At         string  `json:"at"`
-	Reason     string  `json:"reason"`
-	Seconds    float64 `json:"seconds"`
-	Tokens     int64   `json:"tokens"`
-	NumTurns   int     `json:"numTurns,omitempty"`
-	CostUSD    float64 `json:"costUsd,omitempty"`
-	Subtype    string  `json:"subtype,omitempty"`
-	IsError    bool    `json:"isError"`
-	TimedOut   bool    `json:"timedOut,omitempty"`
-	AuthFailed bool    `json:"authFailed,omitempty"`
-	CoreDown   bool    `json:"coreDown,omitempty"`
-	Denials    int     `json:"permissionDenials,omitempty"`
-	Terminal   string  `json:"terminalReason,omitempty"`
-	ExitCode   int     `json:"exitCode,omitempty"`
+	At        string  `json:"at"`
+	Reason    string  `json:"reason"`
+	Seconds   float64 `json:"seconds"`
+	Tokens    int64   `json:"tokens"`
+	Steps     int     `json:"steps,omitempty"`
+	ToolCalls int     `json:"toolCalls,omitempty"`
+	Model     string  `json:"model,omitempty"`
+	// Summary is the line the agent gave to finish.
+	Summary        string `json:"summary,omitempty"`
+	IsError        bool   `json:"isError"`
+	StepsExhausted bool   `json:"stepsExhausted,omitempty"`
+	TimedOut       bool   `json:"timedOut,omitempty"`
+	AuthFailed     bool   `json:"authFailed,omitempty"`
+	CoreDown       bool   `json:"coreDown,omitempty"`
 	// ContextTokens is the conversation size at the turn's last request.
 	ContextTokens int64 `json:"contextTokens,omitempty"`
 }
@@ -152,28 +149,18 @@ type Next struct {
 
 // Tokens is the day's count.
 type Tokens struct {
-	Date      string  `json:"date"`
-	Used      int64   `json:"used"`
-	Ceiling   int64   `json:"ceiling"`
-	CacheRead int64   `json:"cacheRead"`
-	CostUSD   float64 `json:"costUsd"`
-	Turns     int     `json:"turns"`
-}
-
-// Perm records the permission mode asked for and the one the CLI reported.
-type Perm struct {
-	Requested string `json:"requested"`
-	Reported  string `json:"reported,omitempty"`
-	InUse     string `json:"inUse"`
-	FellBack  bool   `json:"fellBack,omitempty"`
+	Date      string `json:"date"`
+	Used      int64  `json:"used"`
+	Ceiling   int64  `json:"ceiling"`
+	CacheRead int64  `json:"cacheRead"`
+	Turns     int    `json:"turns"`
 }
 
 // New builds a Supervisor.
 func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *slog.Logger) *Supervisor {
 	s := &Supervisor{
 		cfg: cfg, led: led, core: core, turner: turner, log: log, now: time.Now,
-		rooms:    map[string]*roomState{"team": {}, "agents": {}},
-		permMode: cfg.PermissionMode,
+		rooms: map[string]*roomState{"team": {}, "agents": {}},
 	}
 	// A saved cursor means the messages after it are news, restart or not.
 	for room, cur := range led.LoadRoomCursors() {
@@ -181,8 +168,7 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 			rs.cursor, rs.primed = cur, true
 		}
 	}
-	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID,
-		PermMode: Perm{Requested: cfg.PermissionMode, InUse: cfg.PermissionMode}}
+	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID}
 	return s
 }
 
@@ -212,9 +198,6 @@ func (s *Supervisor) SetTrigger(t Trigger) { s.trig = t }
 // after this wait sees them all.
 const triggerDebounce = 1500 * time.Millisecond
 
-// PermissionMode is the mode the next turn will use.
-func (s *Supervisor) PermissionMode() string { return s.permMode }
-
 type pending struct {
 	reason      prompt.Reason
 	facts       []string
@@ -225,12 +208,11 @@ type pending struct {
 
 const maxHeld = 20
 
-// Run blocks until ctx is cancelled. A killed pod resumes from /state: the
-// session id, the token ledger and the notes are all there.
+// Run blocks until ctx is cancelled. A killed pod starts fresh: the token
+// ledger and the room cursors are in /state when it survives, and the rest is
+// the core's.
 func (s *Supervisor) Run(ctx context.Context) error {
-	sess := s.led.LoadSession()
 	s.status.StartedAt = s.now().UTC().Format(time.RFC3339)
-	s.status.SessionID = sess.ID
 	s.setState("starting")
 
 	s.refreshIdentity(ctx, true, 0)
@@ -271,7 +253,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 // paused reports whether the daily ceiling, or the core's cap on the spot,
 // holds the agent back.
 func (s *Supervisor) paused() bool {
-	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD) || s.coreBlocked()
+	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.coreBlocked()
 }
 
 // coreBlocked is the core refusing the spot until UTC midnight: its own cap,
@@ -290,8 +272,6 @@ func (s *Supervisor) pauseForCeiling() {
 	kind := "token"
 	switch {
 	case s.led.CeilingReached(s.cfg.DailyTokenCeil):
-	case s.led.CostCeilingReached(s.cfg.DailyCostCeilUSD):
-		kind = "cost"
 	default:
 		kind = "core"
 		s.coreHeld = true
@@ -299,7 +279,7 @@ func (s *Supervisor) pauseForCeiling() {
 	s.scheduledWhy = "the daily " + kind + " ceiling was reached; resumed after UTC midnight"
 	u := s.led.Usage()
 	s.log.Warn("daily "+kind+" ceiling reached; no wake until UTC midnight", "until", until.Format(time.RFC3339),
-		"usedTokens", u.Tokens, "tokenCeiling", s.cfg.DailyTokenCeil, "costUsd", u.CostUSD, "costCeiling", s.cfg.DailyCostCeilUSD)
+		"usedTokens", u.Tokens, "tokenCeiling", s.cfg.DailyTokenCeil)
 	s.status.NextWake = &Next{At: until.Format(time.RFC3339), Why: s.scheduledWhy, Source: "ceiling"}
 	s.setState("paused-ceiling")
 }
@@ -787,13 +767,13 @@ func (s *Supervisor) clearCoreError() {
 // who writes to the spot in the middle of a turn is handed to the running turn
 // (interject) instead of waiting for it to end. The turn runs in its own
 // goroutine so that everything the supervisor owns stays on this one.
-func (s *Supervisor) run(ctx context.Context, text, resume string) runner.Result {
+func (s *Supervisor) run(ctx context.Context, t agent.Turn) agent.Result {
 	inj, ok := s.turner.(Interjector)
 	if !ok || s.trig == nil {
-		return s.turner.Run(ctx, text, resume)
+		return s.turner.Run(ctx, t)
 	}
-	done := make(chan runner.Result, 1)
-	go func() { done <- s.turner.Run(ctx, text, resume) }()
+	done := make(chan agent.Result, 1)
+	go func() { done <- s.turner.Run(ctx, t) }()
 	for {
 		select {
 		case res := <-done:
@@ -865,9 +845,8 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	interrupted := sess.Running
 	// Every wake is an empty conversation: nothing is resumed. What the spot
 	// knows comes from the room and the issues it reads from the core at the
-	// start of the wake, its notes and the core's memory. A long conversation
-	// would be paid for again on every model call.
-	const resume = ""
+	// start of the wake and from the core's memory. A long conversation would
+	// be paid for again on every model call.
 
 	if len(s.held) > 0 && p.reason != prompt.Startup {
 		for _, e := range s.held {
@@ -895,63 +874,46 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
-	res := s.run(ctx, text, resume)
+	res := s.run(ctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room})
 	stopTyping()
 	s.lastTurnEnd = s.now()
 
 	// Accounting first: tokens are spent whether or not the turn succeeded.
-	sum := res.Summary
-	u := sum.Tokens()
-	costDelta := 0.0
-	if sum.GotResult {
-		if sum.SessionID == sess.ID && sess.ID != "" && sum.CostUSD >= sess.CostUSD {
-			costDelta = sum.CostUSD - sess.CostUSD
-		} else {
-			costDelta = sum.CostUSD
-		}
-	}
-	if _, err := s.led.AddUsage(u.Billable(), u.CacheReadTokens, u.OutputTokens, costDelta); err != nil {
+	u := res.Usage
+	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
 		s.log.Error("saving usage", "err", err)
 	}
-	if s.trig != nil && (u.Billable() > 0 || u.CacheReadTokens > 0) {
+	if s.trig != nil && (u.Billable() > 0 || u.CacheRead > 0) {
 		// What the core is told is the spot's own count of this turn: the core
 		// books it under the spot's kind and answers with the budget after it.
 		s.trig.ReportTurn(triggers.Turn{
-			Model: modelLabel(sum.Model), Input: u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens,
-			Cached: u.CacheReadTokens, Output: u.OutputTokens, DurationMs: res.Duration.Milliseconds(),
-			Failed: res.Err != nil || sum.IsError || !sum.GotResult,
+			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead,
+			Cached: u.CacheRead, Output: u.Output, DurationMs: res.Duration.Milliseconds(),
+			Failed: res.Failed,
 		})
 	}
 
-	// The conversation to resume next time.
-	if sum.SessionID != "" {
-		if sum.SessionID != sess.ID {
-			sess.Since = s.now().UTC().Format(time.RFC3339)
-		}
-		sess.ID = sum.SessionID
-		if sum.GotResult {
-			sess.CostUSD = sum.CostUSD
-		}
-	}
 	// A cut-off or timed-out turn is reported on the next start: a change may
 	// be half done.
 	sess.Running = res.Canceled || res.TimedOut
-	// Running out of agentic turns is the work stopping, not failing.
-	maxTurns := sum.GotResult && sum.Subtype == "error_max_turns"
-	failed := (!maxTurns && (res.Err != nil || sum.IsError || !sum.GotResult)) || res.CoreDown
+	// Running out of steps is the work stopping, not failing.
+	failed := (res.Failed || res.CoreDown) && !res.Canceled
 	if err := s.led.SaveSession(sess); err != nil {
 		s.log.Error("saving session", "err", err)
 	}
-	s.status.SessionID = sess.ID
 
-	s.checkPermissionMode(sum.GotInit, sum.PermissionMode)
+	// A message handed to the turn that it ended without showing to the model
+	// wakes the agent next, as if it had arrived after the turn.
+	for _, text := range res.Undelivered {
+		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: "team", Fact: text}})
+		s.log.Info("a message the turn did not take is held for the next wake")
+	}
 
 	turn := &Turn{
 		At: s.lastTurnEnd.UTC().Format(time.RFC3339), Reason: string(p.reason), Seconds: res.Duration.Seconds(),
-		Tokens: u.Billable(), NumTurns: sum.NumTurns, CostUSD: costDelta, Subtype: sum.Subtype,
-		IsError: failed, TimedOut: res.TimedOut, Denials: sum.PermissionDenials,
-		Terminal: sum.TerminalReason, ExitCode: res.ExitCode, AuthFailed: res.AuthFailed, CoreDown: res.CoreDown,
-		ContextTokens: sum.LastContext,
+		Tokens: u.Billable(), Steps: res.Steps, ToolCalls: res.ToolCalls, Model: res.Model, Summary: res.Summary,
+		IsError: failed, StepsExhausted: res.StepsExhausted, TimedOut: res.TimedOut, AuthFailed: res.AuthFailed,
+		CoreDown: res.CoreDown, ContextTokens: res.ContextTokens,
 	}
 	s.status.LastTurn = turn
 
@@ -964,18 +926,23 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if failed {
 		s.failures++
 		s.status.Failures = s.failures
-		s.status.LastError = failureText(res, s.cfg.AnthropicAuth, s.cfg.LogContent)
+		s.status.LastError = failureText(res, s.cfg.LLMAuth)
 		s.log.Error("turn failed", "err", s.status.LastError, "failures", s.failures, "timedOut", res.TimedOut,
 			"coreDown", res.CoreDown, "tokens", u.Billable())
 	} else {
 		s.failures, s.status.Failures, s.status.LastError = 0, 0, ""
-		if maxTurns {
-			s.log.Warn("turn stopped at max-turns; the work may be unfinished", "tokens", u.Billable(), "numTurns", sum.NumTurns)
+		if res.StepsExhausted {
+			s.log.Warn("turn stopped at max-steps; the work may be unfinished", "tokens", u.Billable(), "steps", res.Steps)
 		}
-		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheReadTokens, "out", u.OutputTokens, "numTurns", sum.NumTurns, "seconds", int(res.Duration.Seconds()))
+		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
 	}
 
-	w := schedule.Consume(s.led.AgentPath(ledger.NextFile), s.cfg.MinWake, s.cfg.MaxWake)
+	var w schedule.Wake
+	if res.Next != nil {
+		w = schedule.Request(res.Next.After, res.Next.Why, s.cfg.MinWake, s.cfg.MaxWake)
+	} else {
+		w = schedule.Default(s.cfg.MinWake, schedule.SourceMissing, "the agent did not call schedule_next")
+	}
 	if w.Source != schedule.SourceAgent {
 		s.log.Warn("schedule not taken as written", "source", w.Source, "note", w.Note, "after", w.After)
 	}
@@ -1080,12 +1047,17 @@ func (s *Supervisor) backoff() time.Duration {
 // Claude Console's authentication history.
 const federationHint = "check the authentication history in the Claude Console (jti_reused / match_*)"
 
-func looksLikeAuthFailure(res runner.Result) bool {
-	if res.AuthFailed || res.Summary.APIErrorStatus == 401 {
+// looksLikeFederationFailure reports whether a turn's error reads like a
+// failed token exchange, which the SDK may report without an API status.
+func looksLikeFederationFailure(res agent.Result) bool {
+	if res.AuthFailed {
 		return true
 	}
-	text := strings.ToLower(res.Summary.ResultText + " " + strings.Join(res.Summary.Errors, " ") + " " + res.Stderr)
-	for _, w := range []string{"authentication failed", "authentication_error", "workloadidentity", "jti_reused", "oauth/token", "token exchange failed with status 401", "token exchange failed with status 403"} {
+	if res.Err == nil {
+		return false
+	}
+	text := strings.ToLower(res.Err.Error())
+	for _, w := range []string{"authentication failed", "authentication_error", "workloadidentity", "jti_reused", "token exchange", "federation"} {
 		if strings.Contains(text, w) {
 			return true
 		}
@@ -1093,60 +1065,26 @@ func looksLikeAuthFailure(res runner.Result) bool {
 	return false
 }
 
-// operationalError reports whether a result text is an error the API or the CLI
-// produced, as opposed to text the model wrote.
-func operationalError(text string) bool {
-	t := strings.ToLower(strings.TrimSpace(text))
-	return strings.HasPrefix(t, "api error") || strings.Contains(t, "token exchange failed") ||
-		strings.Contains(t, "authentication_error") || strings.Contains(t, "your apikeyhelper script is failing")
-}
-
-// failureText describes why a turn failed. mode is the Anthropic auth mode.
-func failureText(res runner.Result, mode string, content bool) string {
-	if mode == config.AuthFederation && looksLikeAuthFailure(res) {
+// failureText describes why a turn failed, for the status file and the log.
+// mode is the auth mode. The model's own words are never in it: res.Err holds
+// what the API, the tools or the loop said.
+func failureText(res agent.Result, mode string) string {
+	if mode == config.AuthFederation && looksLikeFederationFailure(res) {
 		return "Anthropic authentication failed in federation mode; " + federationHint
 	}
 	switch {
+	case res.AuthFailed && mode == config.AuthVertex:
+		return "Google rejected the credentials for Vertex AI (401 or 403); check the pod's Workload Identity and its roles"
 	case res.AuthFailed:
 		return "the Anthropic API rejected the key (401); check the key Secret"
 	case res.CoreDown:
-		return "the core MCP server was not connected in this turn; check the core token and the core URL"
+		return "the core MCP server was not reachable in this turn; check the core token and the core URL"
 	case res.TimedOut:
 		return "turn timed out"
-	case len(res.Summary.Errors) > 0:
-		return strings.Join(res.Summary.Errors, "; ")
-	case res.Summary.IsError && res.Summary.ResultText != "":
-		// An error from the API or the CLI is operational and stays; anything
-		// else in an error result may be the model's own words.
-		if !content && !operationalError(res.Summary.ResultText) {
-			return "the turn ended in an error; the model's text is not logged (--log-content shows it)"
-		}
-		return clip(res.Summary.ResultText, 300)
-	case res.Err != nil && res.Stderr != "":
-		return res.Err.Error() + ": " + clip(res.Stderr, 300)
 	case res.Err != nil:
-		return res.Err.Error()
+		return clip(res.Err.Error(), 300)
 	default:
-		return "the CLI wrote no result"
-	}
-}
-
-// checkPermissionMode reads the init message's permissionMode. If the CLI did
-// not start in auto mode, auto is unavailable here (plan, admin setting,
-// version): fall back to the configured mode for every later turn.
-func (s *Supervisor) checkPermissionMode(gotInit bool, reported string) {
-	if !gotInit {
-		return
-	}
-	s.status.PermMode.Reported = reported
-	if s.permMode == "auto" && reported != "auto" {
-		s.log.Error("the CLI did not start in auto permission mode; falling back",
-			"reported", reported, "fallback", s.cfg.FallbackPermMode)
-		s.permMode = s.cfg.FallbackPermMode
-		s.status.PermMode.InUse, s.status.PermMode.FellBack = s.permMode, true
-		if t, ok := s.turner.(interface{ SetPermissionMode(string) }); ok {
-			t.SetPermissionMode(s.permMode)
-		}
+		return "the turn failed"
 	}
 }
 
@@ -1183,7 +1121,7 @@ func ceilText(c int64) string {
 	return fmt.Sprint(c)
 }
 
-// modelLabel is the model id the CLI reported, without a context-window suffix
+// modelLabel is the model id the API reported, without a context-window suffix
 // such as "[1m]"; "claude" when it reported none.
 func modelLabel(m string) string {
 	if i := strings.IndexByte(m, '['); i >= 0 {
@@ -1215,7 +1153,7 @@ func (s *Supervisor) reportStats(force bool) {
 	st := triggers.Stats{
 		State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
 		EdgeWakesHour: int64(s.status.EdgeWakesHour),
-		Tokens:        u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, CostUSD: u.CostUSD, Triggers: s.status.Triggers,
+		Tokens:        u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, Triggers: s.status.Triggers,
 	}
 	for k, v := range s.wakes {
 		st.Wakes[k] = v
@@ -1235,7 +1173,7 @@ func (s *Supervisor) setState(state string) {
 	s.status.State = state
 	s.status.UpdatedAt = s.now().UTC().Format(time.RFC3339)
 	u := s.led.Usage()
-	s.status.Tokens = Tokens{Date: u.Date, Used: u.Tokens, Ceiling: s.cfg.DailyTokenCeil, CacheRead: u.CacheRead, CostUSD: u.CostUSD, Turns: u.Turns}
+	s.status.Tokens = Tokens{Date: u.Date, Used: u.Tokens, Ceiling: s.cfg.DailyTokenCeil, CacheRead: u.CacheRead, Turns: u.Turns}
 	if err := s.led.WriteStatus(s.status); err != nil {
 		s.log.Error("writing status", "err", err)
 	}

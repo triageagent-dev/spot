@@ -25,9 +25,8 @@ func TestLoadConnectorsReadsAndNamesTheAllowedTools(t *testing.T) {
 	if len(cs) != 1 || cs[0].Name != "example-kube" {
 		t.Fatalf("connectors = %+v", cs)
 	}
-	got := strings.Join(cs[0].AllowedRules(), ",")
-	if got != "mcp__example-kube__k8s_get_resources,mcp__example-kube__k8s_get_pod_logs" {
-		t.Fatalf("rules = %s", got)
+	if got := strings.Join(cs[0].Tools, ","); got != "k8s_get_resources,k8s_get_pod_logs" {
+		t.Fatalf("tools = %s", got)
 	}
 }
 

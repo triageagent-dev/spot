@@ -19,10 +19,10 @@ func newL(t *testing.T, now time.Time) *Ledger {
 func TestUsageAccumulatesAndSurvivesRestart(t *testing.T) {
 	now := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
 	l := newL(t, now)
-	if _, err := l.AddUsage(1000, 50, 0, 0.1); err != nil {
+	if _, err := l.AddUsage(1000, 50, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.AddUsage(500, 0, 0, 0.05); err != nil {
+	if _, err := l.AddUsage(500, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	// A new Ledger over the same directory is a restart.
@@ -37,13 +37,13 @@ func TestUsageAccumulatesAndSurvivesRestart(t *testing.T) {
 func TestCeilingAndUTCRollover(t *testing.T) {
 	day1 := time.Date(2026, 10, 21, 23, 59, 0, 0, time.UTC)
 	l := newL(t, day1)
-	if _, err := l.AddUsage(900, 0, 0, 0); err != nil {
+	if _, err := l.AddUsage(900, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if l.CeilingReached(1000) {
 		t.Fatal("900 of 1000 is not a reached ceiling")
 	}
-	if _, err := l.AddUsage(100, 0, 0, 0); err != nil {
+	if _, err := l.AddUsage(100, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !l.CeilingReached(1000) {
@@ -63,13 +63,13 @@ func TestCeilingAndUTCRollover(t *testing.T) {
 
 func TestSessionRoundTripAndStatusMode(t *testing.T) {
 	l := newL(t, time.Now())
-	if s := l.LoadSession(); s.ID != "" {
+	if s := l.LoadSession(); s.Running {
 		t.Fatalf("fresh session: %+v", s)
 	}
-	if err := l.SaveSession(Session{ID: "abc", Running: true}); err != nil {
+	if err := l.SaveSession(Session{Running: true}); err != nil {
 		t.Fatal(err)
 	}
-	if s := l.LoadSession(); s.ID != "abc" || !s.Running {
+	if s := l.LoadSession(); !s.Running {
 		t.Fatalf("session: %+v", s)
 	}
 	if err := l.WriteStatus(map[string]string{"state": "idle"}); err != nil {
@@ -81,23 +81,10 @@ func TestSessionRoundTripAndStatusMode(t *testing.T) {
 	}
 }
 
-func TestCostCeiling(t *testing.T) {
-	l := newL(t, time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC))
-	if l.CostCeilingReached(0) || l.CostCeilingReached(5) {
-		t.Fatal("nothing spent yet, and 0 means no ceiling")
-	}
-	if _, err := l.AddUsage(100, 0, 0, 3.5); err != nil {
-		t.Fatal(err)
-	}
-	if l.CostCeilingReached(5) || !l.CostCeilingReached(3.5) || l.CostCeilingReached(0) {
-		t.Fatalf("usage %+v", l.Usage())
-	}
-}
-
 func TestUsageIsHeldInMemoryNotReadFromTheFile(t *testing.T) {
 	now := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
 	l := newL(t, now)
-	if _, err := l.AddUsage(100, 0, 0, 0); err != nil {
+	if _, err := l.AddUsage(100, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	// The agent rewrites the ledger file: nothing changes until a restart,
@@ -108,7 +95,7 @@ func TestUsageIsHeldInMemoryNotReadFromTheFile(t *testing.T) {
 	if u := l.Usage(); u.Tokens != 100 {
 		t.Fatalf("a rewritten file changed the in-memory count: %+v", u)
 	}
-	if _, err := l.AddUsage(1, 0, 0, 0); err != nil {
+	if _, err := l.AddUsage(1, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	again, err := New(l.Dir())
@@ -137,13 +124,16 @@ func TestLayoutAndMigration(t *testing.T) {
 	if _, err := os.Stat(dir + "/" + UsageFile); !os.IsNotExist(err) {
 		t.Fatal("the old file must be gone from the agent's area")
 	}
-	for _, d := range []string{NotesDir, WorkDir, SupervisorDir} {
-		if st, err := os.Stat(dir + "/" + d); err != nil || !st.IsDir() {
-			t.Fatalf("%s missing", d)
+	if st, err := os.Stat(dir + "/" + SupervisorDir); err != nil || !st.IsDir() {
+		t.Fatalf("%s missing", SupervisorDir)
+	}
+	for _, d := range []string{"notes", "work"} {
+		if _, err := os.Stat(dir + "/" + d); err == nil {
+			t.Fatalf("the spot keeps no %s directory", d)
 		}
 	}
-	if l.AgentPath(NextFile) != dir+"/"+NextFile || l.Path(StatusFile) != dir+"/"+SupervisorDir+"/"+StatusFile {
-		t.Fatalf("paths: %s %s", l.AgentPath(NextFile), l.Path(StatusFile))
+	if l.Path(StatusFile) != dir+"/"+SupervisorDir+"/"+StatusFile {
+		t.Fatalf("path: %s", l.Path(StatusFile))
 	}
 }
 
