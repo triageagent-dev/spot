@@ -41,6 +41,10 @@ type Federation struct {
 }
 
 // Options configure NewAnthropic.
+// anthropicAPIURL is the API host used when none is given, so no
+// environment variable can choose it.
+const anthropicAPIURL = "https://api.anthropic.com"
+
 type Options struct {
 	Auth  string
 	Model string
@@ -102,6 +106,11 @@ func NewAnthropic(ctx context.Context, o Options) (*Anthropic, error) {
 			return nil, err
 		}
 		// Built with no key: the SDK finds federation in the variables above.
+		// The host is pinned too, so a stray ANTHROPIC_BASE_URL cannot send
+		// the federation exchange and the requests elsewhere.
+		if o.BaseURL == "" {
+			opts = append(opts, option.WithBaseURL(anthropicAPIURL))
+		}
 	case AuthVertex:
 		if o.VertexProject == "" {
 			return nil, errors.New("llm: vertex needs a project")
