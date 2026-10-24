@@ -36,70 +36,16 @@ test: ## go test with the race detector
 build: ## Build bin/tria-spot
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/tria-spot
 
-# The image is built with ko only. The Claude Code CLI and jq are fetched into
-# kodata, each checked against a pinned digest, and ko adds them to the image
-# under /var/run/ko (KO_DATA_PATH). README.md says where each pin came from.
-# Both are linux/amd64. There is no kubectl in the image: a cluster is reached
-# through connectors.
-KODATA                ?= cmd/tria-spot/kodata
-CLAUDE_CODE_VERSION   ?= 2.1.304
-CLAUDE_CODE_INTEGRITY ?= sha512-yZ/zZk3y7e0zbkMs740y9Z+bs40MmWApwM9qHQ8Adis01SycQlyaZnHYhB/+UOeFJcL+hzbiIGCIyuTKyL2U7Q==
-JQ_VERSION            ?= 1.7.1
-JQ_SHA256             ?= 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
-# The sandbox for the agent's Bash tool needs bubblewrap and socat (and the
-# libraries socat needs that the base image lacks: libwrap, libnsl, libtirpc). Debian bookworm packages,
-# the release the base image is, from a fixed snapshot of the archive and
-# pinned by digest.
-DEB_SNAPSHOT := https://snapshot.debian.org/archive/debian/20260901T000000Z/pool/main
-BWRAP_DEB    := b/bubblewrap/bubblewrap_0.8.0-2%2Bdeb12u1_amd64.deb
-BWRAP_SHA256 := 3cc9134a3286ad01a323dcd924ba123eb634cefaeec82d774257e06308aeaadb
-SOCAT_DEB    := s/socat/socat_1.7.4.4-2_amd64.deb
-SOCAT_SHA256 := 2bf3094e16ce0aab245193eb6b7cb6b6e086f68d321b757e2090901b4cd7f826
-LIBWRAP_DEB  := t/tcp-wrappers/libwrap0_7.6.q-32_amd64.deb
-LIBWRAP_SHA256 := cbce2669a3ba4d74cfdc52b14f38014893e23d85a33d109a3422c342eefc55f8
-LIBNSL_DEB   := libn/libnsl/libnsl2_1.3.0-2_amd64.deb
-LIBNSL_SHA256 := c0d83437fdb016cb289436f49f28a36be44b3e8f1f2498c7e3a095f709c0d6f8
-LIBTIRPC_DEB := libt/libtirpc/libtirpc3_1.3.3%2Bds-1_amd64.deb
-LIBTIRPC_SHA256 := 2a46d5a5e9486da11ffeff5740931740d6deae4f92cd6098df060dc5dff1e1c7
-
-.PHONY: kodata
-kodata: ## Fetch and verify the CLI and jq into cmd/tria-spot/kodata
-	@mkdir -p $(KODATA)
-	@# ko packs the whole directory: anything an earlier fetch left (a kubectl) would ship.
-	@find $(KODATA) -mindepth 1 ! -name .gitkeep ! -name claude ! -name jq ! -name bwrap ! -name socat ! -name socat.bin ! -name lib -exec rm -rf {} +
-	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	 (cd "$$tmp" && npm pack "@anthropic-ai/claude-code-linux-x64@$(CLAUDE_CODE_VERSION)" --silent >/dev/null); \
-	 got="sha512-$$(openssl dgst -sha512 -binary "$$tmp"/*.tgz | base64 | tr -d '\n')"; \
-	 [ "$$got" = "$(CLAUDE_CODE_INTEGRITY)" ] || { echo "claude-code tarball digest $$got != pinned $(CLAUDE_CODE_INTEGRITY)"; exit 1; }; \
-	 tar -xzf "$$tmp"/*.tgz -C "$$tmp" package/claude; \
-	 install -m 0755 "$$tmp/package/claude" $(KODATA)/claude; \
-	 curl -fsSL -o "$$tmp/jq" "https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-linux-amd64"; \
-	 echo "$(JQ_SHA256)  $$tmp/jq" | shasum -a 256 -c -; \
-	 install -m 0755 "$$tmp/jq" $(KODATA)/jq; \
-	 for d in "$(BWRAP_DEB) $(BWRAP_SHA256)" "$(SOCAT_DEB) $(SOCAT_SHA256)" "$(LIBWRAP_DEB) $(LIBWRAP_SHA256)" "$(LIBNSL_DEB) $(LIBNSL_SHA256)" "$(LIBTIRPC_DEB) $(LIBTIRPC_SHA256)"; do \
-	   set -- $$d; f="$$tmp/$$(basename $$1 | sed 's/%2B/+/')"; \
-	   curl -fsSL -o "$$f" "$(DEB_SNAPSHOT)/$$1"; \
-	   echo "$$2  $$f" | shasum -a 256 -c -; \
-	   (cd "$$tmp" && mkdir -p "x-$$2" && cd "x-$$2" && ar x "$$f" && tar -xf data.tar.*); \
-	 done; \
-	 mkdir -p $(KODATA)/lib; \
-	 install -m 0755 "$$tmp/x-$(BWRAP_SHA256)/usr/bin/bwrap" $(KODATA)/bwrap; \
-	 install -m 0755 "$$tmp/x-$(SOCAT_SHA256)/usr/bin/socat" $(KODATA)/socat.bin; \
-	 install -m 0644 "$$tmp/x-$(LIBWRAP_SHA256)/usr/lib/x86_64-linux-gnu/libwrap.so.0.7.6" $(KODATA)/lib/libwrap.so.0; \
-	 install -m 0644 "$$tmp/x-$(LIBNSL_SHA256)/usr/lib/x86_64-linux-gnu/libnsl.so.2.0.1" $(KODATA)/lib/libnsl.so.2; \
-	 install -m 0644 "$$tmp/x-$(LIBTIRPC_SHA256)/lib/x86_64-linux-gnu/libtirpc.so.3.0.0" $(KODATA)/lib/libtirpc.so.3; \
-	 printf '%s\n' '#!/bin/sh' '# socat needs libwrap, which the base image lacks; it travels next to the binary.' 'd=$$(dirname "$$0")' 'LD_LIBRARY_PATH="$$d/lib" exec "$$d/socat.bin" "$$@"' > $(KODATA)/socat; \
-	 chmod 0755 $(KODATA)/socat
-	@test "$$(ls -A $(KODATA) | grep -v '^\.gitkeep$$' | sort | tr '\n' ' ')" = "bwrap claude jq lib socat socat.bin " || { echo "kodata holds more than claude, jq and the sandbox's bwrap and socat:"; ls -A $(KODATA); exit 1; }
-	@echo "kodata ready: claude $(CLAUDE_CODE_VERSION), jq $(JQ_VERSION), bwrap and socat for the sandbox"
-
+# The image is built with ko only: the Go binary on a distroless static base
+# (no shell, no package manager), pinned by digest in .ko.yaml. There is no
+# kubectl in the image: a cluster is reached through connectors.
 .PHONY: image
-image: kodata ## Build the image as an OCI layout in bin/image (pushes nothing)
+image: ## Build the image as an OCI layout in bin/image (pushes nothing)
 	VERSION=$(VERSION) GIT_COMMIT=$(GIT_COMMIT) BUILD_DATE=$(BUILD_DATE) \
 	  KO_DOCKER_REPO=$(IMAGE) ko build --bare --push=false --oci-layout-path=bin/image ./cmd/tria-spot
 
 .PHONY: push
-push: kodata ## Build and push the image with ko: make push IMAGE=<registry>/<repo>
+push: ## Build and push the image with ko: make push IMAGE=<registry>/<repo>
 	VERSION=$(VERSION) GIT_COMMIT=$(GIT_COMMIT) BUILD_DATE=$(BUILD_DATE) \
 	  KO_DOCKER_REPO=$(IMAGE) ko build --bare --tags=$(VERSION) ./cmd/tria-spot
 

@@ -191,23 +191,3 @@ func orUnknown(s string) string {
 	}
 	return s
 }
-
-// List returns the sorted names of the tools the MCP server at url offers. It
-// sends no credential: a connector holds its own. The session is closed before
-// List returns.
-func List(ctx context.Context, url string) ([]string, error) {
-	c, err := Connect(ctx, url, "", 15*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	tools, err := c.Tools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(tools))
-	for _, t := range tools {
-		names = append(names, t.Name)
-	}
-	return names, nil
-}

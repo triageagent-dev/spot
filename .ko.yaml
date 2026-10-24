@@ -1,8 +1,6 @@
-# ko build configuration. The image is the Go supervisor on a base that has
-# bash, coreutils, curl and CA certificates; the Claude Code CLI and
-# jq travel as kodata (cmd/tria-spot/kodata, fetched and verified by
-# `make kodata`) and are found through KO_DATA_PATH. No Docker is involved.
-defaultBaseImage: docker.io/library/buildpack-deps@sha256:5f8a65a7e3b419450aebd73c24e3ce8b25810354eccd7ff6f673b0c387479131
+# ko build configuration. The image is the Go binary on a distroless static
+# base (CA certificates, no shell). No Docker is involved.
+defaultBaseImage: gcr.io/distroless/static@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 defaultPlatforms:
   - linux/amd64
 builds:

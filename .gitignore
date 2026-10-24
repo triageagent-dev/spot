@@ -4,5 +4,3 @@
 *.test
 .DS_Store
 /charts/tria-spot/charts/
-/cmd/tria-spot/kodata/*
-!/cmd/tria-spot/kodata/.gitkeep
