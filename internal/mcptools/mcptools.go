@@ -6,6 +6,7 @@ package mcptools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -33,20 +34,41 @@ func List(ctx context.Context, url string) ([]string, error) {
 	if _, err := cl.Initialize(ctx, init); err != nil {
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
+	// The names only: a tool's schema is not needed here, and a server whose
+	// schemas the typed client cannot parse (a JSON Schema "type" that is a list)
+	// must still be listable, or its connector would be dropped.
 	var names []string
-	req := mcp.ListToolsRequest{}
-	for {
-		res, err := cl.ListTools(ctx, req)
+	cursor := ""
+	for i := 1; ; i++ {
+		var params any
+		if cursor != "" {
+			params = map[string]any{"cursor": cursor}
+		}
+		resp, err := cl.GetTransport().SendRequest(ctx, transport.JSONRPCRequest{
+			JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1000 + i)), Method: "tools/list", Params: params,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("tools/list: %w", err)
 		}
-		for _, t := range res.Tools {
+		if resp.Error != nil {
+			return nil, fmt.Errorf("tools/list: %s", resp.Error.Message)
+		}
+		var page struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(resp.Result, &page); err != nil {
+			return nil, fmt.Errorf("tools/list: %w", err)
+		}
+		for _, t := range page.Tools {
 			names = append(names, t.Name)
 		}
-		if res.NextCursor == "" {
+		if page.NextCursor == "" {
 			break
 		}
-		req.Params.Cursor = res.NextCursor
+		cursor = page.NextCursor
 	}
 	sort.Strings(names)
 	return names, nil
