@@ -53,7 +53,9 @@ jobs:
           export VERSION GIT_COMMIT BUILD_DATE
           tags="$VERSION"
           case "$VERSION" in *-*) ;; *) tags="$VERSION,latest" ;; esac
-          ko build --bare --platform=linux/amd64,linux/arm64 --tags="$tags" ./cmd/tria-spot
+          ko build --bare --platform=linux/amd64,linux/arm64 --tags="$tags" \
+            --image-label org.opencontainers.image.source=https://github.com/triageagent-dev/spot \
+            --image-label org.opencontainers.image.licenses=Apache-2.0 ./cmd/tria-spot
 
       - name: Package and push the chart
         run: |
