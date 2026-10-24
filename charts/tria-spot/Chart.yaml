@@ -2,5 +2,5 @@ apiVersion: v2
 name: tria-spot
 description: "The Tria spot for one tenant, a model-driven teammate with its own agent loop that watches, acts through connectors and talks (the core's ADR-095, ADR-098). Off by default."
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
