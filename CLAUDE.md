@@ -5,7 +5,7 @@ Guidance for agents working in this repo.
 ## What this is
 
 `tria-spot` is the supervisor, the agent loop, the image and the chart for the
-Tria spot (the core's ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
+spot (the core's ADR-095, and ADR-098 in `docs/adr`): an always-on teammate for one
 workspace of the Triage core, running as its own Go agent loop over the
 Anthropic Go SDK or the Google GenAI Go SDK, with tools taken from the core's MCP server and connectors.
 Read the ADRs, `README.md` and `docs/spec.html` before changing behaviour.
