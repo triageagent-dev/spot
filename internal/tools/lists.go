@@ -3,7 +3,8 @@ package tools
 // CoreTools is the core's tools the loop needs: the ones the instruction
 // names, the read-only situation and memory tools, and the speech tools.
 // Everything else the core offers is not given to the model, and the tools in
-// CoreToolsDenied are refused by name even when the operator widens the list.
+// CoreToolsDenied are refused by name even when they are also in the list.
+// With --core-tools all neither list applies: the core's Role is the bound.
 var CoreTools = []string{
 	"get_triage_instructions", "get_tenant_situation", "get_tenant_health", "get_tenant_goals",
 	"list_open_issues", "list_issues", "get_issue_detail", "get_issue_graph", "get_recent_events",
