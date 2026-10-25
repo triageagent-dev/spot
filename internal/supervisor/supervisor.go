@@ -1194,7 +1194,7 @@ func (s *Supervisor) reportStats(force bool) {
 	s.rollDay()
 	u := s.led.Usage()
 	st := triggers.Stats{
-		State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
+		Version: s.cfg.Version, State: s.status.State, Turns: int64(u.Turns), Failures: int64(s.failures), Wakes: map[string]int64{},
 		EdgeWakesHour: int64(s.status.EdgeWakesHour),
 		Tokens:        u.Tokens, CacheReadTokens: u.CacheRead, OutputTokens: u.Output, Ceiling: s.cfg.DailyTokenCeil, Triggers: s.status.Triggers,
 	}

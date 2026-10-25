@@ -1602,3 +1602,29 @@ func TestAShutdownMidTurnDoesNotRequeue(t *testing.T) {
 		t.Fatalf("a cut-off turn must not put its facts back (the next start reports the interruption): %d held", n)
 	}
 }
+
+func TestStatsCarryTheBuildVersion(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour; c.Version = "v1.2.3-4-gabcdef0" })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("stats with the version", func() bool {
+		trig.mu.Lock()
+		defer trig.mu.Unlock()
+		for _, s := range trig.stats {
+			if s.Version == "v1.2.3-4-gabcdef0" {
+				return true
+			}
+		}
+		return false
+	})
+	trig.mu.Lock()
+	defer trig.mu.Unlock()
+	for _, s := range trig.stats {
+		if s.Version != "v1.2.3-4-gabcdef0" {
+			t.Errorf("a stats report without the version: %+v", s)
+		}
+	}
+}

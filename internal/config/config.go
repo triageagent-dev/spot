@@ -17,6 +17,9 @@ import (
 type Config struct {
 	Tenant string
 	Name   string
+	// Version is the build's version (git describe), stamped by the binary and
+	// not a flag. The supervisor reports it to the core with the stats.
+	Version string
 	// ChatName is the name people see and write to in the messenger, when it
 	// is not Name: the core names a spot after its workspace's label. Empty =
 	// Name.

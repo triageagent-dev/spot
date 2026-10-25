@@ -64,6 +64,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	log := slog.New(slog.NewTextHandler(errOut, &slog.HandlerOptions{Level: level(cfg.LogLevel)}))
 	log = log.With("spot", cfg.Name, "tenant", cfg.Tenant)
 	log.Info("starting", "version", version, "commit", gitCommit)
+	cfg.Version = version
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
