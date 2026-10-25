@@ -977,6 +977,9 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		if res.StepsExhausted {
 			s.log.Warn("turn stopped at max-steps; the work may be unfinished", "tokens", u.Billable(), "steps", res.Steps)
 		}
+		if res.ToolLimit {
+			s.log.Warn("turn stopped at max-tool-calls; the work may be unfinished", "tokens", u.Billable(), "toolCalls", res.ToolCalls)
+		}
 		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
 	}
 

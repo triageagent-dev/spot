@@ -21,7 +21,7 @@ func TestDefaults(t *testing.T) {
 	if c.StateDir != "/state" || c.MinWake != 2*time.Minute || c.MaxWake != 2*time.Hour {
 		t.Errorf("defaults: %+v", c)
 	}
-	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
+	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.MaxToolCalls != 30 || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
 		t.Errorf("model and loop defaults: %+v", c)
 	}
 	if c.LLMAuth != AuthKey || c.VertexRegion != "global" || c.LLMProvider != ProviderAnthropic {
@@ -84,18 +84,19 @@ func TestExplicitName(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	bad := map[string][]string{
-		"no args":        nil,
-		"max < min":      append(append([]string{}, required...), "--min-wake", "1h", "--max-wake", "1m"),
-		"bad effort":     append(append([]string{}, required...), "--effort", "extreme"),
-		"zero tool time": append(append([]string{}, required...), "--tool-timeout", "0s"),
-		"zero result":    append(append([]string{}, required...), "--tool-result-max-bytes", "0"),
-		"bad level":      append(append([]string{}, required...), "--log-level", "loud"),
-		"zero steps":     append(append([]string{}, required...), "--max-steps", "0"),
-		"old flag":       append(append([]string{}, required...), "--max-turns", "5"),
-		"cli flag":       append(append([]string{}, required...), "--permission-mode", "auto"),
-		"negative ceil":  append(append([]string{}, required...), "--daily-token-ceiling", "-1"),
-		"tenant slash":   {"--tenant", "a/b", "--core-mcp-url", "u", "--core-token-file", "t", "--anthropic-key-file", "k"},
-		"stray argument": append(append([]string{}, required...), "extra"),
+		"no args":         nil,
+		"max < min":       append(append([]string{}, required...), "--min-wake", "1h", "--max-wake", "1m"),
+		"bad effort":      append(append([]string{}, required...), "--effort", "extreme"),
+		"zero tool time":  append(append([]string{}, required...), "--tool-timeout", "0s"),
+		"zero result":     append(append([]string{}, required...), "--tool-result-max-bytes", "0"),
+		"bad level":       append(append([]string{}, required...), "--log-level", "loud"),
+		"zero steps":      append(append([]string{}, required...), "--max-steps", "0"),
+		"zero tool calls": append(append([]string{}, required...), "--max-tool-calls", "0"),
+		"old flag":        append(append([]string{}, required...), "--max-turns", "5"),
+		"cli flag":        append(append([]string{}, required...), "--permission-mode", "auto"),
+		"negative ceil":   append(append([]string{}, required...), "--daily-token-ceiling", "-1"),
+		"tenant slash":    {"--tenant", "a/b", "--core-mcp-url", "u", "--core-token-file", "t", "--anthropic-key-file", "k"},
+		"stray argument":  append(append([]string{}, required...), "extra"),
 	}
 	for name, args := range bad {
 		if _, err := Parse(args, io.Discard); err == nil {

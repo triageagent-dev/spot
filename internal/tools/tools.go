@@ -300,6 +300,15 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	}
 }
 
+// IsBuiltin reports whether name is one of the spot's own tools, schedule_next
+// or finish, written with or without a prefix the model added.
+func IsBuiltin(name string) bool {
+	if i := strings.LastIndexAny(name, ":."); i >= 0 && i < len(name)-1 {
+		name = name[i+1:]
+	}
+	return name == ScheduleNext || name == Finish
+}
+
 // canonicalName maps a tool name the model wrote to the one it was offered.
 // Some models put their own prefix before the name (Gemini writes
 // "default_api:core__list_open_issues", others "functions.finish"). A name that

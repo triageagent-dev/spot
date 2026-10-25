@@ -367,3 +367,48 @@ func TestMessageLeftOverWhenTheTurnFailsIsReturned(t *testing.T) {
 		t.Errorf("%+v", res)
 	}
 }
+
+func TestToolCallsPastTheCapAreRefusedAndTheModelWrapsUp(t *testing.T) {
+	ft := newFakeTools()
+	call := llm.Call{Name: "core__list_open_issues"}
+	f := llm.NewFake(
+		llm.ToolUse(u, call, call),
+		llm.ToolUse(u, call, call, call),
+		llm.EndTurn("done", u))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 3 }).Run(context.Background(), Turn{Prompt: "p"})
+	if res.Failed || res.ToolLimit || res.Steps != 3 || res.ToolCalls != 3 || len(ft.calls) != 3 {
+		t.Fatalf("calls %v result %+v", ft.calls, res)
+	}
+	rs := f.Requests()[2].Messages[4].Content
+	if len(rs) != 3 || rs[0].IsError || !rs[1].IsError || !rs[2].IsError || !strings.Contains(rs[1].Content, "not run") || !strings.Contains(rs[1].Content, "3 tool calls") {
+		t.Errorf("results: %+v", rs)
+	}
+	if first := f.Requests()[0].Messages[0].Content[0].Text; !strings.Contains(first, "40 model steps and 3 tool calls") && !strings.Contains(first, "10 model steps and 3 tool calls") {
+		t.Errorf("the first message does not say the cap: %q", first)
+	}
+}
+
+func TestAModelThatKeepsCallingToolsAfterTheCapEndsTheTurn(t *testing.T) {
+	ft := newFakeTools()
+	call := llm.Call{Name: "core__list_open_issues"}
+	f := llm.NewFake(llm.ToolUse(u, call, call), llm.ToolUse(u, call), llm.ToolUse(u, call), llm.EndTurn("never", u))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 2 }).Run(context.Background(), Turn{Prompt: "p"})
+	if !res.ToolLimit || res.Failed || res.Err != nil || res.Steps != 3 || len(ft.calls) != 2 {
+		t.Errorf("calls %v result %+v", ft.calls, res)
+	}
+}
+
+func TestFinishAndScheduleAreNeverRefusedAtTheCap(t *testing.T) {
+	ft := newFakeTools()
+	call := llm.Call{Name: "core__list_open_issues"}
+	f := llm.NewFake(
+		llm.ToolUse(u, call),
+		llm.ToolUse(u, call,
+			llm.Call{Name: "schedule_next", Input: `{"after":"15m","why":"w"}`},
+			llm.Call{Name: "finish", Input: `{"summary":"wrapped up"}`}))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 1 }).Run(context.Background(), Turn{Prompt: "p"})
+	sum, ok := ft.Finished()
+	if res.Failed || res.ToolLimit || !ok || sum != "wrapped up" || res.Next == nil {
+		t.Errorf("finished=%v %q result %+v", ok, sum, res)
+	}
+}

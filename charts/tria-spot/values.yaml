@@ -78,6 +78,7 @@ llm:
   model: ""
   effort: medium               # low | medium | high | xhigh | max
   maxSteps: 40                 # model requests per wake
+  maxToolCalls: 30             # tool calls per wake; past it the model is told to wrap up. 0 = the binary's default
   keySecret:                   # provider anthropic, auth: key. Secret name only; mounted as a file
     name: ""
     key: key

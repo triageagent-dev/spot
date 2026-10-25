@@ -67,10 +67,14 @@ type Result struct {
 	// StepsExhausted is set when the turn stopped at the step cap with work
 	// unfinished. It is the work stopping, not a failure.
 	StepsExhausted bool
-	TimedOut       bool
-	Canceled       bool // the parent context ended (shutdown)
-	AuthFailed     bool // the model API refused the credentials
-	CoreDown       bool // the core's tools were not there: the turn did not run
+	// ToolLimit is set when the turn ended because the model kept calling
+	// tools after it was told the tool-call cap was reached. Work stopping,
+	// not a failure.
+	ToolLimit  bool
+	TimedOut   bool
+	Canceled   bool // the parent context ended (shutdown)
+	AuthFailed bool // the model API refused the credentials
+	CoreDown   bool // the core's tools were not there: the turn did not run
 	// Failed is set when the turn did not end well for any reason other than
 	// shutdown or the step cap. Err says why.
 	Failed bool
@@ -94,6 +98,10 @@ type Options struct {
 	MaxTokens int
 	// MaxSteps caps the model requests of a turn (default 40).
 	MaxSteps int
+	// MaxToolCalls caps the tool calls of a turn (default 30). Every step
+	// sends the whole conversation again, so a long run of calls is what makes
+	// a turn expensive. schedule_next and finish are never refused.
+	MaxToolCalls int
 	// Timeout caps the wall-clock time of a turn; zero = none.
 	Timeout   time.Duration
 	Telemetry *telemetry.Provider
@@ -102,8 +110,15 @@ type Options struct {
 	LogContent bool
 }
 
-// DefaultMaxSteps is the step cap when none is set.
-const DefaultMaxSteps = 40
+// Defaults of the per-turn caps.
+const (
+	DefaultMaxSteps     = 40
+	DefaultMaxToolCalls = 30
+)
+
+// toolLimitText is the result of a tool call refused at the cap.
+const toolLimitText = "not run: this turn has used its %d tool calls. Do not call more tools. " +
+	"Answer from what you have, say what is still open, then call schedule_next and finish."
 
 // Agent runs turns, one at a time.
 type Agent struct {
@@ -118,6 +133,9 @@ type Agent struct {
 func New(o Options) *Agent {
 	if o.MaxSteps <= 0 {
 		o.MaxSteps = DefaultMaxSteps
+	}
+	if o.MaxToolCalls <= 0 {
+		o.MaxToolCalls = DefaultMaxToolCalls
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -240,9 +258,9 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	if down := a.o.Tools.Down(); len(down) > 0 {
 		first += fmt.Sprintf("\nThe tools of these servers are not available in this turn, because they could not be reached: %s.\n", strings.Join(down, ", "))
 	}
-	first += fmt.Sprintf("\nYou have at most %d model steps in this turn.\n", a.o.MaxSteps)
+	first += fmt.Sprintf("\nYou have at most %d model steps and %d tool calls in this turn.\n", a.o.MaxSteps, a.o.MaxToolCalls)
 	msgs := []llm.Message{llm.UserText(first)}
-	truncated, paused := false, false
+	truncated, paused, told := false, false, false
 
 	for res.Steps < a.o.MaxSteps {
 		if err := ctx.Err(); err != nil {
@@ -284,8 +302,18 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 				}
 				continue
 			}
+			if told && !onlyBuiltins(calls) {
+				// The model was told the cap was reached and still asks for tools.
+				res.ToolLimit = true
+				log.Warn("the turn stopped at the tool-call cap", "toolCalls", res.ToolCalls)
+				return res
+			}
 			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
-			results := a.runTools(ctx, root, calls, &res)
+			results, refused := a.runTools(ctx, root, calls, &res)
+			if refused && !told {
+				told = true
+				log.Warn("tool-call cap reached; the model is told to wrap up", "toolCalls", res.ToolCalls, "cap", a.o.MaxToolCalls)
+			}
 			if _, done := a.o.Tools.Finished(); done {
 				return res
 			}
@@ -356,9 +384,16 @@ func (a *Agent) endOrInject(msgs *[]llm.Message, resp llm.Response) bool {
 
 // runTools runs the calls of one assistant message, in order, and returns the
 // tool_result blocks for all of them.
-func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.Block, res *Result) []llm.Block {
-	out := make([]llm.Block, 0, len(calls))
+// Past the cap a call is answered with an error and not run, except the
+// spot's own schedule_next and finish; refused reports whether any was.
+func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.Block, res *Result) (out []llm.Block, refused bool) {
+	out = make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
+		if res.ToolCalls >= a.o.MaxToolCalls && !tools.IsBuiltin(c.Name) {
+			refused = true
+			out = append(out, llm.ToolResult(c.ID, fmt.Sprintf(toolLimitText, a.o.MaxToolCalls), true))
+			continue
+		}
 		span := root.Tool(c.Name, c.ID, c.Input)
 		began := time.Now()
 		var content string
@@ -377,7 +412,16 @@ func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.
 		a.o.Logger.Debug("tool call", attrs...)
 		out = append(out, llm.ToolResult(c.ID, content, isErr))
 	}
-	return out
+	return out, refused
+}
+
+func onlyBuiltins(calls []llm.Block) bool {
+	for _, c := range calls {
+		if !tools.IsBuiltin(c.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func isCtxErr(ctx context.Context, err error) bool {

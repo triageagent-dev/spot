@@ -90,6 +90,9 @@ spec:
             {{- end }}
             - --effort={{ $llm.effort }}
             - --max-steps={{ int $llm.maxSteps }}
+            {{- if $llm.maxToolCalls }}
+            - --max-tool-calls={{ int $llm.maxToolCalls }}
+            {{- end }}
             {{- if .Values.connectors }}
             - --connectors-file=/etc/tria-spot/connectors/connectors.json
             {{- end }}
