@@ -48,3 +48,10 @@ const (
 	ScheduleNext = "schedule_next"
 	Finish       = "finish"
 )
+
+// upsertMemoryItem is the core tool that writes a memory item. SpotTagPrefix
+// starts the tag the spot's items carry: spot:<name>.
+const (
+	upsertMemoryItem = "upsert_memory_item"
+	SpotTagPrefix    = "spot:"
+)

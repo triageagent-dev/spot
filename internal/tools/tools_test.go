@@ -33,6 +33,10 @@ func fakeServer(t *testing.T) (url string, auth func() string) {
 		b, _ := json.Marshal(req.GetArguments())
 		return mcp.NewToolResultText("args=" + string(b)), nil
 	}))
+	s.AddTool(mcp.NewToolWithRawSchema("upsert_memory_item", "Write an item.", json.RawMessage(listSchema)), h(func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		b, _ := json.Marshal(req.GetArguments())
+		return mcp.NewToolResultText("args=" + string(b)), nil
+	}))
 	s.AddTool(mcp.NewTool("get_pods", mcp.WithDescription("Pods.")), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError("forbidden: pods"), nil
 	}))
@@ -311,5 +315,44 @@ func TestDefaultListsDoNotOverlap(t *testing.T) {
 		if allowed[n] {
 			t.Errorf("%s is both allowed and denied", n)
 		}
+	}
+}
+
+func TestMemoryWritesCarryTheSpotTag(t *testing.T) {
+	url, _ := fakeServer(t)
+	withName := func(name string) *Registry {
+		r := newRegistry(t, url, func(o *Options) {
+			o.Core.Allow = []string{"upsert_memory_item", "list_open_issues"}
+			o.SpotName = name
+			o.ResultMax = 1000
+		})
+		r.Begin()
+		if _, err := r.List(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	for _, c := range []struct{ name, in, want string }{
+		{"no tags", `{"content":"c"}`, `"tags":"spot:example"`},
+		{"other tags", `{"tags":"spot-note,service/x"}`, `"tags":"spot-note,service/x,spot:example"`},
+		{"trailing comma", `{"tags":"a,"}`, `"tags":"a,spot:example"`},
+		{"already there", `{"tags":"spot:example,a"}`, `"tags":"spot:example,a"`},
+		{"null tags", `{"tags":null}`, `"tags":"spot:example"`},
+		{"a number stays a number", `{"tags":"a","limit":15}`, `"limit":15`},
+		{"not a string is left to the core", `{"tags":["a"]}`, `"tags":["a"]`},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			got, isErr := withName("example").Call(context.Background(), "core__upsert_memory_item", json.RawMessage(c.in))
+			if isErr || !strings.Contains(got, c.want) {
+				t.Errorf("got %q (error %v), want it to contain %s", got, isErr, c.want)
+			}
+		})
+	}
+	if got, _ := withName("").Call(context.Background(), "core__upsert_memory_item", json.RawMessage(`{"content":"c"}`)); strings.Contains(got, "spot:") {
+		t.Errorf("no spot name, no tag: %q", got)
+	}
+	if got, _ := withName("example").Call(context.Background(), "core__list_open_issues", json.RawMessage(`{"limit":1}`)); strings.Contains(got, "spot:") {
+		t.Errorf("only memory writes are tagged: %q", got)
 	}
 }

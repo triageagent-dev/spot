@@ -50,7 +50,11 @@ type Options struct {
 	CallTimeout time.Duration
 	// ResultMax caps one result in bytes; zero = 32768.
 	ResultMax int
-	Logger    *slog.Logger
+	// SpotName is the spot's name. Every memory item the spot writes to the
+	// core carries the tag spot:<name>, whether or not the model added it, so
+	// the spot finds its own items again. Empty = no tag is added.
+	SpotName string
+	Logger   *slog.Logger
 }
 
 // Defaults.
@@ -277,6 +281,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	if len(strings.TrimSpace(string(args))) == 0 {
 		args = json.RawMessage(`{}`)
 	}
+	if rt.server == CoreServer && rt.tool == upsertMemoryItem && r.o.SpotName != "" {
+		args = withSpotTag(args, SpotTagPrefix+r.o.SpotName)
+	}
 	cctx, cancel := context.WithTimeout(ctx, r.o.CallTimeout)
 	defer cancel()
 	res, err := s.conn.Call(cctx, rt.tool, args)
@@ -290,6 +297,38 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	default:
 		return r.cut("the call failed: " + err.Error()), true
 	}
+}
+
+// withSpotTag adds tag to the comma-separated tags of a memory item the model
+// wants written. Arguments it cannot read are returned as they are: the core
+// answers them, and the model reads the answer.
+func withSpotTag(args json.RawMessage, tag string) json.RawMessage {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return args
+	}
+	var tags string
+	if raw, ok := m["tags"]; ok && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &tags); err != nil {
+			return args
+		}
+	}
+	for _, t := range strings.Split(tags, ",") {
+		if strings.TrimSpace(t) == tag {
+			return args
+		}
+	}
+	if strings.TrimSpace(tags) != "" {
+		tags = strings.TrimRight(strings.TrimSpace(tags), ",") + "," + tag
+	} else {
+		tags = tag
+	}
+	m["tags"], _ = json.Marshal(tags)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return args
+	}
+	return out
 }
 
 // cut caps a result at ResultMax bytes, at a character boundary, and says how

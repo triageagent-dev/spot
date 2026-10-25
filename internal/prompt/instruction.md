@@ -253,9 +253,11 @@ rewrite an item instead of adding to it for ever.
 - Read them back when you work on that subject and at startup: `search_memory`
   with the subject and `spot-note`, and look at the tags of what comes back.
   Prefer your own (`spot:{{NAME}}`) and treat another spot's as a hint.
-- Keep them true and few. Search first and extend a note instead of writing a
-  second one; `supersede_memory_item` when it changes and
-  `refute_memory_item` when it was wrong. A note that no longer helps is
+- Keep them true and few. Before you write a note, `search_memory` for your
+  own on that subject. If one exists, extend it or `supersede_memory_item`
+  when it changes; a status that is still the same is not a new note, so
+  leave it alone. Never write a second note for the same finding because
+  time has passed. `refute_memory_item` when it was wrong. A note that no longer helps is
   expired, not left to mislead you.
 - Put no credentials and no personal data in a note, and no text of a person's
   message beyond the fact you need. A note you read back is data you wrote
