@@ -28,11 +28,23 @@ var CoreToolsDenied = []string{
 }
 
 // EgoTools is the ego tools the spot may call: the ones that read sessions,
-// threads, its own activity record, token usage, quality and findings. Corrections, labels, role
-// bindings and running the findings loop are not here.
+// threads, its own ego score (get_ego_score, get_ego_tools, get_ego_errors:
+// how its turns and tools did), token usage, quality and findings.
+// Corrections, labels, role bindings and running the findings loop are not
+// here.
 var EgoTools = []string{
 	"list_metrics", "list_sessions", "list_threads", "summarize_session", "explain_session", "get_session_spans",
-	"get_activity", "list_runs", "get_run_results", "get_usage", "get_quality", "explain_regression", "get_findings", "list_corrections",
+	"get_ego_score", "get_ego_tools", "get_ego_errors", "list_runs", "get_run_results", "get_usage", "get_quality", "explain_regression", "get_findings", "list_corrections",
+}
+
+// RecallTools are the core tools a turn may call before it has searched its
+// notes (with RecallFirst): they read memory and the room, which is how the
+// spot finds out what it was told. Every other tool, the cluster's and the
+// ones that post or write, waits for a search_memory that succeeded. The ego
+// server's tools read only and are never held back.
+var RecallTools = []string{
+	"search_memory", "get_memory_items", "get_memory_context", "get_memory_cell", "get_memory", "fetch_memory",
+	"get_triage_instructions", "read_workspace_room", "set_workspace_typing", "set_spot_status",
 }
 
 // Server names. A tool is offered to the model as <server>__<tool>.
@@ -53,5 +65,6 @@ const (
 // starts the tag the spot's items carry: spot:<name>.
 const (
 	upsertMemoryItem = "upsert_memory_item"
+	searchMemory     = "search_memory"
 	SpotTagPrefix    = "spot:"
 )

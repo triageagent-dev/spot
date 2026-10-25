@@ -322,6 +322,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <tr><td class="k"><code>finish</code></td><td><code>{"summary": "&lt;one line&gt;"}</code>; the line shows in the status file. Optional.</td></tr>
     <tr><td class="k"><code>schedule_next</code></td><td><code>{"after": "15m", "why": "check the rollout"}</code>, last in the turn, clamped to <code>[--min-wake, --max-wake]</code>. Never called, or not a duration: the next wake is <code>--min-wake</code> and the supervisor logs why.</td></tr>
     <tr><td class="k">40 requests</td><td><code>--max-steps</code>. Not a failure: <code>stepsExhausted</code>.</td></tr>
+    <tr><td class="k">Notes first</td><td><code>--recall-first</code>. In each wake every tool except the core's memory and room reads (<code>tools.RecallTools</code>) and ego's is answered with an error and not run until a <code>search_memory</code> has succeeded, so the spot looks for what it was told before it looks at the cluster or posts. The tool layer holds it; it is off when the core does not offer <code>search_memory</code>.</td></tr>
     <tr><td class="k">30 tool calls</td><td><code>--max-tool-calls</code>. Past it a call is answered with an error and not run, and the model is told to answer from what it has, call <code>schedule_next</code> and <code>finish</code>, which are never refused. A model that goes on calling tools ends the turn. Not a failure.</td></tr>
     <tr><td class="k">20m</td><td><code>--turn-timeout</code>. Failed; reported as cut off on the next wake.</td></tr>
     <tr><td class="k">SIGTERM</td><td>Cancels the turn, counts the tokens seen, marks it cut off, flushes the spans, writes <code>status.json</code>, exits.</td></tr>
@@ -577,6 +578,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
   <div class="tablewrap"><table>
     <tr><th>Flag</th><th>Default</th><th>Meaning</th></tr>
     <tr><td class="k"><code>--max-steps</code></td><td><code>40</code></td><td>model requests per wake</td></tr>
+    <tr><td class="k"><code>--recall-first</code></td><td><code>true</code></td><td>hold every tool but the memory and room reads until the spot has searched its notes in the wake</td></tr>
     <tr><td class="k"><code>--max-tool-calls</code></td><td><code>30</code></td><td>tool calls per wake; every step sends the whole conversation again, so a long run of calls is what makes a turn expensive</td></tr>
     <tr><td class="k"><code>--turn-timeout</code></td><td><code>20m</code></td><td>wall-clock cap per wake</td></tr>
     <tr><td class="k"><code>--tool-timeout</code></td><td><code>60s</code></td><td>cap on one tool call</td></tr>

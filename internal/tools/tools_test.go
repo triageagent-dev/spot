@@ -37,8 +37,14 @@ func fakeServer(t *testing.T) (url string, auth func() string) {
 		b, _ := json.Marshal(req.GetArguments())
 		return mcp.NewToolResultText("args=" + string(b)), nil
 	}))
-	s.AddTool(mcp.NewTool("get_activity"), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return mcp.NewToolResultText("activity"), nil
+	for _, n := range []string{"get_ego_score", "get_ego_tools", "get_ego_errors"} {
+		n := n
+		s.AddTool(mcp.NewTool(n), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(n), nil
+		}))
+	}
+	s.AddTool(mcp.NewTool("search_memory"), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("notes"), nil
 	}))
 	s.AddTool(mcp.NewTool("get_pods", mcp.WithDescription("Pods.")), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError("forbidden: pods"), nil
@@ -390,7 +396,7 @@ func TestEgoToolsHaveTheSessionReaders(t *testing.T) {
 	for _, n := range EgoTools {
 		have[n] = true
 	}
-	for _, n := range []string{"summarize_session", "explain_session", "get_session_spans", "list_threads", "get_activity"} {
+	for _, n := range []string{"summarize_session", "explain_session", "get_session_spans", "list_threads", "get_ego_score", "get_ego_tools", "get_ego_errors"} {
 		if !have[n] {
 			t.Errorf("EgoTools lacks %s", n)
 		}
@@ -402,7 +408,7 @@ func TestEgoToolsHaveTheSessionReaders(t *testing.T) {
 	}
 }
 
-func TestEgoActivityIsOfferedAndSurvivesAModelPrefix(t *testing.T) {
+func TestEgoScoreIsOfferedAndSurvivesAModelPrefix(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, func(o *Options) {
 		o.Others = []Server{{Name: EgoServer, URL: url, Allow: EgoTools}}
@@ -412,12 +418,80 @@ func TestEgoActivityIsOfferedAndSurvivesAModelPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(names(defs), ","), "ego__get_activity") {
-		t.Fatalf("ego__get_activity is not offered: %v", names(defs))
-	}
-	for _, name := range []string{"ego__get_activity", "default_api:ego__get_activity"} {
-		if c, isErr := r.Call(context.Background(), name, nil); isErr || c != "activity" {
-			t.Errorf("%s: %q %v", name, c, isErr)
+	for _, n := range []string{"get_ego_score", "get_ego_tools", "get_ego_errors"} {
+		if !strings.Contains(strings.Join(names(defs), ","), "ego__"+n) {
+			t.Fatalf("ego__%s is not offered: %v", n, names(defs))
 		}
+		for _, name := range []string{"ego__" + n, "default_api:ego__" + n} {
+			if c, isErr := r.Call(context.Background(), name, nil); isErr || c != n {
+				t.Errorf("%s: %q %v", name, c, isErr)
+			}
+		}
+	}
+}
+
+func TestNothingActsBeforeTheNotesAreSearched(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = []string{"search_memory", "list_open_issues", "get_pods"}
+		o.Others = []Server{{Name: EgoServer, URL: url, Allow: EgoTools}}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr || !strings.Contains(c, "search your notes first") {
+		t.Errorf("a core tool before the search: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "ego__get_ego_score", nil); isErr || c != "get_ego_score" {
+		t.Errorf("ego reads are never held back: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "default_api:core__search_memory", nil); isErr || c != "notes" {
+		t.Errorf("the search itself: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "core__list_open_issues", json.RawMessage(`{"limit":1}`)); isErr || !strings.Contains(c, "limit") {
+		t.Errorf("after the search: %q %v", c, isErr)
+	}
+	// A new turn starts unsearched again.
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
+		t.Error("the search of one turn must not carry into the next")
+	}
+}
+
+func TestRecallFirstIsOffWithoutTheSearchTool(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = []string{"list_open_issues"}
+	})
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(context.Background(), "core__list_open_issues", nil); isErr {
+		t.Errorf("no search_memory offered, nothing to wait for: %q", c)
+	}
+}
+
+func TestFailedSearchDoesNotCount(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = []string{"search_memory", "list_open_issues"}
+	})
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// An unknown tool is not a search.
+	r.Call(context.Background(), "core__get_pods", nil)
+	if _, isErr := r.Call(context.Background(), "core__list_open_issues", nil); !isErr {
+		t.Error("held until a search succeeds")
 	}
 }

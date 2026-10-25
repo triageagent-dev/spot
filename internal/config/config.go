@@ -62,8 +62,9 @@ type Config struct {
 	StateDir       string
 	MinWake        time.Duration
 	MaxWake        time.Duration
-	MaxSteps       int // model requests per wake
-	MaxToolCalls   int // tool calls per wake
+	MaxSteps       int  // model requests per wake
+	MaxToolCalls   int  // tool calls per wake
+	RecallFirst    bool // no tool but memory reads until the spot has searched its notes
 	TurnTimeout    time.Duration
 	ToolTimeout    time.Duration // one tool call
 	ToolResultMax  int           // bytes of one tool result the model sees
@@ -149,6 +150,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.MaxWake, "max-wake", 2*time.Hour, "ceiling for the agent's own wake-up schedule")
 	fs.IntVar(&c.MaxSteps, "max-steps", 40, "cap on model requests per wake")
 	fs.IntVar(&c.MaxToolCalls, "max-tool-calls", 30, "cap on tool calls per wake; past it the model is told to wrap up")
+	fs.BoolVar(&c.RecallFirst, "recall-first", true, "hold every tool but the memory and room reads until the spot has searched its notes in the wake")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
 	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 32768, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")

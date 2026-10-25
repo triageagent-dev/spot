@@ -54,7 +54,12 @@ type Options struct {
 	// core carries the tag spot:<name>, whether or not the model added it, so
 	// the spot finds its own items again. Empty = no tag is added.
 	SpotName string
-	Logger   *slog.Logger
+	// RecallFirst holds back every tool but RecallTools (and ego's) in a turn
+	// until the model has searched its notes with search_memory, so it never
+	// acts on a subject before it has looked for what it was told about it.
+	// It does nothing when the core does not offer search_memory.
+	RecallFirst bool
+	Logger      *slog.Logger
 }
 
 // Defaults.
@@ -98,6 +103,7 @@ type Registry struct {
 	next     *ScheduleRequest
 	summary  string
 	finished bool
+	recalled bool // a search_memory succeeded in this turn
 }
 
 // New returns a Registry.
@@ -120,7 +126,7 @@ func New(o Options) *Registry {
 func (r *Registry) Begin() {
 	r.End()
 	r.mu.Lock()
-	r.next, r.summary, r.finished = nil, "", false
+	r.next, r.summary, r.finished, r.recalled = nil, "", false, false
 	r.mu.Unlock()
 }
 
@@ -274,9 +280,13 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	r.mu.Lock()
 	rt, ok := r.routes[name]
 	s := r.sessions[rt.server]
+	held := ok && r.heldForRecall(rt)
 	r.mu.Unlock()
 	if !ok || s == nil {
 		return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
+	}
+	if held {
+		return recallFirstText, true
 	}
 	args := input
 	if len(strings.TrimSpace(string(args))) == 0 {
@@ -290,6 +300,11 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	res, err := s.conn.Call(cctx, rt.tool, args)
 	switch {
 	case err == nil:
+		if rt.server == CoreServer && rt.tool == searchMemory && !res.IsError {
+			r.mu.Lock()
+			r.recalled = true
+			r.mu.Unlock()
+		}
 		return r.cut(res.Text), res.IsError
 	case ctx.Err() != nil:
 		return "the call was cancelled", true
@@ -298,6 +313,33 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	default:
 		return r.cut("the call failed: " + err.Error()), true
 	}
+}
+
+// recallFirstText is the result of a call held back until the notes are searched.
+const recallFirstText = "not run: search your notes first. Call search_memory with `spot-note` and the subject " +
+	"you are about to work on (and with what a person told you about it), read what comes back, " +
+	"then call this again. A note from a person (skip, never, stop, always) is a rule."
+
+// heldForRecall reports whether a call to rt waits for a search_memory. The
+// caller holds r.mu.
+func (r *Registry) heldForRecall(rt route) bool {
+	if !r.o.RecallFirst || r.recalled {
+		return false
+	}
+	if _, ok := r.routes[CoreServer+Sep+searchMemory]; !ok {
+		return false
+	}
+	if rt.server == EgoServer {
+		return false
+	}
+	if rt.server == CoreServer {
+		for _, n := range RecallTools {
+			if rt.tool == n {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // IsBuiltin reports whether name is one of the spot's own tools, schedule_next
