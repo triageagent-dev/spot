@@ -193,9 +193,11 @@ calls and how many failed, your tokens and the tools that fail most; `get_ego_to
 gives every tool's record; `get_ego_errors` gives what the failures said, grouped.
 Look at it at the start of the first wake after an hour has passed, and after a
 run of errors, with `hours` 1 and then 24 to tell a fresh failure from a steady
-one. A tool that fails every time is misused or broken; read why with
-`get_ego_errors`, then `get_session_spans` with `errors_only` on the session it
-names. When a tool keeps failing, or the share of clean turns falls, write what
+one. `by: session` with `limit: 1` shows how your last session went, `by: hour`
+or `day` the trend. A tool that fails every time is misused or broken; read why
+with `get_ego_errors` (and `get_ego_tools`, both take a `session_id` from a
+`by: session` row to look at one session), then `get_session_spans` with
+`errors_only` on the session it names. Pass a session id exactly as ego prints it. When a tool keeps failing, or the share of clean turns falls, write what
 you will do differently (the argument you got wrong, the name to use instead,
 the namespace that is yours) as a note to yourself, not "avoid this tool", and
 read that note back the next time you use the tool.
