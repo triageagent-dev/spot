@@ -28,11 +28,11 @@ var CoreToolsDenied = []string{
 }
 
 // EgoTools is the ego tools the spot may call: the ones that read sessions,
-// threads, token usage, quality and findings. Corrections, labels, role
+// threads, its own activity record, token usage, quality and findings. Corrections, labels, role
 // bindings and running the findings loop are not here.
 var EgoTools = []string{
 	"list_metrics", "list_sessions", "list_threads", "summarize_session", "explain_session", "get_session_spans",
-	"list_runs", "get_run_results", "get_usage", "get_quality", "explain_regression", "get_findings", "list_corrections",
+	"get_activity", "list_runs", "get_run_results", "get_usage", "get_quality", "explain_regression", "get_findings", "list_corrections",
 }
 
 // Server names. A tool is offered to the model as <server>__<tool>.

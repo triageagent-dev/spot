@@ -37,6 +37,9 @@ func fakeServer(t *testing.T) (url string, auth func() string) {
 		b, _ := json.Marshal(req.GetArguments())
 		return mcp.NewToolResultText("args=" + string(b)), nil
 	}))
+	s.AddTool(mcp.NewTool("get_activity"), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("activity"), nil
+	}))
 	s.AddTool(mcp.NewTool("get_pods", mcp.WithDescription("Pods.")), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError("forbidden: pods"), nil
 	}))
@@ -387,7 +390,7 @@ func TestEgoToolsHaveTheSessionReaders(t *testing.T) {
 	for _, n := range EgoTools {
 		have[n] = true
 	}
-	for _, n := range []string{"summarize_session", "explain_session", "get_session_spans", "list_threads"} {
+	for _, n := range []string{"summarize_session", "explain_session", "get_session_spans", "list_threads", "get_activity"} {
 		if !have[n] {
 			t.Errorf("EgoTools lacks %s", n)
 		}
@@ -395,6 +398,26 @@ func TestEgoToolsHaveTheSessionReaders(t *testing.T) {
 	for _, n := range []string{"register_correction", "label_session", "set_role_binding", "delete_role_binding", "run_findings"} {
 		if have[n] {
 			t.Errorf("EgoTools must not hold the writer %s", n)
+		}
+	}
+}
+
+func TestEgoActivityIsOfferedAndSurvivesAModelPrefix(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.Others = []Server{{Name: EgoServer, URL: url, Allow: EgoTools}}
+	})
+	r.Begin()
+	defs, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(names(defs), ","), "ego__get_activity") {
+		t.Fatalf("ego__get_activity is not offered: %v", names(defs))
+	}
+	for _, name := range []string{"ego__get_activity", "default_api:ego__get_activity"} {
+		if c, isErr := r.Call(context.Background(), name, nil); isErr || c != "activity" {
+			t.Errorf("%s: %q %v", name, c, isErr)
 		}
 	}
 }

@@ -187,6 +187,15 @@ failed in an unscored session call `get_session_spans` with `errors_only`. A
 failed ego call is not a reason to stop using the tool: read the error, then
 use the one that fits.
 
+`get_activity` is your own record over a window (`hours`, 24 by default): how
+many turns ran and how many went without a failure, your tool calls and how
+many failed, your tokens, and your tools worst first with their failure rate.
+Look at it when you check yourself: a tool that keeps failing, or a drop in
+how many turns succeed. Read why a turn failed with `get_session_spans` and
+`errors_only`. When a tool keeps failing, write what you will do differently
+(the argument you got wrong, the name to use instead) as a note to yourself,
+not "avoid this tool".
+
 {{CONNECTORS}}## Finding out
 
 The core offers you the tools Tria itself finds things with, so you can find
