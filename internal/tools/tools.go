@@ -264,6 +264,7 @@ func allowed(s Server, tool string) bool {
 // tool, a tool error, a transport error and a timeout all come back as an
 // error result the model can read.
 func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage) (content string, isError bool) {
+	name = r.canonicalName(name)
 	switch name {
 	case ScheduleNext:
 		return r.scheduleNext(input)
@@ -297,6 +298,39 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	default:
 		return r.cut("the call failed: " + err.Error()), true
 	}
+}
+
+// canonicalName maps a tool name the model wrote to the one it was offered.
+// Some models put their own prefix before the name (Gemini writes
+// "default_api:core__list_open_issues", others "functions.finish"). A name that
+// is offered is used as it is; otherwise what follows the last ':' or '.' is
+// used when that is an offered name. Nothing else is guessed: a name that is
+// not offered after stripping stays unknown.
+func (r *Registry) canonicalName(name string) string {
+	if name == ScheduleNext || name == Finish {
+		return name
+	}
+	r.mu.Lock()
+	_, ok := r.routes[name]
+	r.mu.Unlock()
+	if ok {
+		return name
+	}
+	i := strings.LastIndexAny(name, ":.")
+	if i < 0 || i == len(name)-1 {
+		return name
+	}
+	bare := name[i+1:]
+	if bare == ScheduleNext || bare == Finish {
+		return bare
+	}
+	r.mu.Lock()
+	_, ok = r.routes[bare]
+	r.mu.Unlock()
+	if ok {
+		return bare
+	}
+	return name
 }
 
 // withSpotTag adds tag to the comma-separated tags of a memory item the model

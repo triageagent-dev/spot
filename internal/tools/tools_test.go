@@ -356,3 +356,45 @@ func TestMemoryWritesCarryTheSpotTag(t *testing.T) {
 		t.Errorf("only memory writes are tagged: %q", got)
 	}
 }
+
+func TestModelAddedPrefixIsStripped(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, nil)
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"default_api:core__list_open_issues", "functions.core__list_open_issues", "core__list_open_issues"} {
+		if c, isErr := r.Call(ctx, name, json.RawMessage(`{"limit":3}`)); isErr || c != `args={"limit":3}` {
+			t.Errorf("%s: %q %v", name, c, isErr)
+		}
+	}
+	if c, isErr := r.Call(ctx, "default_api:finish", json.RawMessage(`{"summary":"done"}`)); isErr {
+		t.Errorf("a prefixed built-in: %q", c)
+	} else if sum, ok := r.Finished(); !ok || sum != "done" {
+		t.Errorf("finish through a prefix: %q %v", sum, ok)
+	}
+	for _, name := range []string{"default_api:core__nope", "default_api:", "x:y:core__nope", "other.core__resolve_issue"} {
+		if c, isErr := r.Call(ctx, name, nil); !isErr || !strings.Contains(c, "not in your tool list") {
+			t.Errorf("%s must stay unknown: %q %v", name, c, isErr)
+		}
+	}
+}
+
+func TestEgoToolsHaveTheSessionReaders(t *testing.T) {
+	have := map[string]bool{}
+	for _, n := range EgoTools {
+		have[n] = true
+	}
+	for _, n := range []string{"summarize_session", "explain_session", "get_session_spans", "list_threads"} {
+		if !have[n] {
+			t.Errorf("EgoTools lacks %s", n)
+		}
+	}
+	for _, n := range []string{"register_correction", "label_session", "set_role_binding", "delete_role_binding", "run_findings"} {
+		if have[n] {
+			t.Errorf("EgoTools must not hold the writer %s", n)
+		}
+	}
+}
