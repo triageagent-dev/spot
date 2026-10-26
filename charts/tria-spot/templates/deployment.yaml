@@ -100,6 +100,7 @@ spec:
             - --connectors-file=/etc/tria-spot/connectors/connectors.json
             {{- end }}
             - --state-dir=/state
+            - --instruction-cell={{ .Values.agent.instructionCell }}
             - --min-wake={{ .Values.agent.minWake }}
             - --max-wake={{ .Values.agent.maxWake }}
             - --poll-interval={{ .Values.agent.pollInterval }}

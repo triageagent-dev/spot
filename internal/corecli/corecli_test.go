@@ -2,6 +2,7 @@ package corecli
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ type fakeCore struct {
 	upserts   []map[string]any
 	issuesOut string
 	withRoom  bool
+	cell      string // the content of the memory cell "cell-1"; empty = no such cell
 	roomArgs  []map[string]any
 }
 
@@ -42,6 +44,16 @@ func (f *fakeCore) start(t *testing.T) *httptest.Server {
 			defer f.mu.Unlock()
 			f.upserts = append(f.upserts, r.GetArguments())
 			return mcp.NewToolResultText(`{"id":"x","status":"active"}`), nil
+		})
+	s.AddTool(mcp.NewTool("get_memory_cell", mcp.WithString("id")),
+		func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if r.GetArguments()["id"] != "cell-1" || f.cell == "" {
+				return mcp.NewToolResultError("memory cell not found"), nil
+			}
+			b, _ := json.Marshal(map[string]any{"id": "cell-1", "kind": "system_identity", "content": f.cell})
+			return mcp.NewToolResultText(string(b)), nil
 		})
 	if f.withRoom {
 		s.AddTool(mcp.NewTool("read_workspace_room", mcp.WithString("tenant"), mcp.WithString("room"), mcp.WithNumber("since_ts")),
@@ -201,5 +213,29 @@ func TestParseRoomShowsAnAttachment(t *testing.T) {
 	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.alice:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.alice:s","body":"hi","ts":6}]}`, "")
 	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {
 		t.Fatalf("%+v %v", m, err)
+	}
+}
+
+func TestMemoryCellContent(t *testing.T) {
+	f := &fakeCore{cell: "You are {{NAME}}."}
+	srv := f.start(t)
+	defer srv.Close()
+	c := New(srv.URL, tokenFile(t, "tok-1"), "example")
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	got, err := c.MemoryCellContent(ctx, "cell-1")
+	if err != nil || got != "You are {{NAME}}." {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := c.MemoryCellContent(ctx, "nope"); err == nil {
+		t.Error("an unknown cell must be an error")
+	}
+	f.mu.Lock()
+	f.cell = "  \n"
+	f.mu.Unlock()
+	if _, err := c.MemoryCellContent(ctx, "cell-1"); err == nil {
+		t.Error("an empty cell must be an error")
 	}
 }

@@ -208,6 +208,25 @@ func (c *Client) Heartbeat(ctx context.Context, id, title, content string, stale
 	return err
 }
 
+// MemoryCellContent reads one memory cell by its exact id (get_memory_cell) and
+// returns its content. The spot's system prompt is such a cell.
+func (c *Client) MemoryCellContent(ctx context.Context, id string) (string, error) {
+	text, err := c.call(ctx, "get_memory_cell", map[string]any{"id": id})
+	if err != nil {
+		return "", err
+	}
+	var cell struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(text), &cell); err != nil {
+		return "", fmt.Errorf("get_memory_cell: unexpected reply: %w", err)
+	}
+	if strings.TrimSpace(cell.Content) == "" {
+		return "", fmt.Errorf("memory cell %q has no content", id)
+	}
+	return cell.Content, nil
+}
+
 // ErrNoRoomTool is returned by RoomMessages when the core does not offer
 // read_workspace_room (the core's ADR-095 phase 3 is not deployed yet).
 var ErrNoRoomTool = errors.New("core has no read_workspace_room tool")

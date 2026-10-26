@@ -581,6 +581,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <tr><th>Flag</th><th>Default</th><th>Meaning</th></tr>
     <tr><td class="k"><code>--max-steps</code></td><td><code>40</code></td><td>model requests per wake</td></tr>
     <tr><td class="k"><code>--recall-first</code></td><td><code>true</code></td><td>hold every tool but the memory and room reads until the spot has searched its notes in the wake</td></tr>
+    <tr><td class="k"><code>--instruction-cell</code></td><td><code>spot-instruction</code></td><td>id of the core&rsquo;s memory cell (kind <code>system_identity</code>) that holds the system prompt template; read once at start with <code>get_memory_cell</code> and retried for two minutes, after which the spot exits. <code>make prompt-cell</code> prints the cell from <code>prompts/instruction.md</code></td></tr>
     <tr><td class="k"><code>--post-gate</code></td><td><code>true</code></td><td>hold say_in_workspace and comment_on_issue until the spot has read the core's memory about its subject and written a note in the wake</td></tr>
     <tr><td class="k"><code>--max-turn-tokens</code></td><td><code>150000</code></td><td>billable tokens per wake (input without cache reads, output, cache writes); past it the model is told to wrap up; 0 = none</td></tr>
     <tr><td class="k"><code>--max-tool-calls</code></td><td><code>20</code></td><td>tool calls per wake; every step sends the whole conversation again, so a long run of calls is what makes a turn expensive</td></tr>
@@ -996,7 +997,7 @@ printf '%s' "$ANTHROPIC_KEY" &gt; /tmp/spot/anthropic-key
     <tr><td class="k"><code>internal/mcptools</code></td><td>The MCP session the tools use (raw <code>tools/list</code> and <code>tools/call</code>)</td></tr>
     <tr><td class="k"><code>internal/agent</code></td><td>One turn: the loop, steps, injection, results</td></tr>
     <tr><td class="k"><code>internal/telemetry</code></td><td>Spans to ego over OTLP/HTTP</td></tr>
-    <tr><td class="k"><code>internal/prompt</code></td><td>The system prompt (<code>instruction.md</code>, embedded) and turn prompts</td></tr>
+    <tr><td class="k"><code>internal/prompt</code></td><td>Renders the system prompt from its template (read from the core at start; the source is <code>prompts/instruction.md</code>) and builds turn prompts</td></tr>
     <tr><td class="k"><code>internal/supervisor</code></td><td>The wake loop, edges, schedule, ceilings, heartbeat, status</td></tr>
     <tr><td class="k"><code>internal/schedule</code></td><td>The <code>schedule_next</code> request, clamped</td></tr>
     <tr><td class="k"><code>internal/triggers</code></td><td>The core&rsquo;s websocket trigger stream</td></tr>

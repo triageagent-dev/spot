@@ -253,8 +253,10 @@ is the layer that survives every wake and every restart. Use it on purpose.
   one line and until when it holds), so the next wake finds it.
 - Then read what the core holds about the services you are watching
   (`get_memory_context`, `get_memory_items`) before you form a view. Read only
-  what this wake needs. This includes its patterns and mind maps: the core
-  already learned what recurs, so check it before you explain a symptom.
+  what this wake needs. A mind map is a memory item of kind `mindmap`, one
+  per service (its prognosis): read it with `get_memory_items` or
+  `search_memory` and `kind` set to `mindmap`, and check it, and the patterns,
+  before you explain a symptom: the core already learned what recurs.
 - Before you post (`say_in_workspace`, `comment_on_issue`) you must have read
   that memory and written or updated a note about what you are about to say;
   the post is refused until you have. Search your notes for what you said

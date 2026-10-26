@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -112,17 +114,23 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Info("core tools: all of them; the core's Role is the bound")
 	}
 
+	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
+	defer core.Close()
+
+	template, err := loadInstruction(ctx, core, cfg.InstructionCell, log)
+	if err != nil {
+		log.Error("system prompt", "cell", cfg.InstructionCell, "err", err)
+		return 1
+	}
+
 	ag := agent.New(agent.Options{
 		LLM: model, Tools: registry, Model: cfg.Model, Effort: cfg.Effort,
-		System: []string{prompt.Instruction(prompt.Params{
+		System: []string{prompt.Instruction(template, prompt.Params{
 			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 			Connectors: promptConnectors(cfg.Connectors),
 		})},
 		MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, MaxTurnTokens: cfg.MaxTurnTokens, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
 	})
-
-	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
-	defer core.Close()
 
 	sup := supervisor.New(cfg, led, core, ag, log)
 	if cfg.CoreAPIURL != "" {
@@ -221,4 +229,32 @@ func promptConnectors(cs []config.Connector) []prompt.Connector {
 		out = append(out, prompt.Connector{Name: c.Name, Hint: c.Hint, Tools: c.Tools})
 	}
 	return out
+}
+
+// instructionWait bounds how long the spot waits for the core to hand over its
+// system prompt before it gives up and lets the pod restart.
+const (
+	instructionWait  = 2 * time.Minute
+	instructionRetry = 10 * time.Second
+)
+
+// loadInstruction reads the system prompt, a memory cell of the core, once at
+// start. The text is not in the image: without the cell the spot does not run.
+func loadInstruction(ctx context.Context, core *corecli.Client, id string, log *slog.Logger) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, instructionWait)
+	defer cancel()
+	for {
+		text, err := core.MemoryCellContent(ctx, id)
+		if err == nil {
+			sum := sha256.Sum256([]byte(text))
+			log.Info("system prompt read from the core", "cell", id, "bytes", len(text), "sha256", hex.EncodeToString(sum[:6]))
+			return text, nil
+		}
+		log.Warn("system prompt not read yet", "cell", id, "err", err)
+		select {
+		case <-ctx.Done():
+			return "", err
+		case <-time.After(instructionRetry):
+		}
+	}
 }

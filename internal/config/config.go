@@ -59,20 +59,21 @@ type Config struct {
 	Effort string
 	// StateDir holds the supervisor's own files (usage, cursors, status). The
 	// spot's memory is the core's; losing this directory is harmless.
-	StateDir       string
-	MinWake        time.Duration
-	MaxWake        time.Duration
-	MaxSteps       int   // model requests per wake
-	MaxToolCalls   int   // tool calls per wake
-	MaxTurnTokens  int64 // billable tokens per wake; 0 = none
-	RecallFirst    bool  // no tool but memory reads until the spot has searched its notes
-	PostGate       bool  // no post until the spot has read the core's memory and written a note
-	TurnTimeout    time.Duration
-	ToolTimeout    time.Duration // one tool call
-	ToolResultMax  int           // bytes of one tool result the model sees
-	DailyTokenCeil int64
-	PollInterval   time.Duration
-	EdgeCooldown   time.Duration
+	StateDir        string
+	MinWake         time.Duration
+	MaxWake         time.Duration
+	MaxSteps        int    // model requests per wake
+	MaxToolCalls    int    // tool calls per wake
+	MaxTurnTokens   int64  // billable tokens per wake; 0 = none
+	RecallFirst     bool   // no tool but memory reads until the spot has searched its notes
+	InstructionCell string // id of the core memory cell that holds the system prompt
+	PostGate        bool   // no post until the spot has read the core's memory and written a note
+	TurnTimeout     time.Duration
+	ToolTimeout     time.Duration // one tool call
+	ToolResultMax   int           // bytes of one tool result the model sees
+	DailyTokenCeil  int64
+	PollInterval    time.Duration
+	EdgeCooldown    time.Duration
 	// ChatBatch is how long a room message that does not name the spot may
 	// wait before it wakes a turn on its own; a message that names it wakes
 	// after EdgeCooldown. MaxEdgeWakesHr caps early wakes per hour; past it,
@@ -154,6 +155,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxToolCalls, "max-tool-calls", 20, "cap on tool calls per wake; past it the model is told to wrap up")
 	fs.Int64Var(&c.MaxTurnTokens, "max-turn-tokens", 150000, "cap on billable tokens (input without cache reads, output, cache writes) per wake; past it the model is told to wrap up. 0 = none")
 	fs.BoolVar(&c.RecallFirst, "recall-first", true, "hold every tool but the memory and room reads until the spot has searched its notes in the wake")
+	fs.StringVar(&c.InstructionCell, "instruction-cell", "spot-instruction", "id of the core's memory cell (kind system_identity) that holds the system prompt; read once at start")
 	fs.BoolVar(&c.PostGate, "post-gate", true, "hold say_in_workspace and comment_on_issue until the spot has read the core's memory about its subject and written a note in the wake")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
@@ -352,6 +354,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxToolCalls < 1 {
 		errs = append(errs, errors.New("--max-tool-calls must be at least 1"))
+	}
+	if strings.TrimSpace(c.InstructionCell) == "" {
+		errs = append(errs, errors.New("--instruction-cell is required: the id of the core's memory cell that holds the system prompt"))
 	}
 	if c.MaxTurnTokens < 0 {
 		errs = append(errs, errors.New("--max-turn-tokens must not be negative"))

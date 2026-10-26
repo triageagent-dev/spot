@@ -49,6 +49,35 @@ push: ## Build and push the image with ko: make push IMAGE=<registry>/<repo>
 	VERSION=$(VERSION) GIT_COMMIT=$(GIT_COMMIT) BUILD_DATE=$(BUILD_DATE) \
 	  KO_DOCKER_REPO=$(IMAGE) ko build --bare --tags=$(VERSION) ./cmd/tria-spot
 
+# The system prompt is not in the image: the spot reads it from a memory cell of
+# the core when it starts. This prints that cell (kind system_identity, content =
+# prompts/instruction.md); apply it to the namespace of the core:
+#   make prompt-cell | kubectl -n <core namespace> apply -f -
+# The cell name is <id>-<first 8 hex of sha1(id)>, as the core names its own.
+PROMPT_ID ?= spot-instruction
+
+.PHONY: prompt-cell
+prompt-cell: ## Print the MemoryCell that holds the system prompt: make prompt-cell PROMPT_ID=<id>
+	@printf '%s\n' \
+	  'apiVersion: xray.triageagent.dev/v1' \
+	  'kind: MemoryCell' \
+	  'metadata:' \
+	  "  name: $(PROMPT_ID)-$$(printf %s '$(PROMPT_ID)' | shasum | cut -c1-8)" \
+	  '  labels:' \
+	  '    xray.triageagent.dev/kind: system_identity' \
+	  '    xray.triageagent.dev/managed: "true"' \
+	  'spec:' \
+	  '  id: $(PROMPT_ID)' \
+	  '  kind: system_identity' \
+	  '  scope: system' \
+	  '  status: active' \
+	  '  title: "Spot system prompt"' \
+	  '  confidence: "1.0"' \
+	  "  createdAt: \"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+	  "  updatedAt: \"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+	  '  content: |'
+	@sed 's/^/    /' prompts/instruction.md
+
 CHART_TMP := $(or $(TMPDIR),/tmp)
 
 .PHONY: chart-lint

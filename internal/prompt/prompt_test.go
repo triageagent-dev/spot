@@ -1,13 +1,25 @@
 package prompt
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
+// template is the instruction source the repo ships: the text that is loaded
+// into the core's memory cell, which the spot reads at start.
+func template(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../../prompts/instruction.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
-	s := Instruction(Params{Name: "example-spot", Tenant: "example", MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour})
+	s := Instruction(template(t), Params{Name: "example-spot", Tenant: "example", MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour})
 	if strings.Contains(s, "{{") {
 		t.Fatalf("unfilled placeholder in: %s", s[strings.Index(s, "{{"):])
 	}
@@ -35,10 +47,10 @@ func TestWakePromptSaysWhatTheMessengerCallsTheSpot(t *testing.T) {
 }
 
 func TestTemplateHoldsOnlyKnownPlaceholders(t *testing.T) {
-	// The template ships in the binary: deployment-specific values come from
+	// The template is a cell of the core: deployment-specific values come from
 	// placeholders, never from the text.
 	known := map[string]bool{"{{NAME}}": true, "{{TENANT}}": true, "{{MIN_WAKE}}": true, "{{MAX_WAKE}}": true, "{{CONNECTORS}}": true}
-	raw := Raw()
+	raw := template(t)
 	for {
 		i := strings.Index(raw, "{{")
 		if i < 0 {
@@ -77,11 +89,11 @@ func TestTurnPrompt(t *testing.T) {
 }
 
 func TestInstructionListsConnectorsOnlyWhenThereAreSome(t *testing.T) {
-	none := Instruction(Params{Name: "n", Tenant: "t"})
+	none := Instruction(template(t), Params{Name: "n", Tenant: "t"})
 	if strings.Contains(none, "{{") || strings.Contains(none, "## Connectors") {
 		t.Fatal("no connectors: no section and no leftover placeholder")
 	}
-	with := Instruction(Params{Name: "n", Tenant: "t", Connectors: []Connector{{Name: "example-kube", Hint: "The workspace's cluster, read-only.", Tools: []string{"k8s_get_resources", "k8s_get_pod_logs"}}}})
+	with := Instruction(template(t), Params{Name: "n", Tenant: "t", Connectors: []Connector{{Name: "example-kube", Hint: "The workspace's cluster, read-only.", Tools: []string{"k8s_get_resources", "k8s_get_pod_logs"}}}})
 	if !strings.Contains(with, "## Connectors") || !strings.Contains(with, "`example-kube`: The workspace's cluster, read-only.") {
 		t.Fatalf("the connector and its hint belong in the prompt:\n%s", with)
 	}
@@ -96,7 +108,7 @@ func TestInstructionListsConnectorsOnlyWhenThereAreSome(t *testing.T) {
 }
 
 func TestInstructionHasNoFilesNoShellAndNoCLI(t *testing.T) {
-	s := Instruction(Params{Name: "n", Tenant: "t"})
+	s := Instruction(template(t), Params{Name: "n", Tenant: "t"})
 	for _, banned := range []string{"next.json", "/state", "Write tool", "Edit tool", "mcp__", "Bash", "sandbox", "--allowedTools", "{{"} {
 		if strings.Contains(s, banned) {
 			t.Errorf("the instruction must not mention %q", banned)
@@ -114,7 +126,7 @@ func TestInstructionIsTheSameForEveryWake(t *testing.T) {
 	// It is the cached prefix of every request: nothing in it may depend on
 	// the time or on the wake.
 	p := Params{Name: "n", Tenant: "t", MinWake: time.Minute, MaxWake: time.Hour}
-	first, second := Instruction(p), Instruction(p)
+	first, second := Instruction(template(t), p), Instruction(template(t), p)
 	if first != second {
 		t.Error("the instruction must be deterministic")
 	}

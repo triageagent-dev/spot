@@ -3,14 +3,10 @@
 package prompt
 
 import (
-	_ "embed"
 	"fmt"
 	"strings"
 	"time"
 )
-
-//go:embed instruction.md
-var instruction string
 
 // Params fill the placeholders in the system prompt.
 type Params struct {
@@ -30,19 +26,17 @@ type Connector struct {
 	Tools []string
 }
 
-// Instruction renders the system prompt.
-func Instruction(p Params) string {
+// Instruction renders the system prompt from its template, which the spot
+// reads from a memory cell of the core when it starts.
+func Instruction(template string, p Params) string {
 	return strings.NewReplacer(
 		"{{NAME}}", p.Name,
 		"{{TENANT}}", p.Tenant,
 		"{{MIN_WAKE}}", p.MinWake.String(),
 		"{{MAX_WAKE}}", p.MaxWake.String(),
 		"{{CONNECTORS}}", connectorsSection(p.Connectors),
-	).Replace(instruction)
+	).Replace(template)
 }
-
-// Raw returns the unrendered template, for tests.
-func Raw() string { return instruction }
 
 // Reason is why the agent was woken.
 type Reason string

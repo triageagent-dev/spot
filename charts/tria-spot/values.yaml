@@ -135,6 +135,7 @@ telemetry:
 
 # Supervisor settings (see docs/spec.html for each flag).
 agent:
+  instructionCell: spot-instruction  # id of the core's memory cell (kind system_identity) with the system prompt; read once at start (make prompt-cell renders it)
   coreTools: curated          # curated: the tools the loop names, destructive ones (resolve_issue, forget_issue, ...) refused; all: every core tool, bounded by core.verbs
   minWake: 2m
   maxWake: 2h
