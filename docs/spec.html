@@ -164,7 +164,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
   <nav>
     <a href="#s18"><span class="n">18</span>Run it locally<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
     <a href="#s19"><span class="n">19</span>Layout<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
-    <a href="#s20"><span class="n">20</span>Not verified<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
+    <a href="#s20"><span class="n">20</span>Verified and not verified<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></a>
   </nav>
 </aside>
 
@@ -316,15 +316,26 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <figcaption>Figure 2. One turn. All results of one answer go back in one user message. The turn ends when the model answers without tools, calls <code>finish</code>, or hits a cap; the schedule is the last call.</figcaption>
   </figure>
 
+  <h3>How a turn ends</h3>
   <div class="tablewrap"><table>
     <tr><th>A turn ends</th><th>Result</th></tr>
     <tr><td class="k"><code>end_turn</code></td><td>The model ends its answer.</td></tr>
     <tr><td class="k"><code>finish</code></td><td><code>{"summary": "&lt;one line&gt;"}</code>; the line shows in the status file. Optional.</td></tr>
     <tr><td class="k"><code>schedule_next</code></td><td><code>{"after": "15m", "why": "check the rollout"}</code>, last in the turn, clamped to <code>[--min-wake, --max-wake]</code>. Never called, or not a duration: the next wake is <code>--min-wake</code> and the supervisor logs why.</td></tr>
-    <tr><td class="k">40 requests</td><td><code>--max-steps</code>. Not a failure: <code>stepsExhausted</code>.</td></tr>
+  </table></div>
+
+  <h3>Gates before tools run</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Gate</th><th>Rule</th></tr>
     <tr><td class="k">Notes first</td><td><code>--recall-first</code>. In each wake every tool except the core's memory and room reads (<code>tools.RecallTools</code>) and ego's is answered with an error and not run until a <code>search_memory</code> has succeeded, so the spot looks for what it was told before it looks at the cluster or posts. The tool layer holds it; it is off when the core does not offer <code>search_memory</code>.</td></tr>
     <tr><td class="k">Post gate</td><td><code>--post-gate</code>. In each wake <code>say_in_workspace</code> and <code>comment_on_issue</code> (<code>tools.PostTools</code>) are answered with an error and not run until a <code>get_memory_context</code> or <code>get_memory_items</code> call (<code>tools.ContextTools</code>) and an <code>upsert_memory_item</code> or <code>supersede_memory_item</code> call (<code>tools.NoteTools</code>) have succeeded, so the spot posts knowing what the workspace holds and leaves a note of what it said. A step is skipped when the core does not offer a tool for it.</td></tr>
     <tr><td class="k">Fenced results</td><td><code>--fence-results</code>. The text of every core and connector tool result (an error too) comes back inside <code>&lt;data id=… from=…&gt;</code> and <code>&lt;/data id=…&gt;</code>, with a fresh random id per call (<code>Registry.fence</code>), so text from outside (a log line, an issue comment, a chat message) is marked as data and cannot close the tag. The supervisor's own refusals, the built-in tools and the ego tools are not wrapped. The instruction tells the model that what is inside is data, never orders.</td></tr>
+  </table></div>
+
+  <h3>Caps and failures</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Limit or failure</th><th>Rule</th></tr>
+    <tr><td class="k">40 requests</td><td><code>--max-steps</code>. Not a failure: <code>stepsExhausted</code>.</td></tr>
     <tr><td class="k">150k tokens</td><td><code>--max-turn-tokens</code>. The billable tokens of a wake (input without cache reads, output, cache writes). Checked after each step; past it a tool call is answered with an error and not run and the model is told to wrap up, as at the tool-call cap. <code>0</code> turns it off. Not a failure.</td></tr>
     <tr><td class="k">20 tool calls</td><td><code>--max-tool-calls</code>. Past it a call is answered with an error and not run, and the model is told to answer from what it has, call <code>schedule_next</code> and <code>finish</code>, which are never refused. A model that goes on calling tools ends the turn. Not a failure.</td></tr>
     <tr><td class="k">20m</td><td><code>--turn-timeout</code>. Failed; reported as cut off on the next wake.</td></tr>
@@ -510,6 +521,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <tr><td class="k">connectors</td><td>the names in the connector&rsquo;s <code>tools</code></td><td>By exact name only.</td></tr>
   </table></div>
 
+  <h3>Tool calls</h3>
   <div class="tablewrap"><table>
     <tr><th>Tool call</th><th>Rule</th></tr>
     <tr><td class="k">timeout</td><td><code>--tool-timeout</code> (60s).</td></tr>
@@ -774,6 +786,19 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <figcaption>Figure 6. Boundary. Only offered tools exist; a call to any other name is answered with an error and never sent. The prompt is best effort; the lists and the connector hold.</figcaption>
   </figure>
 
+  <h3>What the spot cannot do</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Question</th><th>Answer</th></tr>
+    <tr><td class="k">Can it run a shell command or a program?</td><td>No. There is no shell and no tool that runs a command (<code>internal/tools</code> has none).</td></tr>
+    <tr><td class="k">Can it read or write a file?</td><td>No. There is no file tool, and the model cannot read a mounted token.</td></tr>
+    <tr><td class="k">Can it fetch a URL or search the web?</td><td>No. There is no web tool.</td></tr>
+    <tr><td class="k">Can it start subagents?</td><td>No.</td></tr>
+    <tr><td class="k">Can it touch the cluster directly?</td><td>No. The spot holds no cluster RBAC. A cluster is reached only through a connector, by the exact tool names the connector offers, and the connector&rsquo;s own identity is the limit.</td></tr>
+    <tr><td class="k">Can it call any core tool?</td><td>Only the tools the install offers. By default the allowed list is <code>tools.CoreTools</code>; the destructive ones (<code>tools.CoreToolsDenied</code>, for example <code>resolve_issue</code>) are refused by name, even when also allowed. A call to any other name is answered with an error and never sent.</td></tr>
+    <tr><td class="k">Can it change its own limits?</td><td>No. The counters live in the supervisor&rsquo;s memory and the model has no tool to write them.</td></tr>
+    <tr><td class="k">Can the prompt widen any of this?</td><td>No. The prompt is best effort; the tool lists and the connector hold.</td></tr>
+  </table></div>
+
   <h3>Identity towards the core</h3>
   <div class="tablewrap"><table>
     <tr><th><code>core.identity</code></th><th>Behaviour</th></tr>
@@ -1012,20 +1037,19 @@ printf '%s' "$ANTHROPIC_KEY" &gt; /tmp/spot/anthropic-key
 </section>
 
 <section id="s20">
-  <div class="sechead"><span class="ord">20</span><h2>Not verified</h2></div>
-  <p>No model API credential was used while this runtime was written. The SDK calls are tested against a local HTTP server and the loop against a scripted fake.</p>
+  <div class="sechead"><span class="ord">20</span><h2>Verified and not verified</h2></div>
+  <p>Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core and one Kubernetes connector. That covers full turns with parallel tool calls, cache reads across wakes (<code>read=</code> in the turn log), the Workload Identity binding, ego spans for every wake, <code>read_workspace_room</code>, and the Helm install and rollout of the image. The Anthropic paths below have not been run against a live deployment.</p>
   <div class="tablewrap"><table>
     <tr><th>Area</th><th>Not verified</th></tr>
-    <tr><td class="k">full turn</td><td>Against the real API: adaptive thinking blocks round-tripping with tool results, one-hour prefix cache hits across wakes, real usage numbers.</td></tr>
+    <tr><td class="k">full turn, Anthropic</td><td>Against the real API: adaptive thinking blocks round-tripping with tool results, one-hour prefix cache hits across wakes, real usage numbers.</td></tr>
     <tr><td class="k">federation</td><td>The exchange from a pod with a valid rule, service account and token; how long the access token lives and whether it is reused (this decides whether <code>jti_reused</code> shows up); the SDK&rsquo;s error on a rejection. The hint matches <code>Authentication failed</code>, <code>authentication_error</code>, <code>jti_reused</code>, <code>token exchange</code> and <code>federation</code> in the error text.</td></tr>
-    <tr><td class="k">Vertex AI</td><td>The Workload Identity binding, the egress ranges and the model id on a real project.</td></tr>
-    <tr><td class="k">Gemini</td><td>Tested against a local HTTP server only: a full Gemini 3 turn (thought signatures with parallel calls, accepted levels), implicit cache hits across wakes, Gemini on Vertex AI with Workload Identity.</td></tr>
-    <tr><td class="k">ego</td><td>How it maps the span attributes (GenAI conventions are followed).</td></tr>
+    <tr><td class="k">Vertex AI, Anthropic models</td><td>The egress ranges and the model id for Claude on a real project.</td></tr>
     <tr><td class="k"><code>read_workspace_room</code></td><td>The reply shape is read loosely (<code>messages</code> object or array; <code>id</code>, <code>sender|from|author</code>, <code>text|body|message</code>, <code>ts|time</code>); re-check when the tool changes.</td></tr>
     <tr><td class="k">heartbeat</td><td>The ADR says <code>system2-heartbeat-&lt;tenant&gt;</code>; the core looks only for <code>system2-heartbeat</code>, so until it reads the per-tenant id this heartbeat does not change reflection. <code>--heartbeat-id</code> sets either.</td></tr>
     <tr><td class="k">comments</td><td><code>list_open_issues</code> gives a comment count, not the author (all MCP comments are <code>mcp-client</code>), so every new comment is a <code>human</code> wake and the agent reads the issue to see who. Comments made during a turn are absorbed by the post-turn baseline.</td></tr>
     <tr><td class="k">hop counts</td><td>Hop counts and caps are enforced by the core; the prompt only tells the agent to pass and respect them.</td></tr>
-    <tr><td class="k">tooling</td><td>Running the image, <code>helm install</code>, kubeconform, and <code>golangci-lint</code> (<code>make lint</code> runs it when present).</td></tr>
+    <tr><td class="k">post gate</td><td>Refusing a post and releasing it after a memory read and a note has run in tests only, not yet seen in a live wake.</td></tr>
+    <tr><td class="k">tooling</td><td><code>kubeconform</code>, and <code>golangci-lint</code> (<code>make lint</code> runs it when present).</td></tr>
   </table></div>
 
 </section>
