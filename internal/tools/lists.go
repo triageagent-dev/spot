@@ -11,7 +11,8 @@ var CoreTools = []string{
 	"search_memory", "search_corpus", "get_memory", "get_memory_context", "get_memory_items", "get_memory_cell",
 	"fetch_memory", "get_world_context", "get_service_analytics", "get_service_prediction",
 	"inspect_service", "list_services", "list_applications", "list_pattern_proposals", "analyze_issue", "verify_hypothesis",
-	"comment_on_issue", "upsert_memory_item", "note_observation",
+	"comment_on_issue", "upsert_memory_item", "supersede_memory_item", "refute_memory_item", "note_observation",
+	"recognize_pattern", "link_pattern",
 	"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_workspace_status", "set_spot_status",
 }
 
@@ -22,8 +23,8 @@ var CoreTools = []string{
 var CoreToolsDenied = []string{
 	"resolve_issue", "forget_issue", "update_issue_severity", "link_issues",
 	"set_tenant_goals", "run_rsi", "emit_event", "classify_event", "decide_event", "guardrail_event",
-	"test_notify", "test_push", "approve_pattern", "link_pattern", "recognize_pattern",
-	"expire_memory_item", "refute_memory_item", "supersede_memory_item", "consolidate_memory",
+	"test_notify", "test_push", "approve_pattern",
+	"expire_memory_item", "consolidate_memory",
 	"build_memory", "build_knowledge", "build_rca",
 }
 
@@ -46,6 +47,15 @@ var RecallTools = []string{
 	"search_memory", "get_memory_items", "get_memory_context", "get_memory_cell", "get_memory", "fetch_memory",
 	"get_triage_instructions", "read_workspace_room", "set_workspace_typing", "set_spot_status",
 }
+
+// PostTools are the core tools that put words where people read them. With
+// PostGate a turn may call them only after a ContextTools call and a NoteTools
+// call succeeded in it.
+var (
+	PostTools    = []string{"say_in_workspace", "comment_on_issue"}
+	ContextTools = []string{"get_memory_context", "get_memory_items"}
+	NoteTools    = []string{"upsert_memory_item", "supersede_memory_item"}
+)
 
 // Server names. A tool is offered to the model as <server>__<tool>.
 const (

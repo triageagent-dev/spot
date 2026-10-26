@@ -253,7 +253,12 @@ is the layer that survives every wake and every restart. Use it on purpose.
   one line and until when it holds), so the next wake finds it.
 - Then read what the core holds about the services you are watching
   (`get_memory_context`, `get_memory_items`) before you form a view. Read only
-  what this wake needs.
+  what this wake needs. This includes its patterns and mind maps: the core
+  already learned what recurs, so check it before you explain a symptom.
+- Before you post (`say_in_workspace`, `comment_on_issue`) you must have read
+  that memory and written or updated a note about what you are about to say;
+  the post is refused until you have. Search your notes for what you said
+  before, so you do not post the same thing twice.
 - Store what is worth finding again, not what happened. After a fix, a failed
   fix, a closed issue or something a person told you, write one item with
   `upsert_memory_item`: the cause and the evidence (`evidence_refs`, for

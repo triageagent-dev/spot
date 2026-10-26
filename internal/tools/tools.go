@@ -59,7 +59,13 @@ type Options struct {
 	// acts on a subject before it has looked for what it was told about it.
 	// It does nothing when the core does not offer search_memory.
 	RecallFirst bool
-	Logger      *slog.Logger
+	// PostGate holds back the tools that post (PostTools) until the model has
+	// read what the core holds about its subject (ContextTools) and written a
+	// note about it (NoteTools) in the turn, so it posts knowing what the
+	// workspace already has and what it said before. A step is skipped when
+	// the core does not offer a tool that could satisfy it.
+	PostGate bool
+	Logger   *slog.Logger
 }
 
 // Defaults.
@@ -104,6 +110,8 @@ type Registry struct {
 	summary  string
 	finished bool
 	recalled bool // a search_memory succeeded in this turn
+	read     bool // a ContextTools call succeeded in this turn
+	noted    bool // a NoteTools call succeeded in this turn
 }
 
 // New returns a Registry.
@@ -126,7 +134,7 @@ func New(o Options) *Registry {
 func (r *Registry) Begin() {
 	r.End()
 	r.mu.Lock()
-	r.next, r.summary, r.finished, r.recalled = nil, "", false, false
+	r.next, r.summary, r.finished, r.recalled, r.read, r.noted = nil, "", false, false, false, false
 	r.mu.Unlock()
 }
 
@@ -281,12 +289,19 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	rt, ok := r.routes[name]
 	s := r.sessions[rt.server]
 	held := ok && r.heldForRecall(rt)
+	gate := ""
+	if ok && !held {
+		gate = r.heldForPost(rt)
+	}
 	r.mu.Unlock()
 	if !ok || s == nil {
 		return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
 	}
 	if held {
 		return recallFirstText, true
+	}
+	if gate != "" {
+		return gate, true
 	}
 	args := input
 	if len(strings.TrimSpace(string(args))) == 0 {
@@ -300,9 +315,16 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	res, err := s.conn.Call(cctx, rt.tool, args)
 	switch {
 	case err == nil:
-		if rt.server == CoreServer && rt.tool == searchMemory && !res.IsError {
+		if rt.server == CoreServer && !res.IsError {
 			r.mu.Lock()
-			r.recalled = true
+			switch {
+			case rt.tool == searchMemory:
+				r.recalled = true
+			case inList(ContextTools, rt.tool):
+				r.read = true
+			case inList(NoteTools, rt.tool):
+				r.noted = true
+			}
 			r.mu.Unlock()
 		}
 		return r.cut(res.Text), res.IsError
@@ -340,6 +362,50 @@ func (r *Registry) heldForRecall(rt route) bool {
 		}
 	}
 	return true
+}
+
+const (
+	readFirstText = "not run: read what the core holds first. Call get_memory_context (or get_memory_items) for the " +
+		"service or subject you are about to post about, see what the workspace already has and what you said before, " +
+		"then call this again."
+	noteFirstText = "not run: write your note first. Call upsert_memory_item (or supersede_memory_item) with one small " +
+		"note about what you are about to say, tagged spot-note, so the next wake knows you said it; search first and " +
+		"extend your own note if one exists. Then call this again."
+)
+
+// heldForPost returns the refusal text of a call to rt that waits for a memory
+// read or a note, or "" when it may run. The caller holds r.mu.
+func (r *Registry) heldForPost(rt route) string {
+	if !r.o.PostGate || rt.server != CoreServer || !inList(PostTools, rt.tool) {
+		return ""
+	}
+	if !r.read && r.offers(ContextTools) {
+		return readFirstText
+	}
+	if !r.noted && r.offers(NoteTools) {
+		return noteFirstText
+	}
+	return ""
+}
+
+// offers reports whether the core offers any of the tools. The caller holds
+// r.mu.
+func (r *Registry) offers(list []string) bool {
+	for _, n := range list {
+		if _, ok := r.routes[CoreServer+Sep+n]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func inList(list []string, name string) bool {
+	for _, n := range list {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // IsBuiltin reports whether name is one of the spot's own tools, schedule_next

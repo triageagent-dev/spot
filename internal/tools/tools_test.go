@@ -43,6 +43,12 @@ func fakeServer(t *testing.T) (url string, auth func() string) {
 			return mcp.NewToolResultText(n), nil
 		}))
 	}
+	for _, n := range []string{"get_memory_context", "say_in_workspace"} {
+		n := n
+		s.AddTool(mcp.NewTool(n), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(n), nil
+		}))
+	}
 	s.AddTool(mcp.NewTool("search_memory"), h(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("notes"), nil
 	}))
@@ -493,5 +499,70 @@ func TestFailedSearchDoesNotCount(t *testing.T) {
 	r.Call(context.Background(), "core__get_pods", nil)
 	if _, isErr := r.Call(context.Background(), "core__list_open_issues", nil); !isErr {
 		t.Error("held until a search succeeds")
+	}
+}
+
+func TestNothingIsPostedBeforeTheMemoryIsReadAndANoteWritten(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.PostGate = true
+		o.Core.Allow = []string{"say_in_workspace", "get_memory_context", "upsert_memory_item"}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(ctx, "core__say_in_workspace", nil); !isErr || !strings.Contains(c, "read what the core holds") {
+		t.Errorf("a post before the read: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "core__get_memory_context", nil); isErr || c != "get_memory_context" {
+		t.Errorf("the read: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "core__say_in_workspace", nil); !isErr || !strings.Contains(c, "write your note first") {
+		t.Errorf("a post before the note: %q %v", c, isErr)
+	}
+	if _, isErr := r.Call(ctx, "core__upsert_memory_item", json.RawMessage(`{"limit":1}`)); isErr {
+		t.Error("the note")
+	}
+	if c, isErr := r.Call(ctx, "core__say_in_workspace", nil); isErr || c != "say_in_workspace" {
+		t.Errorf("a post after both: %q %v", c, isErr)
+	}
+	// A new turn starts unread and unwritten again.
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, isErr := r.Call(ctx, "core__say_in_workspace", nil); !isErr {
+		t.Error("the read and the note of one turn must not carry into the next")
+	}
+}
+
+func TestPostGateSkipsAStepTheCoreCannotSatisfy(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.PostGate = true
+		o.Core.Allow = []string{"say_in_workspace"}
+	})
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(context.Background(), "core__say_in_workspace", nil); isErr {
+		t.Errorf("no read or note tool offered, nothing to wait for: %q", c)
+	}
+}
+
+func TestPostGateIsOffByDefault(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.Core.Allow = []string{"say_in_workspace", "get_memory_context", "upsert_memory_item"}
+	})
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(context.Background(), "core__say_in_workspace", nil); isErr {
+		t.Errorf("gate off: %q", c)
 	}
 }

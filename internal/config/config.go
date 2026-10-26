@@ -66,6 +66,7 @@ type Config struct {
 	MaxToolCalls   int   // tool calls per wake
 	MaxTurnTokens  int64 // billable tokens per wake; 0 = none
 	RecallFirst    bool  // no tool but memory reads until the spot has searched its notes
+	PostGate       bool  // no post until the spot has read the core's memory and written a note
 	TurnTimeout    time.Duration
 	ToolTimeout    time.Duration // one tool call
 	ToolResultMax  int           // bytes of one tool result the model sees
@@ -153,6 +154,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxToolCalls, "max-tool-calls", 20, "cap on tool calls per wake; past it the model is told to wrap up")
 	fs.Int64Var(&c.MaxTurnTokens, "max-turn-tokens", 150000, "cap on billable tokens (input without cache reads, output, cache writes) per wake; past it the model is told to wrap up. 0 = none")
 	fs.BoolVar(&c.RecallFirst, "recall-first", true, "hold every tool but the memory and room reads until the spot has searched its notes in the wake")
+	fs.BoolVar(&c.PostGate, "post-gate", true, "hold say_in_workspace and comment_on_issue until the spot has read the core's memory about its subject and written a note in the wake")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
 	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 32768, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")
