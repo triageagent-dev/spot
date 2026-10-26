@@ -52,7 +52,7 @@ func (f *fakeCore) start(t *testing.T) *httptest.Server {
 			if r.GetArguments()["id"] != "cell-1" || f.cell == "" {
 				return mcp.NewToolResultError("memory cell not found"), nil
 			}
-			b, _ := json.Marshal(map[string]any{"id": "cell-1", "kind": "system_identity", "content": f.cell})
+			b, _ := json.Marshal(map[string]any{"id": "cell-1", "kind": "spot_system_identity", "content": f.cell})
 			return mcp.NewToolResultText(string(b)), nil
 		})
 	if f.withRoom {

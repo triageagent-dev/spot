@@ -50,7 +50,7 @@ push: ## Build and push the image with ko: make push IMAGE=<registry>/<repo>
 	  KO_DOCKER_REPO=$(IMAGE) ko build --bare --tags=$(VERSION) ./cmd/tria-spot
 
 # The system prompt is not in the image: the spot reads it from a memory cell of
-# the core when it starts. This prints that cell (kind system_identity, content =
+# the core when it starts. This prints that cell (kind spot_system_identity, content =
 # prompts/instruction.md); apply it to the namespace of the core:
 #   make prompt-cell | kubectl -n <core namespace> apply -f -
 # The cell name is <id>-<first 8 hex of sha1(id)>, as the core names its own.
@@ -64,11 +64,11 @@ prompt-cell: ## Print the MemoryCell that holds the system prompt: make prompt-c
 	  'metadata:' \
 	  "  name: $(PROMPT_ID)-$$(printf %s '$(PROMPT_ID)' | shasum | cut -c1-8)" \
 	  '  labels:' \
-	  '    xray.triageagent.dev/kind: system_identity' \
+	  '    xray.triageagent.dev/kind: spot_system_identity' \
 	  '    xray.triageagent.dev/managed: "true"' \
 	  'spec:' \
 	  '  id: $(PROMPT_ID)' \
-	  '  kind: system_identity' \
+	  '  kind: spot_system_identity' \
 	  '  scope: system' \
 	  '  status: active' \
 	  '  title: "Spot system prompt"' \

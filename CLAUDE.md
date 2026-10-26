@@ -54,7 +54,7 @@ Read the ADRs, `README.md` and `docs/spec.html` before changing behaviour.
   list: an operator's explicit choice for an install, with the core's Role
   (`core.verbs`) as the bound. Never make it the default.
 - **The system prompt is not in the image.** It is a memory cell of the core
-  (kind `system_identity`, id `--instruction-cell`), read once at start;
+  (kind `spot_system_identity`, id `--instruction-cell`), read once at start;
   without it the spot does not run. The source text is `prompts/instruction.md`
   and `make prompt-cell` renders the cell. Never embed it back.
 - **The prefix stays stable.** The tool list (sorted by name) and the system

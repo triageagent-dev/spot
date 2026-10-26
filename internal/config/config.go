@@ -155,7 +155,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxToolCalls, "max-tool-calls", 20, "cap on tool calls per wake; past it the model is told to wrap up")
 	fs.Int64Var(&c.MaxTurnTokens, "max-turn-tokens", 150000, "cap on billable tokens (input without cache reads, output, cache writes) per wake; past it the model is told to wrap up. 0 = none")
 	fs.BoolVar(&c.RecallFirst, "recall-first", true, "hold every tool but the memory and room reads until the spot has searched its notes in the wake")
-	fs.StringVar(&c.InstructionCell, "instruction-cell", "spot-instruction", "id of the core's memory cell (kind system_identity) that holds the system prompt; read once at start")
+	fs.StringVar(&c.InstructionCell, "instruction-cell", "spot-instruction", "id of the core's memory cell (kind spot_system_identity) that holds the system prompt; read once at start")
 	fs.BoolVar(&c.PostGate, "post-gate", true, "hold say_in_workspace and comment_on_issue until the spot has read the core's memory about its subject and written a note in the wake")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
