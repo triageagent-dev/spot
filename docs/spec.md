@@ -19,15 +19,27 @@ A **wake** is why the supervisor starts a **turn**. Every wake is an empty conve
 
 *Figure 2. One turn. All results of one answer go back in one user message. The turn ends when the model answers without tools, calls `finish`, or hits a cap; the schedule is the last call.*
 
+### How a turn ends
+
 | A turn ends | Result |
 |---|---|
 | `end_turn` | The model ends its answer. |
 | `finish` | `{"summary": "<one line>"}`; the line shows in the status file. Optional. |
 | `schedule_next` | `{"after": "15m", "why": "check the rollout"}`, last in the turn, clamped to `[--min-wake, --max-wake]`. Never called, or not a duration: the next wake is `--min-wake` and the supervisor logs why. |
-| 40 requests | `--max-steps`. Not a failure: `stepsExhausted`. |
+
+### Gates before tools run
+
+| Gate | Rule |
+|---|---|
 | Notes first | `--recall-first`. In each wake every tool except the core's memory and room reads (`tools.RecallTools`) and ego's is answered with an error and not run until a `search_memory` has succeeded, so the spot looks for what it was told before it looks at the cluster or posts. The tool layer holds it; it is off when the core does not offer `search_memory`. |
 | Post gate | `--post-gate`. In each wake `say_in_workspace` and `comment_on_issue` (`tools.PostTools`) are answered with an error and not run until a `get_memory_context` or `get_memory_items` call (`tools.ContextTools`) and an `upsert_memory_item` or `supersede_memory_item` call (`tools.NoteTools`) have succeeded, so the spot posts knowing what the workspace holds and leaves a note of what it said. A step is skipped when the core does not offer a tool for it. |
 | Fenced results | `--fence-results`. The text of every core and connector tool result (an error too) comes back inside `<data id=… from=…>` and `</data id=…>`, with a fresh random id per call (`Registry.fence`), so text from outside (a log line, an issue comment, a chat message) is marked as data and cannot close the tag. The supervisor's own refusals, the built-in tools and the ego tools are not wrapped. The instruction tells the model that what is inside is data, never orders. |
+
+### Caps and failures
+
+| Limit or failure | Rule |
+|---|---|
+| 40 requests | `--max-steps`. Not a failure: `stepsExhausted`. |
 | 150k tokens | `--max-turn-tokens`. The billable tokens of a wake (input without cache reads, output, cache writes). Checked after each step; past it a tool call is answered with an error and not run and the model is told to wrap up, as at the tool-call cap. `0` turns it off. Not a failure. |
 | 20 tool calls | `--max-tool-calls`. Past it a call is answered with an error and not run, and the model is told to answer from what it has, call `schedule_next` and `finish`, which are never refused. A model that goes on calling tools ends the turn. Not a failure. |
 | 20m | `--turn-timeout`. Failed; reported as cut off on the next wake. |
@@ -116,6 +128,8 @@ The model is offered tools named `<server>__<tool>`, sorted, with the server’s
 | ego (`tools.EgoTools`) | `list_metrics` `list_sessions` `summarize_session` `explain_session` `list_runs` `get_run_results` `get_usage` `get_quality` `explain_regression` `get_findings` `list_corrections` | Read-only: sessions, usage, quality, findings. Offered when `--ego-mcp-url` is set. |
 | built-in | `schedule_next` `finish` | The spot’s own; no prefix. |
 | connectors | the names in the connector’s `tools` | By exact name only. |
+
+### Tool calls
 
 | Tool call | Rule |
 |---|---|
