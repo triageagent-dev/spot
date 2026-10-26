@@ -118,7 +118,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
 			Connectors: promptConnectors(cfg.Connectors),
 		})},
-		MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
+		MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, MaxTurnTokens: cfg.MaxTurnTokens, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
 	})
 
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
@@ -145,7 +145,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 // newModel builds the model client for the configured provider and auth mode.
 // It fails at once on a key file it cannot read or a mode with missing ids.
 func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Client, error) {
-	log.Info("model", "provider", cfg.LLMProvider, "id", cfg.Model, "effort", cfg.Effort, "maxSteps", cfg.MaxSteps, "maxToolCalls", cfg.MaxToolCalls)
+	log.Info("model", "provider", cfg.LLMProvider, "id", cfg.Model, "effort", cfg.Effort, "maxSteps", cfg.MaxSteps, "maxToolCalls", cfg.MaxToolCalls, "maxTurnTokens", cfg.MaxTurnTokens)
 	if cfg.LLMProvider == config.ProviderGemini {
 		o := llm.GeminiOptions{Auth: cfg.LLMAuth, Model: cfg.Model, KeyFile: cfg.GeminiKeyFile}
 		if cfg.LLMAuth == config.AuthVertex {

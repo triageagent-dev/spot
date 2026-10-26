@@ -398,6 +398,37 @@ func TestAModelThatKeepsCallingToolsAfterTheCapEndsTheTurn(t *testing.T) {
 	}
 }
 
+func TestToolCallsPastTheTokenCapAreRefusedAndTheModelWrapsUp(t *testing.T) {
+	ft := newFakeTools()
+	call := llm.Call{Name: "core__list_open_issues"}
+	// u bills 160 per step: the cap of 300 is passed by the second step.
+	f := llm.NewFake(
+		llm.ToolUse(u, call),
+		llm.ToolUse(u, call, call),
+		llm.EndTurn("done", u))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 20; o.MaxTurnTokens = 300 }).Run(context.Background(), Turn{Prompt: "p"})
+	if res.Failed || res.ToolLimit || res.Steps != 3 || res.ToolCalls != 1 || len(ft.calls) != 1 {
+		t.Fatalf("calls %v result %+v", ft.calls, res)
+	}
+	rs := f.Requests()[2].Messages[4].Content
+	if len(rs) != 2 || !rs[0].IsError || !strings.Contains(rs[0].Content, "not run") || !strings.Contains(rs[0].Content, "token budget") {
+		t.Errorf("results: %+v", rs)
+	}
+	if first := f.Requests()[0].Messages[0].Content[0].Text; !strings.Contains(first, "also ends at about") {
+		t.Errorf("the first message does not say the token cap: %q", first)
+	}
+}
+
+func TestAModelThatKeepsCallingToolsAfterTheTokenCapEndsTheTurn(t *testing.T) {
+	ft := newFakeTools()
+	call := llm.Call{Name: "core__list_open_issues"}
+	f := llm.NewFake(llm.ToolUse(u, call), llm.ToolUse(u, call), llm.ToolUse(u, call), llm.EndTurn("never", u))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 20; o.MaxTurnTokens = 100 }).Run(context.Background(), Turn{Prompt: "p"})
+	if !res.ToolLimit || !res.TokenLimit || res.Failed || res.Err != nil || len(ft.calls) != 0 {
+		t.Errorf("calls %v result %+v", ft.calls, res)
+	}
+}
+
 func TestFinishAndScheduleAreNeverRefusedAtTheCap(t *testing.T) {
 	ft := newFakeTools()
 	call := llm.Call{Name: "core__list_open_issues"}

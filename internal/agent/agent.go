@@ -70,7 +70,10 @@ type Result struct {
 	// ToolLimit is set when the turn ended because the model kept calling
 	// tools after it was told the tool-call cap was reached. Work stopping,
 	// not a failure.
-	ToolLimit  bool
+	ToolLimit bool
+	// TokenLimit is set, with ToolLimit, when the turn ended at the token cap
+	// and not at the tool-call cap.
+	TokenLimit bool
 	TimedOut   bool
 	Canceled   bool // the parent context ended (shutdown)
 	AuthFailed bool // the model API refused the credentials
@@ -98,10 +101,15 @@ type Options struct {
 	MaxTokens int
 	// MaxSteps caps the model requests of a turn (default 40).
 	MaxSteps int
-	// MaxToolCalls caps the tool calls of a turn (default 30). Every step
+	// MaxToolCalls caps the tool calls of a turn (default 20). Every step
 	// sends the whole conversation again, so a long run of calls is what makes
 	// a turn expensive. schedule_next and finish are never refused.
 	MaxToolCalls int
+	// MaxTurnTokens caps the billable tokens (input without cache reads, output,
+	// cache writes) of a turn; zero = none. Past it the tools are refused like
+	// at the tool-call cap and the model is told to wrap up. The check runs
+	// after each step, so a turn may pass it by the cost of one step.
+	MaxTurnTokens int64
 	// Timeout caps the wall-clock time of a turn; zero = none.
 	Timeout   time.Duration
 	Telemetry *telemetry.Provider
@@ -113,12 +121,16 @@ type Options struct {
 // Defaults of the per-turn caps.
 const (
 	DefaultMaxSteps     = 40
-	DefaultMaxToolCalls = 30
+	DefaultMaxToolCalls = 20
 )
 
 // toolLimitText is the result of a tool call refused at the cap.
 const toolLimitText = "not run: this turn has used its %d tool calls. Do not call more tools. " +
 	"Answer from what you have, say what is still open, then call schedule_next and finish."
+
+// tokenLimitText is the result of a tool call refused at the token cap.
+const tokenLimitText = "not run: this turn has used its token budget (%d tokens, every step sends the whole conversation again). " +
+	"Do not call more tools. Answer from what you have, say what is still open, then call schedule_next and finish."
 
 // Agent runs turns, one at a time.
 type Agent struct {
@@ -259,6 +271,9 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 		first += fmt.Sprintf("\nThe tools of these servers are not available in this turn, because they could not be reached: %s.\n", strings.Join(down, ", "))
 	}
 	first += fmt.Sprintf("\nYou have at most %d model steps and %d tool calls in this turn.\n", a.o.MaxSteps, a.o.MaxToolCalls)
+	if a.o.MaxTurnTokens > 0 {
+		first += fmt.Sprintf("The turn also ends at about %dk tokens: every step sends the whole conversation again, so a long run costs most.\n", a.o.MaxTurnTokens/1000)
+	}
 	msgs := []llm.Message{llm.UserText(first)}
 	truncated, paused, told := false, false, false
 
@@ -305,14 +320,15 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 			if told && !onlyBuiltins(calls) {
 				// The model was told the cap was reached and still asks for tools.
 				res.ToolLimit = true
-				log.Warn("the turn stopped at the tool-call cap", "toolCalls", res.ToolCalls)
+				res.TokenLimit = res.ToolCalls < a.o.MaxToolCalls && a.overTokens(&res)
+				log.Warn("the turn stopped at its cap", "toolCalls", res.ToolCalls, "billable", res.Usage.Billable(), "tokenCap", res.TokenLimit)
 				return res
 			}
 			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
 			results, refused := a.runTools(ctx, root, calls, &res)
 			if refused && !told {
 				told = true
-				log.Warn("tool-call cap reached; the model is told to wrap up", "toolCalls", res.ToolCalls, "cap", a.o.MaxToolCalls)
+				log.Warn("turn cap reached; the model is told to wrap up", "toolCalls", res.ToolCalls, "cap", a.o.MaxToolCalls, "billable", res.Usage.Billable(), "tokenCap", a.o.MaxTurnTokens)
 			}
 			if _, done := a.o.Tools.Finished(); done {
 				return res
@@ -389,9 +405,9 @@ func (a *Agent) endOrInject(msgs *[]llm.Message, resp llm.Response) bool {
 func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.Block, res *Result) (out []llm.Block, refused bool) {
 	out = make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
-		if res.ToolCalls >= a.o.MaxToolCalls && !tools.IsBuiltin(c.Name) {
+		if text := a.limitText(res); text != "" && !tools.IsBuiltin(c.Name) {
 			refused = true
-			out = append(out, llm.ToolResult(c.ID, fmt.Sprintf(toolLimitText, a.o.MaxToolCalls), true))
+			out = append(out, llm.ToolResult(c.ID, text, true))
 			continue
 		}
 		span := root.Tool(c.Name, c.ID, c.Input)
@@ -413,6 +429,22 @@ func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.
 		out = append(out, llm.ToolResult(c.ID, content, isErr))
 	}
 	return out, refused
+}
+
+// overTokens reports whether the turn has spent its token cap.
+func (a *Agent) overTokens(res *Result) bool {
+	return a.o.MaxTurnTokens > 0 && res.Usage.Billable() >= a.o.MaxTurnTokens
+}
+
+// limitText is the refusal for a tool call when a cap is spent, or empty.
+func (a *Agent) limitText(res *Result) string {
+	if res.ToolCalls >= a.o.MaxToolCalls {
+		return fmt.Sprintf(toolLimitText, a.o.MaxToolCalls)
+	}
+	if a.overTokens(res) {
+		return fmt.Sprintf(tokenLimitText, a.o.MaxTurnTokens)
+	}
+	return ""
 }
 
 func onlyBuiltins(calls []llm.Block) bool {

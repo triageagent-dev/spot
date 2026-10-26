@@ -93,6 +93,9 @@ spec:
             {{- if $llm.maxToolCalls }}
             - --max-tool-calls={{ int $llm.maxToolCalls }}
             {{- end }}
+            {{- if hasKey $llm "maxTurnTokens" }}
+            - --max-turn-tokens={{ int64 $llm.maxTurnTokens }}
+            {{- end }}
             {{- if .Values.connectors }}
             - --connectors-file=/etc/tria-spot/connectors/connectors.json
             {{- end }}
