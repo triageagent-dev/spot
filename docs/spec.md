@@ -261,6 +261,19 @@ The spot holds no cluster RBAC; a cluster is reached through a connector, whose 
 
 *Figure 6. Boundary. Only offered tools exist; a call to any other name is answered with an error and never sent. The prompt is best effort; the lists and the connector hold.*
 
+### What the spot cannot do
+
+| Question | Answer |
+|---|---|
+| Can it run a shell command or a program? | No. There is no shell and no tool that runs a command (`internal/tools` has none). |
+| Can it read or write a file? | No. There is no file tool, and the model cannot read a mounted token. |
+| Can it fetch a URL or search the web? | No. There is no web tool. |
+| Can it start subagents? | No. |
+| Can it touch the cluster directly? | No. The spot holds no cluster RBAC. A cluster is reached only through a connector, by the exact tool names the connector offers, and the connector’s own identity is the limit. |
+| Can it call any core tool? | Only the tools the install offers. By default the allowed list is `tools.CoreTools`; the destructive ones (`tools.CoreToolsDenied`, for example `resolve_issue`) are refused by name, even when also allowed. A call to any other name is answered with an error and never sent. |
+| Can it change its own limits? | No. The counters live in the supervisor’s memory and the model has no tool to write them. |
+| Can the prompt widen any of this? | No. The prompt is best effort; the tool lists and the connector hold. |
+
 ### Identity towards the core
 
 | `core.identity` | Behaviour |
@@ -445,19 +458,18 @@ The spot reaches no cluster unless `--connectors-file` names a connector. `Ctrl-
 | `charts/tria-spot` | Helm chart |
 | `docs/adr` | The decision records of this repo |
 
-## Not verified
+## Verified and not verified
 
-No model API credential was used while this runtime was written. The SDK calls are tested against a local HTTP server and the loop against a scripted fake.
+Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core and one Kubernetes connector. That covers full turns with parallel tool calls, cache reads across wakes (`read=` in the turn log), the Workload Identity binding, ego spans for every wake, `read_workspace_room`, and the Helm install and rollout of the image. The Anthropic paths below have not been run against a live deployment.
 
 | Area | Not verified |
 |---|---|
-| full turn | Against the real API: adaptive thinking blocks round-tripping with tool results, one-hour prefix cache hits across wakes, real usage numbers. |
+| full turn, Anthropic | Against the real API: adaptive thinking blocks round-tripping with tool results, one-hour prefix cache hits across wakes, real usage numbers. |
 | federation | The exchange from a pod with a valid rule, service account and token; how long the access token lives and whether it is reused (this decides whether `jti_reused` shows up); the SDK’s error on a rejection. The hint matches `Authentication failed`, `authentication_error`, `jti_reused`, `token exchange` and `federation` in the error text. |
-| Vertex AI | The Workload Identity binding, the egress ranges and the model id on a real project. |
-| Gemini | Tested against a local HTTP server only: a full Gemini 3 turn (thought signatures with parallel calls, accepted levels), implicit cache hits across wakes, Gemini on Vertex AI with Workload Identity. |
-| ego | How it maps the span attributes (GenAI conventions are followed). |
+| Vertex AI, Anthropic models | The egress ranges and the model id for Claude on a real project. |
 | `read_workspace_room` | The reply shape is read loosely (`messages` object or array; `id`, `sender\|from\|author`, `text\|body\|message`, `ts\|time`); re-check when the tool changes. |
 | heartbeat | The ADR says `system2-heartbeat-<tenant>`; the core looks only for `system2-heartbeat`, so until it reads the per-tenant id this heartbeat does not change reflection. `--heartbeat-id` sets either. |
 | comments | `list_open_issues` gives a comment count, not the author (all MCP comments are `mcp-client`), so every new comment is a `human` wake and the agent reads the issue to see who. Comments made during a turn are absorbed by the post-turn baseline. |
 | hop counts | Hop counts and caps are enforced by the core; the prompt only tells the agent to pass and respect them. |
-| tooling | Running the image, `helm install`, kubeconform, and `golangci-lint` (`make lint` runs it when present). |
+| post gate | Refusing a post and releasing it after a memory read and a note has run in tests only, not yet seen in a live wake. |
+| tooling | `kubeconform`, and `golangci-lint` (`make lint` runs it when present). |
