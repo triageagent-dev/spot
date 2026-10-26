@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -564,5 +565,55 @@ func TestPostGateIsOffByDefault(t *testing.T) {
 	}
 	if c, isErr := r.Call(context.Background(), "core__say_in_workspace", nil); isErr {
 		t.Errorf("gate off: %q", c)
+	}
+}
+
+func TestResultsAreFencedWithARandomId(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.FenceResults = true
+		o.Core.Allow = []string{"list_open_issues", "get_pods"}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?s)^<data id=([A-Za-z0-9]+) from=core__list_open_issues>\n(.*)\n</data id=([A-Za-z0-9]+)>$`)
+	var ids []string
+	for range 2 {
+		c, isErr := r.Call(ctx, "core__list_open_issues", nil)
+		m := re.FindStringSubmatch(c)
+		if isErr || m == nil || m[1] != m[3] || m[2] != "args={}" {
+			t.Fatalf("a result is fenced with one id: %q %v", c, isErr)
+		}
+		ids = append(ids, m[1])
+	}
+	if ids[0] == ids[1] {
+		t.Errorf("the id is the same on two calls: %s", ids[0])
+	}
+	// An error the tool returns is data too.
+	c, isErr := r.Call(ctx, "core__get_pods", json.RawMessage(`{}`))
+	if !isErr || !strings.Contains(c, "forbidden: pods") || !strings.HasPrefix(c, "<data id=") {
+		t.Errorf("a tool error is fenced: %q %v", c, isErr)
+	}
+	// The supervisor's own words are not.
+	if c, _ := r.Call(ctx, "core__nowhere", nil); strings.Contains(c, "<data") {
+		t.Errorf("a refusal of the supervisor is not data: %q", c)
+	}
+	if c, _ := r.Call(ctx, Finish, json.RawMessage(`{"summary":"done"}`)); strings.Contains(c, "<data") {
+		t.Errorf("a built-in is not data: %q", c)
+	}
+}
+
+func TestResultsAreNotFencedByDefault(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) { o.Core.Allow = []string{"list_open_issues"} })
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := r.Call(context.Background(), "core__list_open_issues", nil); c != "args={}" {
+		t.Errorf("without the option the result is as it came: %q", c)
 	}
 }

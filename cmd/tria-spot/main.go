@@ -105,7 +105,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 
 	registry := tools.New(tools.Options{
 		Core: coreServer(cfg), Others: otherServers(cfg),
-		CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, PostGate: cfg.PostGate, Logger: log,
+		CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
 	})
 	for _, c := range cfg.Connectors {
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))

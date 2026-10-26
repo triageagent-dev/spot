@@ -7,6 +7,7 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +66,12 @@ type Options struct {
 	// workspace already has and what it said before. A step is skipped when
 	// the core does not offer a tool that could satisfy it.
 	PostGate bool
-	Logger   *slog.Logger
+	// FenceResults wraps what a core or connector tool returns in a tag that
+	// carries a random id, so text from outside (a log line, an issue comment, a
+	// chat message) is marked as data and cannot close the tag to pass for the
+	// supervisor's own words. The ego tools and the built-ins are not wrapped.
+	FenceResults bool
+	Logger       *slog.Logger
 }
 
 // Defaults.
@@ -327,7 +333,7 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 			}
 			r.mu.Unlock()
 		}
-		return r.cut(res.Text), res.IsError
+		return r.fence(rt, r.cut(res.Text)), res.IsError
 	case ctx.Err() != nil:
 		return "the call was cancelled", true
 	case errors.Is(cctx.Err(), context.DeadlineExceeded):
@@ -335,6 +341,18 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	default:
 		return r.cut("the call failed: " + err.Error()), true
 	}
+}
+
+// fence wraps the text of a core or connector result in a data tag with a
+// random id, when Options.FenceResults is set. The id changes with every call
+// and the model cannot know it before the result is written, so nothing inside
+// the text can close the tag.
+func (r *Registry) fence(rt route, text string) string {
+	if !r.o.FenceResults || rt.server == EgoServer {
+		return text
+	}
+	id := rand.Text()
+	return fmt.Sprintf("<data id=%s from=%s%s%s>\n%s\n</data id=%s>", id, rt.server, Sep, rt.tool, text, id)
 }
 
 // recallFirstText is the result of a call held back until the notes are searched.

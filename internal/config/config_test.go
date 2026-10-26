@@ -21,7 +21,7 @@ func TestDefaults(t *testing.T) {
 	if c.StateDir != "/state" || c.MinWake != 2*time.Minute || c.MaxWake != 2*time.Hour {
 		t.Errorf("defaults: %+v", c)
 	}
-	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.MaxToolCalls != 20 || c.MaxTurnTokens != 150000 || !c.RecallFirst || !c.PostGate || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
+	if c.Model != "claude-opus-5-5" || c.Effort != "medium" || c.MaxSteps != 40 || c.MaxToolCalls != 20 || c.MaxTurnTokens != 150000 || !c.RecallFirst || !c.PostGate || !c.FenceResults || c.ToolTimeout != time.Minute || c.ToolResultMax != 32768 || c.TurnTimeout != 20*time.Minute {
 		t.Errorf("model and loop defaults: %+v", c)
 	}
 	if c.LLMAuth != AuthKey || c.VertexRegion != "global" || c.LLMProvider != ProviderAnthropic {

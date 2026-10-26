@@ -68,6 +68,7 @@ type Config struct {
 	RecallFirst     bool   // no tool but memory reads until the spot has searched its notes
 	InstructionCell string // id of the core memory cell that holds the system prompt
 	PostGate        bool   // no post until the spot has read the core's memory and written a note
+	FenceResults    bool   // tool results are wrapped in a data tag with a random id
 	TurnTimeout     time.Duration
 	ToolTimeout     time.Duration // one tool call
 	ToolResultMax   int           // bytes of one tool result the model sees
@@ -157,6 +158,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.BoolVar(&c.RecallFirst, "recall-first", true, "hold every tool but the memory and room reads until the spot has searched its notes in the wake")
 	fs.StringVar(&c.InstructionCell, "instruction-cell", "spot-instruction", "id of the core's memory cell (kind spot_system_identity) that holds the system prompt; read once at start")
 	fs.BoolVar(&c.PostGate, "post-gate", true, "hold say_in_workspace and comment_on_issue until the spot has read the core's memory about its subject and written a note in the wake")
+	fs.BoolVar(&c.FenceResults, "fence-results", true, "wrap every core and connector tool result in a data tag with a random id, so text from outside is marked as data and cannot close the tag")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
 	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 32768, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")
