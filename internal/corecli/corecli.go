@@ -445,7 +445,9 @@ func SelectNotes(items []Note, spot string) (lines []string, hold bool) {
 			case "spot-hold":
 				rule, hd = true, true
 			}
-			if t == "spot:"+spot {
+			// The core stamps what the spot writes with its service account; a
+			// note the spot rewrote (supersede) keeps that and loses its own tags.
+			if t == "spot:"+spot || (strings.HasPrefix(t, "author/") && strings.HasSuffix(t, ":"+spot)) {
 				own = true
 			}
 		}
@@ -458,7 +460,7 @@ func SelectNotes(items []Note, spot string) (lines []string, hold bool) {
 			if hd || holdWording(it.Title+" "+it.Content) {
 				hold = true
 			}
-		case own && hasTag(it.Tags, "spot-note"):
+		case own:
 			notes = append(notes, it)
 		}
 	}

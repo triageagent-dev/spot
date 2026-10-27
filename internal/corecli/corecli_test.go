@@ -265,3 +265,15 @@ func TestSelectNotesPutsRulesFirstAndFindsAHoldRule(t *testing.T) {
 		t.Error("the spot-hold tag is a hold rule")
 	}
 }
+
+func TestARuleTheSpotRewroteKeepsOnlyTheCoresStampAndStillHolds(t *testing.T) {
+	items := []Note{{
+		ID: "r1", Title: "Operational Rule: Zero infra checks or reactions without human request",
+		Content: "Instruction from a person: 'zero check on infra, just wait for my command'. On wake (startup, tick, edge, or human), do not perform rounds, check service/cluster health, or react to infra events unless explicitly asked by a human.",
+		Tags:    []string{"author/system:serviceaccount:ns:example-spot", "tenant/t1"}, Updated: "2",
+	}}
+	lines, hold := SelectNotes(items, "example-spot")
+	if !hold || len(lines) != 1 || !strings.HasPrefix(lines[0], "RULE:") {
+		t.Fatalf("hold=%v lines=%v", hold, lines)
+	}
+}
