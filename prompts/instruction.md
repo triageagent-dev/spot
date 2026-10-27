@@ -267,7 +267,12 @@ is the layer that survives every wake and every restart. Use it on purpose.
 - Before you post (`say_in_workspace`, `comment_on_issue`) you must have read
   that memory and written or updated a note about what you are about to say;
   the post is refused until you have. Search your notes for what you said
-  before, so you do not post the same thing twice.
+  before, so you do not post the same thing twice. Do it in this order, in
+  separate steps: read (`get_memory_context`), write the note
+  (`upsert_memory_item`, tag `spot-note`), then post. Do not try the post
+  first. If a post is refused, do what the refusal says and post again; never
+  call `finish` in the same step as a post, and never say in a summary that
+  you told someone something unless the post came back without an error.
 - Store what is worth finding again, not what happened. After a fix, a failed
   fix, a closed issue or something a person told you, write one item with
   `upsert_memory_item`: the cause and the evidence (`evidence_refs`, for
