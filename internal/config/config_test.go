@@ -315,3 +315,37 @@ func TestNoCLIFlagsRemain(t *testing.T) {
 		}
 	}
 }
+
+func TestTheTemporalEngineNeedsItsSettingsAndEncryptsOverTheNetwork(t *testing.T) {
+	base := []string{"--tenant", "example", "--core-mcp-url", "http://core/mcp", "--core-token-file", "/t", "--anthropic-key-file", "/k", "--model", "m"}
+	parse := func(extra ...string) error {
+		_, err := Parse(append(append([]string(nil), base...), extra...), io.Discard)
+		return err
+	}
+	if err := parse(); err != nil {
+		t.Fatalf("local by default: %v", err)
+	}
+	for name, args := range map[string][]string{
+		"no address":                  {"--engine", "temporal", "--temporal-namespace", "ns"},
+		"no namespace":                {"--engine", "temporal", "--temporal-address", "h:7233"},
+		"unknown engine":              {"--engine", "cadence"},
+		"temporal flag with local":    {"--temporal-address", "h:7233"},
+		"cloud key, clear payloads":   {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-api-key-file", "/key"},
+		"tls, clear payloads":         {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls"},
+		"key and plain":               {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-payload-key-file", "/p", "--temporal-plain-payloads"},
+		"certificate without its key": {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls-cert-file", "/c", "--temporal-payload-key-file", "/p"},
+	} {
+		if err := parse(args...); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for name, args := range map[string][]string{
+		"a service in the cluster, no TLS": {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns"},
+		"cloud with an encryption key":     {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-api-key-file", "/key", "--temporal-payload-key-file", "/p"},
+		"plain payloads said out loud":     {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls", "--temporal-plain-payloads"},
+	} {
+		if err := parse(args...); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

@@ -1,0 +1,34 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# The Temporal engine against Temporal Cloud: an API key and an encryption key,
+# both from Secrets mounted as files.
+spot:
+  enabled: true
+  tenant: example
+core:
+  identity: secret
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+llm:
+  provider: gemini
+  auth: vertex
+  effort: low
+  vertex:
+    project: example-project
+engine:
+  type: temporal
+  temporal:
+    address: example-namespace.example.tmprl.cloud:7233
+    namespace: example-namespace.example
+    apiKeySecret:
+      name: example-spot-temporal-api-key
+    payloadKeySecret:
+      name: example-spot-temporal-payload-key
+networkPolicy:
+  core:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}
+  google:
+    cidrs: [199.36.153.8/30]
+  temporal:
+    cidrs: [192.0.2.0/24]

@@ -1,0 +1,32 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# The Temporal engine: a service of your own in the cluster, payloads encrypted.
+spot:
+  enabled: true
+  tenant: example
+core:
+  identity: secret
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+llm:
+  provider: gemini
+  auth: vertex
+  effort: low
+  vertex:
+    project: example-project
+engine:
+  type: temporal
+  temporal:
+    address: temporal-frontend.example-temporal.svc:7233
+    namespace: example
+    payloadKeySecret:
+      name: example-spot-temporal-payload-key
+networkPolicy:
+  core:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}
+  google:
+    cidrs: [199.36.153.8/30]
+  temporal:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: example-temporal}

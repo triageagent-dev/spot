@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -97,6 +98,18 @@ type Supervisor struct {
 	failures    int
 	edgeWakes   []time.Time // early wakes in the last hour
 	status      Status
+
+	// The durable engine's side (see bridge.go): the workflow's calls are run on
+	// the loop's goroutine through callc, so the state above needs no lock.
+	callc    chan func()
+	stopped  chan struct{}
+	stopOnce sync.Once
+	sink     Sink
+	bctx     context.Context
+	bseq     int64
+	inflight map[int64]*pending
+	recs     map[string]*wakeRec
+	open     int
 
 	// What the core is told about how the spot is doing (counted per UTC day).
 	statsDay string
@@ -187,6 +200,8 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 	s := &Supervisor{
 		cfg: cfg, led: led, core: core, turner: turner, log: log, now: time.Now,
 		rooms: map[string]*roomState{"team": {}, "agents": {}},
+		callc: make(chan func(), 16), stopped: make(chan struct{}),
+		inflight: map[int64]*pending{}, recs: map[string]*wakeRec{},
 	}
 	// A saved cursor means the messages after it are news, restart or not.
 	for room, ts := range led.LoadRoomRead() {
@@ -333,7 +348,7 @@ func (s *Supervisor) pauseForCeiling() {
 func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 	if s.trig == nil || !s.trig.Connected() {
 		s.setTriggers("poll")
-		return true, s.sleep(ctx, s.untilNext())
+		return true, s.sleepServing(ctx, s.untilNext())
 	}
 	if s.readNext {
 		s.readNext = false
@@ -598,6 +613,26 @@ func (s *Supervisor) untilNext() time.Duration {
 		d = 0
 	}
 	return d
+}
+
+// sleepServing is sleep that also runs the workflow's calls (the durable
+// engine) while it waits. With no engine nothing sends one.
+func (s *Supervisor) sleepServing(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C:
+			return true
+		case f := <-s.callc:
+			f()
+		}
+	}
 }
 
 func (s *Supervisor) sleep(ctx context.Context, d time.Duration) bool {
@@ -1088,15 +1123,7 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 	st := s.side
 	s.side = nil
 	u := res.Usage
-	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
-		s.log.Error("saving usage", "err", err)
-	}
-	if s.trig != nil && (u.Billable() > 0 || u.CacheRead > 0) {
-		s.trig.ReportTurn(triggers.Turn{
-			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead,
-			Cached: u.CacheRead, Output: u.Output, DurationMs: res.Duration.Milliseconds(), Failed: res.Failed,
-		})
-	}
+	s.book(res)
 	failed := (res.Failed || res.CoreDown) && !res.Canceled
 	if res.Steps == 0 && failed && len(st.talk) > 0 {
 		s.hold(st.talk)
@@ -1256,18 +1283,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 
 	// Accounting first: tokens are spent whether or not the turn succeeded.
 	u := res.Usage
-	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
-		s.log.Error("saving usage", "err", err)
-	}
-	if s.trig != nil && (u.Billable() > 0 || u.CacheRead > 0) {
-		// What the core is told is the spot's own count of this turn: the core
-		// books it under the spot's kind and answers with the budget after it.
-		s.trig.ReportTurn(triggers.Turn{
-			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead,
-			Cached: u.CacheRead, Output: u.Output, DurationMs: res.Duration.Milliseconds(),
-			Failed: res.Failed,
-		})
-	}
+	s.book(res)
 
 	// A cut-off or timed-out turn is reported on the next start: a change may
 	// be half done.
@@ -1292,13 +1308,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Info("a message the turn did not take is held for the next wake")
 	}
 
-	turn := &Turn{
-		At: s.lastTurnEnd.UTC().Format(time.RFC3339), Reason: string(p.reason), Seconds: res.Duration.Seconds(),
-		Tokens: u.Billable(), Steps: res.Steps, ToolCalls: res.ToolCalls, Model: res.Model, Summary: res.Summary,
-		IsError: failed, StepsExhausted: res.StepsExhausted, TimedOut: res.TimedOut, AuthFailed: res.AuthFailed,
-		CoreDown: res.CoreDown, ContextTokens: res.ContextTokens,
-	}
-	s.status.LastTurn = turn
+	s.status.LastTurn = s.lastTurn(p.reason, res, failed)
 
 	if res.Canceled {
 		s.log.Info("turn cut off by shutdown", "tokens", u.Billable())

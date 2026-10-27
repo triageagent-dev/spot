@@ -80,6 +80,16 @@ spec:
         - {protocol: TCP, port: {{ . }}}
         {{- end }}
     {{- end }}
+    {{- if eq (dig "engine" "type" "local" $.Values.AsMap) "temporal" }}
+    {{- $tnp := dig "networkPolicy" "temporal" dict $.Values.AsMap }}
+    # The Temporal service: the workflow's signals, timers and activities.
+    - to:
+        {{- include "tria-spot.egressPeers" (dict "t" $tnp "what" "temporal") | nindent 8 }}
+      ports:
+        {{- range (default (list 7233) (dig "ports" nil $tnp)) }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
     {{- if $.Values.telemetry.enabled }}
     # The telemetry endpoint (ego): traces only.
     - to:

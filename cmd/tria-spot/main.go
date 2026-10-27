@@ -21,6 +21,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/agent"
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/durable"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
 	"github.com/triageagent-dev/spot/internal/prompt"
@@ -104,16 +105,18 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	var sup *supervisor.Supervisor // set below; the registry asks it for the rooms's watermark
-	registry := tools.New(tools.Options{
-		RoomSince: func(room string) int64 {
-			if sup == nil {
-				return 0
-			}
-			return sup.RoomSince(room)
-		},
-		Core: coreServer(cfg), Others: otherServers(cfg),
-		CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
-	})
+	newRegistry := func() *tools.Registry {
+		return tools.New(tools.Options{
+			RoomSince: func(room string) int64 {
+				if sup == nil {
+					return 0
+				}
+				return sup.RoomSince(room)
+			},
+			Core: coreServer(cfg), Others: otherServers(cfg),
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
+		})
+	}
 	for _, c := range cfg.Connectors {
 		log.Info("connector", "name", c.Name, "tools", len(c.Tools))
 	}
@@ -129,13 +132,60 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Error("system prompt", "cell", cfg.InstructionCell, "err", err)
 		return 1
 	}
+	system := []string{prompt.Instruction(template, prompt.Params{
+		Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+		Connectors: promptConnectors(cfg.Connectors),
+	})}
+
+	// watch gives the supervisor the core's trigger stream, when it is configured.
+	watch := func() error {
+		if cfg.CoreAPIURL == "" {
+			return nil
+		}
+		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
+		if err != nil {
+			return err
+		}
+		go tc.Run(ctx)
+		sup.SetTrigger(tc)
+		return nil
+	}
+
+	if cfg.Engine == config.EngineTemporal {
+		sup = supervisor.New(cfg, led, core, nil, log)
+		if err := watch(); err != nil {
+			log.Error("trigger stream", "err", err)
+			return 1
+		}
+		eng, err := durable.Open(durable.Options{
+			Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, APIKeyFile: cfg.TemporalAPIKeyFile,
+			TLS: cfg.TemporalTLS, TLSCertFile: cfg.TemporalTLSCertFile, TLSKeyFile: cfg.TemporalTLSKeyFile,
+			PayloadKeyFile: cfg.TemporalPayloadKeyFile, TaskQueue: cfg.TemporalTaskQueue, Name: cfg.Name, Logger: log,
+		}, durable.Deps{
+			LLM: model, NewTools: newRegistry, Telemetry: tel, System: system, Model: cfg.Model, Effort: cfg.Effort,
+			Host: sup.Host(), Logger: log, LogContent: cfg.LogContent,
+		})
+		if err != nil {
+			log.Error("temporal engine", "err", err)
+			return 1
+		}
+		defer eng.Close()
+		if err := eng.Start(); err != nil {
+			log.Error("temporal worker", "err", err)
+			return 1
+		}
+		log.Info("engine: temporal", "address", cfg.TemporalAddress, "namespace", cfg.TemporalNamespace, "workflow", eng.WorkflowID(),
+			"encrypted", cfg.TemporalPayloadKeyFile != "")
+		if err := sup.RunBridge(ctx, eng); err != nil {
+			log.Error("supervisor", "err", err)
+			return 1
+		}
+		log.Info("stopped")
+		return 0
+	}
 
 	ag := agent.New(agent.Options{
-		LLM: model, Tools: registry, Model: cfg.Model, Effort: cfg.Effort,
-		System: []string{prompt.Instruction(template, prompt.Params{
-			Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
-			Connectors: promptConnectors(cfg.Connectors),
-		})},
+		LLM: model, Tools: newRegistry(), Model: cfg.Model, Effort: cfg.Effort, System: system,
 		MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, MaxTurnTokens: cfg.MaxTurnTokens, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
 	})
 
@@ -143,36 +193,17 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	if cfg.FastLane {
 		// The short lane: its own tool state (the gates and the connections are
 		// per turn), the same model client, and tighter caps.
-		fastTools := tools.New(tools.Options{
-			RoomSince: func(room string) int64 {
-				if sup == nil {
-					return 0
-				}
-				return sup.RoomSince(room)
-			},
-			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
-		})
 		fast := agent.New(agent.Options{
-			LLM: model, Tools: fastTools, Model: cfg.Model, Effort: cfg.Effort,
-			System: []string{prompt.Instruction(template, prompt.Params{
-				Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
-				Connectors: promptConnectors(cfg.Connectors),
-			})},
+			LLM: model, Tools: newRegistry(), Model: cfg.Model, Effort: cfg.Effort, System: system,
 			MaxSteps: min(cfg.MaxSteps, cfg.FastMaxToolCalls+4), MaxToolCalls: cfg.FastMaxToolCalls, MaxTurnTokens: cfg.FastMaxTurnTokens,
 			Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
 		})
 		sup.SetFastTurner(fast)
 		log.Info("short lane on", "maxToolCalls", cfg.FastMaxToolCalls, "maxTurnTokens", cfg.FastMaxTurnTokens)
 	}
-	if cfg.CoreAPIURL != "" {
-		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
-		if err != nil {
-			log.Error("trigger stream", "err", err)
-			return 1
-		}
-		go tc.Run(ctx)
-		sup.SetTrigger(tc)
+	if err := watch(); err != nil {
+		log.Error("trigger stream", "err", err)
+		return 1
 	}
 	if err := sup.Run(ctx); err != nil {
 		log.Error("supervisor", "err", err)

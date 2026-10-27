@@ -76,6 +76,26 @@ No model is used. With `--core-api-url` the core pushes content-free frames over
 
 With the stream up, a person’s message is handed to the running turn: the model sees it with the next tool results, or before the turn would end. Other messages, and one the model never saw, wait for the next wake.
 
+### Engines
+
+The schedule and the turns run in one of two engines, chosen with `--engine`.
+
+| Engine | What it is |
+|---|---|
+| `local` (default) | The supervisor in this process owns the timers, the promised wake, the hold rule and the two lanes, and runs the loop. A restart resumes at the next wake; a turn it cuts is reported on the next start. |
+| `temporal` | A Temporal workflow per spot owns them, and a child workflow runs each turn. The pod stays the only place that calls the model and the tools; the service holds the schedule and the history. Temporal Cloud or a service of your own: the settings are the same. |
+
+| With `--engine=temporal` | Rule |
+|---|---|
+| Spot workflow | One long-running workflow per spot (`spot-<name>`). The scheduled wake and the wake a person asked for are durable timers: one that comes due while no pod runs is run by the next. The hold rule, the schedule, the failure backoff and the early-wake handling are the same as in `local` (the supervisor’s `schedule.AfterTurn`, shared). A startup wake is skipped when the schedule survived the restart. The history is carried over (continue as new) when the service suggests it. |
+| Lanes | A person’s message runs in the short lane, everything else in the long lane, one wake at a time in each, side by side. What arrives while a lane is busy waits and is one wake when it frees. A wake that is due while the long lane works runs in the short lane. The short lane has the caps of `--fast-max-tool-calls` and `--fast-max-turn-tokens`. |
+| Turn | A child workflow runs the same loop as `local` (`agent.RunLoop`); each model request and each tool call is an activity that heartbeats, so a pod that dies is noticed in seconds and the next one resumes the turn at its step. The conversation is the workflow’s history. The instruction and the tool list are not in it: they are the pod’s. |
+| At most once | A call that may have an effect (every write, every connector tool) is run once. If its pod dies in the middle, the model is told that the call did not finish and may or may not have run, and decides. A read of the core or of ego is run again, up to three times. |
+| Payloads | With `--temporal-payload-key-file` every payload, a failure’s message included, is encrypted with AES-256-GCM in the pod before it leaves it: the service holds ciphertext, plus names, timings and sizes. Over TLS or with an API key the spot does not start without the key unless `--temporal-plain-payloads` says the clear text may go. The key is a file; a payload written with another key is refused. |
+| What stays in the pod | The intake (trigger stream, polls, held edges, cooldowns, caps), the standing notes, the prompt, the books (usage ledger, digest, heartbeat, stats, status file), the model client, the tools and the spans. The service never calls the model or a tool and holds no credential of them. |
+| Failures | A refused key and a request the model API calls wrong are not retried; other model errors are, up to three times. A turn that fails, or runs past `--turn-timeout`, is a failed wake with the same backoff as in `local`. A tool server that is down is left out of the turn, as in `local`. |
+| Cost | Each model request, each tool call, the head of a wake (`Prepare`), its books and the typing indicator are one Temporal action each, and a wake that holds under a rule costs two. Hold, caps and the daily ceiling bound them as before. |
+
 ## The model
 
 All model traffic goes through `internal/llm`; this section is the Anthropic provider. The request is built for a prefix cache: sorted tools, then the system prompt with a one-hour `cache_control` breakpoint on its last block, and a short breakpoint on the latest message.
@@ -220,6 +240,20 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--chat-batch` | `10m` | wait of a message that does not name the spot; `0` = at once |
 | `--max-edge-wakes-per-hour` | `12` | early wakes per hour; `0` = no cap |
 | `--heartbeat-id` | `system2-heartbeat-<tenant>` | memory cell id of the heartbeat |
+
+### Engine
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--engine` | `local` | `local` or `temporal` (above) |
+| `--temporal-address` | required with temporal | the service’s frontend `host:port` |
+| `--temporal-namespace` | required with temporal | the namespace |
+| `--temporal-task-queue` | `tria-spot-<name>` | one queue per spot: its activities need its own state |
+| `--temporal-api-key-file` | empty | Temporal Cloud API key file, read again at each request; turns TLS on |
+| `--temporal-tls` | `false` | TLS without an API key |
+| `--temporal-tls-cert-file / --temporal-tls-key-file` | empty | client certificate for mutual TLS; both or neither |
+| `--temporal-payload-key-file` | empty | 32-byte key (64 hex characters or base64) that encrypts every payload |
+| `--temporal-plain-payloads` | `false` | send payloads in the clear over TLS or with an API key; excludes the key file |
 
 ### Telemetry and logs
 
@@ -381,6 +415,7 @@ Logs carry what happened, never what was said.
 | `llm.auth: key` (default) | The Secret from `llm.keySecret` (anthropic) or `llm.geminiKeySecret` (gemini, at `/secrets/gemini/<key>`), as a file. |
 | `llm.auth: vertex` | Nothing mounted. `llm.vertex.project` required, `region` defaults to `global`; the binding goes in `serviceAccount.annotations`. |
 | `llm.auth: federation` | A projected token volume at `/var/run/secrets/anthropic.com` (`tokenExpirationSeconds` 600; no Secret). `llm.federation.ruleId`, `orgId` and `serviceAccountId` are required, `workspaceId` is optional. Refused with `gemini`. |
+| `engine.type: temporal` | `engine.temporal.address` and `namespace` required. `apiKeySecret` (Temporal Cloud) and `payloadKeySecret` are Secrets mounted as files, at `/secrets/temporal/api` and `/secrets/temporal/payload`. Read with `dig`, so a release upgraded with `--reuse-values` renders as `local` until the values are set. |
 | model values | `llm.provider` (`anthropic` default, `gemini`), `llm.model` (empty = the provider’s default, no `--model` passed), `llm.effort`, `llm.maxSteps`, `llm.maxToolCalls`, `llm.maxTurnTokens`, `agent.toolTimeout`, `agent.toolResultMaxBytes`. |
 
 ### NetworkPolicy
@@ -392,10 +427,11 @@ Egress only; nothing in. It allows cluster DNS, the model API, the core, the con
 | `anthropic` with `key` or `federation` | The CIDRs Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`, platform.claude.com/docs/en/api/ip-addresses). |
 | `gemini` in any mode; `vertex` with either provider | The Google API ranges you name in `networkPolicy.google.cidrs` (required; for example the Private Google Access range). With `vertex` it adds the node’s metadata server for the Workload Identity token (`networkPolicy.google.metadata`, GKE’s addresses by default). |
 | core | Namespace and pod selector, or CIDR. |
+| Temporal, with `engine.type: temporal` | `networkPolicy.temporal`: namespace and pod selector, or CIDR, port 7233. Temporal Cloud has no fixed addresses: name the ranges your egress uses. |
 
 ### Lint
 
-`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, connectors. It checks that:
+`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, connectors, the Temporal engine (a service in the cluster, and Temporal Cloud). It checks that:
 
 - the pod has no `env`, no rule names Secrets, no ClusterRole renders, and the ServiceAccount token is not mounted;
 - nothing in the pod is loosened for a shell, and each mode mounts and opens only its own;
@@ -452,11 +488,12 @@ The spot reaches no cluster unless `--connectors-file` names a connector. `Ctrl-
 | `internal/llm` | The model client (Anthropic SDK: key, federation, Vertex; Google GenAI SDK: key, Vertex), a scripted fake |
 | `internal/tools` | The model’s tools: core, ego, connectors over MCP, `schedule_next`, `finish` |
 | `internal/mcptools` | The MCP session the tools use (raw `tools/list` and `tools/call`) |
-| `internal/agent` | One turn: the loop, steps, injection, results |
+| `internal/agent` | One turn: the loop (`RunLoop`, which does no I/O, so a workflow can run it), steps, injection, results |
+| `internal/durable` | The Temporal engine: the spot and wake workflows, the activities (model, tools, head, books), the payload encryption, the worker |
 | `internal/telemetry` | Spans to ego over OTLP/HTTP |
 | `internal/prompt` | Renders the system prompt from its template (read from the core at start; the source is `prompts/instruction.md`) and builds turn prompts |
-| `internal/supervisor` | The wake loop, edges, schedule, ceilings, heartbeat, status |
-| `internal/schedule` | The `schedule_next` request, clamped |
+| `internal/supervisor` | The wake loop, edges, schedule, ceilings, heartbeat, status; with `--engine=temporal` only the intake and the books (`bridge.go`) |
+| `internal/schedule` | The `schedule_next` request, clamped; the next wake and the promise after a turn (both engines) |
 | `internal/triggers` | The core’s websocket trigger stream |
 | `internal/corecli` | The supervisor’s own MCP client (`list_open_issues`, heartbeat, rooms) |
 | `internal/edges` | Edge detection between issue snapshots |
@@ -478,4 +515,5 @@ Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core
 | comments | `list_open_issues` gives a comment count, not the author (all MCP comments are `mcp-client`), so every new comment is a `human` wake and the agent reads the issue to see who. Comments made during a turn are absorbed by the post-turn baseline. |
 | hop counts | Hop counts and caps are enforced by the core; the prompt only tells the agent to pass and respect them. |
 | post gate | Seen live: a post refused, then released after a memory read, in a wake that then posted. Also seen live: a `finish` in the same step as a refused post ended the turn with no post; the fix runs in tests only. |
+| Temporal engine | Tests run against Temporal’s local dev server with the real tool layer and a scripted model: a message beside a long turn, a promised wake across a worker restart, a hold rule, a crash in a turn, a write cut by a crash (reported, not repeated), a paused spot, and a history with no clear text. Not verified: a live install with a real model, Temporal Cloud, and a service of your own in a cluster; the cost in actions of a real day. |
 | tooling | `kubeconform`, and `golangci-lint` (`make lint` runs it when present). |

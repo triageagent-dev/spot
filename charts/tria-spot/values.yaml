@@ -97,6 +97,29 @@ llm:
     project: ""                # the Google Cloud project that serves the model
     region: global             # the Vertex AI region, or global
 
+# What runs the schedule and the turns.
+# local: the supervisor in this pod (the default).
+# temporal: a Temporal workflow per spot: the tick and the wake a person asked
+#   for are durable timers, a turn resumes at its step after a crash or a
+#   restart, a person's message runs beside a long turn. Temporal Cloud or a
+#   service of your own; the pod is still the only place that calls the model
+#   and the tools. Over a network the payloads (prompts, model text, tool
+#   results) are encrypted in the pod with payloadKeySecret before they leave it.
+engine:
+  type: local                  # local | temporal
+  temporal:
+    address: ""                # the frontend host:port
+    namespace: ""
+    taskQueue: ""              # default tria-spot-<name>
+    tls: false                 # TLS without an API key; an API key turns it on by itself
+    apiKeySecret:              # Temporal Cloud API key. Secret name only; mounted as a file, read at every request
+      name: ""
+      key: api-key
+    payloadKeySecret:          # 32 bytes, 64 hex characters or base64; encrypts every payload. Secret name only; mounted as a file
+      name: ""
+      key: key
+    plainPayloads: false       # true = send payloads in the clear to a service over TLS or with an API key (not recommended)
+
 # Connectors: more MCP servers beside the core. Each is a service that holds
 # its own credentials and limits (a Kubernetes tool server for another
 # cluster, a code host, a metrics API); the spot carries no credential for it.
@@ -222,6 +245,15 @@ networkPolicy:
     podSelector: {}               # e.g. {matchLabels: {app.kubernetes.io/name: <core>}}
     cidrs: []
     ports: [443]
+  temporal:
+    # Where the Temporal service lives (required when engine.type is temporal):
+    # the same shape as core above, and rendering fails when none of the
+    # selectors and cidrs is set. Temporal Cloud has no fixed addresses: name the
+    # ranges your egress uses, or the address of your proxy.
+    namespaceSelector: {}
+    podSelector: {}
+    cidrs: []
+    ports: [7233]
   telemetry:
     # Where the telemetry endpoint lives (required when telemetry.enabled): the
     # same shape as core above, and rendering fails when none of the selectors
