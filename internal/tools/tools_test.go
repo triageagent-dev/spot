@@ -539,6 +539,28 @@ func TestNothingIsPostedBeforeTheMemoryIsReadAndANoteWritten(t *testing.T) {
 	}
 }
 
+func TestASearchOfTheNotesIsTheReadThePostGateWants(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.PostGate = true
+		o.Core.Allow = []string{"say_in_workspace", "search_memory", "get_memory_context", "upsert_memory_item"}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, isErr := r.Call(ctx, "core__search_memory", nil); isErr {
+		t.Fatal("the search")
+	}
+	if _, isErr := r.Call(ctx, "core__upsert_memory_item", json.RawMessage(`{"limit":1}`)); isErr {
+		t.Fatal("the note")
+	}
+	if c, isErr := r.Call(ctx, "core__say_in_workspace", nil); isErr || c != "say_in_workspace" {
+		t.Errorf("a post after a search and a note, with no get_memory_context: %q %v", c, isErr)
+	}
+}
+
 func TestPostGateSkipsAStepTheCoreCannotSatisfy(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, func(o *Options) {

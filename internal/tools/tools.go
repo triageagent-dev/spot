@@ -69,8 +69,9 @@ type Options struct {
 	// It does nothing when the core does not offer search_memory.
 	RecallFirst bool
 	// PostGate holds back the tools that post (PostTools) until the model has
-	// read what the core holds about its subject (ContextTools) and written a
-	// note about it (NoteTools) in the turn, so it posts knowing what the
+	// read what the core holds about its subject (ContextTools, or a successful
+	// search_memory) and written a note about it (NoteTools) in the turn, so it
+	// posts knowing what the
 	// workspace already has and what it said before. A step is skipped when
 	// the core does not offer a tool that could satisfy it.
 	PostGate bool
@@ -347,7 +348,10 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 			r.mu.Lock()
 			switch {
 			case rt.tool == searchMemory:
-				r.recalled = true
+				// The search of the spot's own notes is also the read the post
+				// gate wants: what the core holds about the subject, found by
+				// its words.
+				r.recalled, r.read = true, true
 			case inList(ContextTools, rt.tool):
 				r.read = true
 			case inList(NoteTools, rt.tool):
