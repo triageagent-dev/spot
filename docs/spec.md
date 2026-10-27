@@ -160,7 +160,7 @@ The model is offered tools named `<server>__<tool>`, sorted, with the server’s
 | Tool call | Rule |
 |---|---|
 | timeout | `--tool-timeout` (60s). |
-| result | The text blocks joined; an image or a resource becomes a one-line placeholder. Past `--tool-result-max-bytes` (32768) it is cut at a character boundary and ends with a line saying how many bytes were dropped. |
+| result | The text blocks joined; an image or a resource becomes a one-line placeholder. Past `--tool-result-max-bytes` (12288) it is cut at a character boundary and ends with a line saying how many bytes were dropped and asking the model for less (a name, a namespace, a limit). A server prefix on a built-in (`core__schedule_next`) is the built-in. |
 | error | The server’s `isError`, a transport error, a timeout or an unknown tool goes back to the model as an error result and never aborts the turn. |
 | connection | Opened at the start of each turn. A core that cannot be reached fails the turn (`coreDown`). A connector or ego that cannot be reached is logged and left out of that turn, and the wake prompt names it. |
 
@@ -231,10 +231,12 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--max-tool-calls` | `20` | tool calls per wake; every step sends the whole conversation again, so a long run of calls is what makes a turn expensive |
 | `--turn-timeout` | `20m` | wall-clock cap per wake |
 | `--tool-timeout` | `60s` | cap on one tool call |
-| `--tool-result-max-bytes` | `32768` | cap on one tool result the model sees |
+| `--tool-result-max-bytes` | `12288` | cap on one tool result the model sees |
 | `--state-dir` | `/state` | the supervisor’s files: usage, cursors, status |
 | `--min-wake / --max-wake` | `2m` / `2h` | clamp for the agent’s schedule |
 | `--daily-token-ceiling` | `2000000` | tokens per UTC day; `0` = none |
+| `--hourly-token-ceiling` | `600000` | tokens in any rolling hour; `0` = none. At the ceiling no wake starts until the oldest turns of the hour have aged out; the hour’s samples are in memory (a restart starts it empty, the daily ceiling still holds) |
+| `--skip-quiet-wakes` | `true` | a startup or timer wake with no facts, no held edge and no open issue in the core ends without a model call, unless a person or the agent itself asked for that wake; the next wake is the longest the spot allows, or an event |
 | `--poll-interval` | `30s` | poll interval, while the stream is down |
 | `--edge-cooldown` | `1m` | gap between a turn and an edge wake |
 | `--chat-batch` | `10m` | wait of a message that does not name the spot; `0` = at once |

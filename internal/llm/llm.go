@@ -133,6 +133,22 @@ func (u Usage) Billable() int64 { return u.Input + u.Output + u.CacheWrite }
 // read.
 func (u Usage) Context() int64 { return u.Input + u.CacheRead + u.CacheWrite }
 
+// Bytes returns the size of the text a conversation carries: all of it, and the
+// part that is tool results. For the log line of a step, so a big turn can be
+// told from its parts.
+func Bytes(msgs []Message) (all, results int) {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			n := len(b.Text) + len(b.Content) + len(b.Input) + len(b.Thinking)
+			all += n
+			if b.Kind == KindToolResult {
+				results += len(b.Content)
+			}
+		}
+	}
+	return all, results
+}
+
 // Response is what the model answered.
 type Response struct {
 	Content    []Block

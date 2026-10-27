@@ -550,7 +550,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
   <div class="tablewrap"><table>
     <tr><th>Tool call</th><th>Rule</th></tr>
     <tr><td class="k">timeout</td><td><code>--tool-timeout</code> (60s).</td></tr>
-    <tr><td class="k">result</td><td>The text blocks joined; an image or a resource becomes a one-line placeholder. Past <code>--tool-result-max-bytes</code> (32768) it is cut at a character boundary and ends with a line saying how many bytes were dropped.</td></tr>
+    <tr><td class="k">result</td><td>The text blocks joined; an image or a resource becomes a one-line placeholder. Past <code>--tool-result-max-bytes</code> (12288) it is cut at a character boundary and ends with a line saying how many bytes were dropped.</td></tr>
     <tr><td class="k">error</td><td>The server&rsquo;s <code>isError</code>, a transport error, a timeout or an unknown tool goes back to the model as an error result and never aborts the turn.</td></tr>
     <tr><td class="k">connection</td><td>Opened at the start of each turn. A core that cannot be reached fails the turn (<code>coreDown</code>). A connector or ego that cannot be reached is logged and left out of that turn, and the wake prompt names it.</td></tr>
   </table></div>
@@ -626,10 +626,12 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <tr><td class="k"><code>--max-tool-calls</code></td><td><code>20</code></td><td>tool calls per wake; every step sends the whole conversation again, so a long run of calls is what makes a turn expensive</td></tr>
     <tr><td class="k"><code>--turn-timeout</code></td><td><code>20m</code></td><td>wall-clock cap per wake</td></tr>
     <tr><td class="k"><code>--tool-timeout</code></td><td><code>60s</code></td><td>cap on one tool call</td></tr>
-    <tr><td class="k"><code>--tool-result-max-bytes</code></td><td><code>32768</code></td><td>cap on one tool result the model sees</td></tr>
+    <tr><td class="k"><code>--tool-result-max-bytes</code></td><td><code>12288</code></td><td>cap on one tool result the model sees</td></tr>
     <tr><td class="k"><code>--state-dir</code></td><td><code>/state</code></td><td>the supervisor&rsquo;s files: usage, cursors, status</td></tr>
     <tr><td class="k"><code>--min-wake / --max-wake</code></td><td><code>2m</code> / <code>2h</code></td><td>clamp for the agent&rsquo;s schedule</td></tr>
     <tr><td class="k"><code>--daily-token-ceiling</code></td><td><code>2000000</code></td><td>tokens per UTC day; <code>0</code> = none</td></tr>
+    <tr><td class="k"><code>--hourly-token-ceiling</code></td><td><code>600000</code></td><td>tokens in any rolling hour; <code>0</code> = none. At the ceiling no wake starts until the oldest turns of the hour have aged out; the samples are in memory (a restart starts the hour empty, the daily ceiling still holds)</td></tr>
+    <tr><td class="k"><code>--skip-quiet-wakes</code></td><td><code>true</code></td><td>a startup or timer wake with no facts, no held edge and no open issue in the core ends without a model call, unless a person or the agent itself asked for that wake; the next wake is the longest the spot allows, or an event</td></tr>
     <tr><td class="k"><code>--poll-interval</code></td><td><code>30s</code></td><td>poll interval, while the stream is down</td></tr>
     <tr><td class="k"><code>--edge-cooldown</code></td><td><code>1m</code></td><td>gap between a turn and an edge wake</td></tr>
     <tr><td class="k"><code>--chat-batch</code></td><td><code>10m</code></td><td>wait of a message that does not name the spot; <code>0</code> = at once</td></tr>

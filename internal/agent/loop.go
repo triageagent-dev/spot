@@ -78,6 +78,9 @@ func RunLoop(s Steps, c Caps, rq Request, first string, log *slog.Logger) (res R
 			return res
 		}
 		res.Steps++
+		all, results := llm.Bytes(req.Messages)
+		log.Info("model step", "step", res.Steps, "input", resp.Usage.Input, "cacheRead", resp.Usage.CacheRead, "output", resp.Usage.Output,
+			"messageBytes", all, "resultBytes", results)
 		res.Usage = res.Usage.Add(resp.Usage)
 		res.ContextTokens = resp.Usage.Context()
 		if resp.Model != "" {

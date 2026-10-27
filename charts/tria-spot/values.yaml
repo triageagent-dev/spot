@@ -175,8 +175,10 @@ agent:
   maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
   turnTimeout: 20m
   toolTimeout: 60s            # one tool call; past it the model gets an error result
-  toolResultMaxBytes: 32768   # a longer tool result is cut, and says how much was dropped
+  toolResultMaxBytes: 12288   # a longer tool result is cut, and says how much was dropped
   dailyTokenCeiling: 2000000  # tokens per UTC day (input, output, cache creation); 0 = no ceiling
+  hourlyTokenCeiling: 600000  # tokens in any rolling hour (input, output, cache creation); 0 = no ceiling
+  skipQuietWakes: true        # a startup or timer wake with no facts and no open issue ends without a model call
   logLevel: info              # debug | info | warn | error
   # Logs carry what happened, never what was said: no message, issue or model
   # text at any level. true lets debug logs include it (tool input and the

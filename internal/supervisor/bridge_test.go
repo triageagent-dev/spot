@@ -291,3 +291,17 @@ func TestTheBridgeServesTheWorkflowWhileWatchingTheStream(t *testing.T) {
 		t.Fatalf("watching by %q, want the stream", st.Triggers)
 	}
 }
+
+// The durable engine skips a quiet startup the same way: the workflow ends the
+// wake at its head and schedules the longest wait.
+func TestTheBridgeMakesNoModelCallOnAQuietStartup(t *testing.T) {
+	r := newBridgeRig(t, func(c *config.Config) { c.SkipQuietWakes = true })
+	r.model.fn = func(string, int) (llm.Response, error) { return bfinish("x", "2h"), nil }
+	r.waitFor("the quiet startup", func() bool {
+		st := r.h.status()
+		return st.State == "idle" && st.NextWake != nil && st.NextWake.Source == "quiet"
+	})
+	if n := len(r.model.turns()); n != 0 {
+		t.Fatalf("a model call on a quiet startup: %d", n)
+	}
+}

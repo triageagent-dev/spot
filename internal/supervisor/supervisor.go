@@ -101,7 +101,9 @@ type Supervisor struct {
 
 	// The durable engine's side (see bridge.go): the workflow's calls are run on
 	// the loop's goroutine through callc, so the state above needs no lock.
-	callc    chan func()
+	callc chan func()
+	// recent is the tokens each turn of the last hour billed (hourlyUntil).
+	recent   []tokenAt
 	stopped  chan struct{}
 	stopOnce sync.Once
 	sink     Sink
@@ -309,7 +311,45 @@ func (s *Supervisor) Run(ctx context.Context) error {
 // paused reports whether the daily ceiling, or the core's cap on the spot,
 // holds the agent back.
 func (s *Supervisor) paused() bool {
-	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.coreBlocked()
+	_, hourly := s.hourlyUntil()
+	return s.led.CeilingReached(s.cfg.DailyTokenCeil) || s.coreBlocked() || hourly
+}
+
+// tokenAt is what a turn billed and when it ended, for the hourly ceiling.
+type tokenAt struct {
+	at     time.Time
+	tokens int64
+}
+
+// hourlyUntil says whether the tokens of the last hour are over the hourly
+// ceiling and, if so, when the oldest turns that count have aged out enough for
+// a wake to start. The samples are in memory: a restart starts the hour empty,
+// the daily ceiling (written to disk) still holds.
+func (s *Supervisor) hourlyUntil() (time.Time, bool) {
+	ceil := s.cfg.HourlyTokenCeil
+	if ceil <= 0 {
+		return time.Time{}, false
+	}
+	now := s.now()
+	keep := s.recent[:0]
+	var sum int64
+	for _, r := range s.recent {
+		if now.Sub(r.at) < time.Hour {
+			keep = append(keep, r)
+			sum += r.tokens
+		}
+	}
+	s.recent = keep
+	if sum < ceil {
+		return time.Time{}, false
+	}
+	for _, r := range s.recent {
+		sum -= r.tokens
+		if sum < ceil {
+			return r.at.Add(time.Hour), true
+		}
+	}
+	return now.Add(time.Hour), true
 }
 
 // coreBlocked is the core refusing the spot until UTC midnight: its own cap,
@@ -323,6 +363,16 @@ func (s *Supervisor) coreBlocked() bool {
 }
 
 func (s *Supervisor) pauseForCeiling() {
+	if !s.led.CeilingReached(s.cfg.DailyTokenCeil) && !s.coreBlocked() {
+		if until, ok := s.hourlyUntil(); ok {
+			s.nextTick = until
+			s.scheduledWhy = "the hourly token ceiling was reached; resumed at " + until.UTC().Format("15:04") + " UTC"
+			s.log.Warn("hourly token ceiling reached; no wake until the hour has room", "until", until.Format(time.RFC3339), "ceiling", s.cfg.HourlyTokenCeil)
+			s.status.NextWake = &Next{At: until.Format(time.RFC3339), Why: s.scheduledWhy, Source: "ceiling"}
+			s.setState("paused-ceiling")
+			return
+		}
+	}
 	until := ledger.NextUTCMidnight(s.now())
 	s.nextTick = until
 	kind := "token"
@@ -508,14 +558,40 @@ func (s *Supervisor) setPromise(at time.Time, why string, human bool) {
 // woke it is dropped, and the next wake is the longest the spot allows.
 func (s *Supervisor) holdWake(p *pending) {
 	s.log.Info("a hold rule is active: no model call", "reason", p.reason, "dropped", len(p.facts))
+	s.idleWake("a hold rule is active", "hold")
+}
+
+// quietWake ends a wake with nothing to work on, without a model call.
+func (s *Supervisor) quietWake(p *pending) {
+	s.log.Info("nothing to act on: no facts, no open issue; no model call", "reason", p.reason)
+	s.idleWake("nothing to act on: waiting for an event", "quiet")
+}
+
+func (s *Supervisor) idleWake(why, source string) {
 	s.lastTurnEnd = s.now()
 	s.nextTick = s.now().Add(s.cfg.MaxWake)
-	s.scheduledWhy = "a hold rule is active"
+	s.scheduledWhy = why
 	if s.promiseHuman && !s.promise.IsZero() && s.promise.Before(s.nextTick) {
 		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
 	}
-	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: "hold"}
+	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: source}
 	s.setState("idle")
+}
+
+// quiet reports whether a wake has nothing to work on: a startup or a timer
+// with no facts and no held edges, the core showing no open issue, and nobody (a
+// person, or the agent for itself) having asked for this wake. It then costs no
+// model call: every step of a turn sends the whole prompt again, and a spot that
+// is woken for nothing would read its notes and go looking. An event, a message
+// or the wake the agent asked for still runs a turn.
+func (s *Supervisor) quiet(ctx context.Context, reason prompt.Reason, p *pending, asked bool) bool {
+	if !s.cfg.SkipQuietWakes || asked || (reason != prompt.Startup && reason != prompt.Tick) || len(p.facts) > 0 || len(p.edges) > 0 {
+		return false
+	}
+	qctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	issues, err := s.core.ListOpenIssues(qctx)
+	return err == nil && len(issues) == 0
 }
 
 // currentFacts drops what the wake need not show: the same fact twice, and a
@@ -1259,6 +1335,10 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.setPromise(time.Time{}, "", false)
 	}
 	p.facts = s.currentFacts(ctx, p)
+	if s.quiet(ctx, p.reason, p, p.scheduledBy != "" || s.promiseHuman) {
+		s.quietWake(p)
+		return
+	}
 	// A person writes while a rule says to check nothing until asked: the turn
 	// has the notes, the room and the post tools only. A check they ask for is a
 	// wake the spot schedules, and that one has every tool.

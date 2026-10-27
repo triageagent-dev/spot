@@ -819,6 +819,63 @@ func TestDailyCeilingStopsWakesUntilUTCMidnight(t *testing.T) {
 	}
 }
 
+// A startup or timer wake with no facts and nothing open in the core costs no
+// model call; an issue that opens wakes the agent as before.
+func TestQuietWakeMakesNoModelCall(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.SkipQuietWakes = true })
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("the quiet startup", func() bool {
+		st := h.status()
+		return st.State == "idle" && st.NextWake != nil && st.NextWake.Source == "quiet"
+	})
+	if h.turns() != 0 {
+		t.Fatalf("a model call on a quiet startup: %d", h.turns())
+	}
+	time.Sleep(60 * time.Millisecond) // the poll has seen the empty core
+	h.core.setIssues(issue("a", "critical", 0))
+	h.waitIdle(1)
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: edge") {
+		t.Errorf("the issue did not wake the agent:\n%s", in)
+	}
+}
+
+// With an issue open the startup wake runs.
+func TestQuietWakeDoesNotSkipWhenSomethingIsOpen(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.SkipQuietWakes = true })
+	h.set("next", `{"after":"2h"}`)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+}
+
+// The tokens of the last hour hold the next wake back until the hour has room.
+func TestHourlyCeilingHoldsWakesUntilTheHourHasRoom(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.HourlyTokenCeil = 200 })
+	h.clock.t = time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
+	h.set("tokens", "100 120") // 220 per turn
+	h.set("next", `{"after":"3m"}`)
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+
+	h.clock.Advance(4 * time.Minute)
+	h.waitFor("pause", func() bool { return h.status().State == "paused-ceiling" })
+	if h.turns() != 1 {
+		t.Fatalf("woke past the hourly ceiling: %d turns", h.turns())
+	}
+	st := h.status()
+	if st.NextWake == nil || st.NextWake.Source != "ceiling" || !strings.Contains(st.NextWake.Why, "hourly") {
+		t.Fatalf("next wake: %+v", st.NextWake)
+	}
+
+	h.clock.Advance(time.Hour) // the turn is an hour old
+	h.waitIdle(2)
+}
+
 func TestRestartStartsAnEmptyConversationAndKeepsTheLedger(t *testing.T) {
 	h := newHarness(t, nil)
 	h.set("next", `{"after":"2h"}`)

@@ -133,6 +133,8 @@ spec:
             - --tool-timeout={{ .Values.agent.toolTimeout }}
             - --tool-result-max-bytes={{ int .Values.agent.toolResultMaxBytes }}
             - --daily-token-ceiling={{ int64 .Values.agent.dailyTokenCeiling }}
+            - --hourly-token-ceiling={{ int64 (dig "agent" "hourlyTokenCeiling" 600000 .Values.AsMap) }}
+            - --skip-quiet-wakes={{ dig "agent" "skipQuietWakes" true .Values.AsMap }}
             {{- if .Values.telemetry.enabled }}
             - --otel-endpoint={{ required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint }}
             {{- if .Values.telemetry.tenant }}

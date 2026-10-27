@@ -73,8 +73,13 @@ type Config struct {
 	ToolTimeout     time.Duration // one tool call
 	ToolResultMax   int           // bytes of one tool result the model sees
 	DailyTokenCeil  int64
-	PollInterval    time.Duration
-	EdgeCooldown    time.Duration
+	// HourlyTokenCeil stops new wakes while the tokens of the last hour are over it.
+	HourlyTokenCeil int64
+	// SkipQuietWakes ends a startup or timer wake without a model call when there is
+	// nothing to work on.
+	SkipQuietWakes bool
+	PollInterval   time.Duration
+	EdgeCooldown   time.Duration
 	// ChatBatch is how long a room message that does not name the spot may
 	// wait before it wakes a turn on its own; a message that names it wakes
 	// after EdgeCooldown. MaxEdgeWakesHr caps early wakes per hour; past it,
@@ -198,7 +203,9 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.BoolVar(&c.FenceResults, "fence-results", true, "wrap every core and connector tool result in a data tag with a random id, so text from outside is marked as data and cannot close the tag")
 	fs.DurationVar(&c.TurnTimeout, "turn-timeout", 20*time.Minute, "wall-clock cap per wake")
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
-	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 32768, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")
+	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 12288, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")
+	fs.Int64Var(&c.HourlyTokenCeil, "hourly-token-ceiling", 600_000, "tokens in any rolling hour after which no wake starts until the hour has room again; 0 disables the ceiling")
+	fs.BoolVar(&c.SkipQuietWakes, "skip-quiet-wakes", true, "end a startup or timer wake without a model call when it has no facts and the core shows no open issue (a wake a person or the agent asked for still runs)")
 	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
@@ -430,6 +437,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ChatBatch < 0 || c.MaxEdgeWakesHr < 0 {
 		errs = append(errs, errors.New("--chat-batch and --max-edge-wakes-per-hour cannot be negative"))
+	}
+	if c.HourlyTokenCeil < 0 {
+		errs = append(errs, errors.New("--hourly-token-ceiling must not be negative"))
 	}
 	if c.DailyTokenCeil < 0 {
 		errs = append(errs, errors.New("--daily-token-ceiling must not be negative"))

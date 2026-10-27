@@ -73,7 +73,10 @@ type PrepareOut struct {
 	Until  time.Time
 	// Hold is set when a standing rule says to check nothing until a person asks:
 	// the wake ends here, without a model call.
-	Hold    bool
+	Hold bool
+	// Quiet is set when the wake has nothing to work on (no facts, no open issue,
+	// nobody asked for it): it ends here, without a model call.
+	Quiet   bool
 	Limited bool
 	Prompt  string
 	Caps    agent.Caps

@@ -57,7 +57,7 @@ type Options struct {
 	Others []Server
 	// CallTimeout bounds one tool call; zero = 60 seconds.
 	CallTimeout time.Duration
-	// ResultMax caps one result in bytes; zero = 32768.
+	// ResultMax caps one result in bytes; zero = 12288.
 	ResultMax int
 	// SpotName is the spot's name. Every memory item the spot writes to the
 	// core carries the tag spot:<name>, whether or not the model added it, so
@@ -86,7 +86,7 @@ type Options struct {
 // Defaults.
 const (
 	DefaultCallTimeout = 60 * time.Second
-	DefaultResultMax   = 32768
+	DefaultResultMax   = 12288
 	// connectTimeout bounds the connection and listing of one server at the
 	// start of a turn, so a slow connector cannot eat the turn.
 	connectTimeout = 20 * time.Second
@@ -549,6 +549,14 @@ func (r *Registry) canonicalName(name string) string {
 	if ok {
 		return name
 	}
+	// A server prefix on a built-in ("core__schedule_next"): the model took the
+	// built-in for a server's tool. There is no such tool, and the turn must not
+	// end without the schedule it asked for.
+	if j := strings.Index(name, "__"); j > 0 {
+		if bare := name[j+2:]; bare == ScheduleNext || bare == Finish {
+			return bare
+		}
+	}
 	i := strings.LastIndexAny(name, ":.")
 	if i < 0 || i == len(name)-1 {
 		return name
@@ -647,7 +655,7 @@ func (r *Registry) cut(s string) string {
 	for n > 0 && !utf8.RuneStart(s[n]) {
 		n--
 	}
-	return fmt.Sprintf("%s\n[result truncated: %d bytes dropped]", s[:n], len(s)-n)
+	return fmt.Sprintf("%s\n[result truncated: %d bytes dropped; ask for less next time: a name, a namespace, a limit]", s[:n], len(s)-n)
 }
 
 func builtinDefs() []llm.ToolDef {

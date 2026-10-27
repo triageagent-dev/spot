@@ -224,6 +224,9 @@ func (a *Acts) Model(ctx context.Context, in ModelIn) (ModelOut, error) {
 		}
 		return ModelOut{}, err
 	}
+	all, results := llm.Bytes(in.Messages)
+	a.d.Logger.Info("model step", "wake", in.Key, "input", resp.Usage.Input, "cacheRead", resp.Usage.CacheRead, "output", resp.Usage.Output,
+		"messageBytes", all, "resultBytes", results)
 	return ModelOut{Resp: resp}, nil
 }
 

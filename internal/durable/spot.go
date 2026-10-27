@@ -240,6 +240,18 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 		s.log(ctx, "%s: paused until %s", key, po.Until.UTC().Format(time.RFC3339))
 		announce(AnnounceIn{Held: true, At: s.c.Next, Why: s.c.NextWhy, Source: "ceiling", After: po.Until.Sub(now)})
 		return
+	case po.Quiet:
+		// Nothing to work on: no turn. The next wake is the longest the spot allows,
+		// or the wake a person asked for; an event wakes it sooner.
+		if lane == LaneLong {
+			s.c.Next, s.c.NextWhy = now.Add(po.Max), "nothing to act on: waiting for an event"
+			if p := s.c.Promise; p.Human && !p.None() && p.At.Before(s.c.Next) {
+				s.c.Next, s.c.NextWhy = p.At, p.Why
+			}
+		}
+		s.log(ctx, "%s: quiet, no model call", key)
+		announce(AnnounceIn{Held: true, At: s.c.Next, Why: s.c.NextWhy, Source: "quiet", After: s.c.Next.Sub(now)})
+		return
 	case po.Hold:
 		// A rule says to check nothing until a person asks: no turn. What woke it is
 		// dropped and the next wake is the longest the spot allows, or the wake a

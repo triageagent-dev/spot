@@ -192,7 +192,7 @@ func TestCallTextErrorTruncationTimeoutAndPlaceholders(t *testing.T) {
 		t.Errorf("tool error: %q %v", c, isErr)
 	}
 	c, isErr = r.Call(ctx, "core__big_tool", json.RawMessage(`{}`))
-	if isErr || !strings.HasSuffix(c, "[result truncated: 100 bytes dropped]") || !strings.HasPrefix(c, strings.Repeat("é", 50)) {
+	if isErr || !strings.HasSuffix(c, "[result truncated: 100 bytes dropped; ask for less next time: a name, a namespace, a limit]") || !strings.HasPrefix(c, strings.Repeat("é", 50)) {
 		t.Errorf("truncation: %q %v", c, isErr)
 	}
 	if c, isErr = r.Call(ctx, "core__image_tool", json.RawMessage(`{}`)); isErr || !strings.Contains(c, "[image content omitted: image/png") {
@@ -395,6 +395,44 @@ func TestModelAddedPrefixIsStripped(t *testing.T) {
 		if c, isErr := r.Call(ctx, name, nil); !isErr || !strings.Contains(c, "not in your tool list") {
 			t.Errorf("%s must stay unknown: %q %v", name, c, isErr)
 		}
+	}
+}
+
+// A model that takes the spot's own tools for a server's ("core__schedule_next")
+// still schedules and finishes: the call is the built-in.
+func TestServerPrefixOnABuiltinIsTheBuiltin(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, nil)
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if c, isErr := r.Call(ctx, "core__schedule_next", json.RawMessage(`{"after":"1h","why":"look again"}`)); isErr {
+		t.Fatalf("core__schedule_next: %q", c)
+	}
+	if n := r.Schedule(); n == nil || n.After != "1h" {
+		t.Fatalf("schedule: %+v", n)
+	}
+	if c, isErr := r.Call(ctx, "core__finish", json.RawMessage(`{"summary":"done"}`)); isErr {
+		t.Fatalf("core__finish: %q", c)
+	} else if sum, ok := r.Finished(); !ok || sum != "done" {
+		t.Fatalf("finish: %q %v", sum, ok)
+	}
+	if c, isErr := r.Call(ctx, "core__nope", nil); !isErr || !strings.Contains(c, "not in your tool list") {
+		t.Errorf("an unknown name stays unknown: %q %v", c, isErr)
+	}
+}
+
+func TestResultCutIsSmallAndTellsTheModelToAskForLess(t *testing.T) {
+	r := New(Options{})
+	big := strings.Repeat("x", DefaultResultMax+500)
+	out := r.cut(big)
+	if !strings.Contains(out, "500 bytes dropped") || !strings.Contains(out, "ask for less") {
+		t.Fatalf("cut note: %.40s...%s", out, out[len(out)-120:])
+	}
+	if DefaultResultMax != 12288 {
+		t.Errorf("default result cap = %d", DefaultResultMax)
 	}
 }
 

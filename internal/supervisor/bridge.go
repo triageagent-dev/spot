@@ -206,6 +206,11 @@ func (s *Supervisor) prepare(in durable.PrepareIn) (out durable.PrepareOut) {
 		return out
 	}
 	p.facts = s.currentFacts(ctx, p)
+	if s.quiet(ctx, reason, p, in.Why != "" || in.Promise || in.PromisePending) {
+		s.log.Info("nothing to act on: no facts, no open issue; no model call", "reason", reason)
+		out.Quiet = true
+		return out
+	}
 	out.Limited = hold && reason == prompt.Human
 	out.Prompt = prompt.Turn(prompt.Wake{
 		Limited: out.Limited, Reason: reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: in.Why,
@@ -354,6 +359,9 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 // after it).
 func (s *Supervisor) book(res agent.Result) {
 	u := res.Usage
+	if n := u.Billable(); n > 0 {
+		s.recent = append(s.recent, tokenAt{at: s.now(), tokens: n})
+	}
 	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
 		s.log.Error("saving usage", "err", err)
 	}
