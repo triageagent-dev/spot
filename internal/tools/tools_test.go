@@ -811,3 +811,19 @@ func TestStateCarriesTheGatesAndTheBuiltinsToANewRegistry(t *testing.T) {
 		t.Fatalf("builtins not carried: %+v", b.State())
 	}
 }
+
+func TestBareToolNameIsTheOneServerOffering(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, nil)
+	r.Begin()
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(context.Background(), "list_open_issues", json.RawMessage(`{}`)); isErr {
+		t.Fatalf("bare name of an offered tool: %q", c)
+	}
+	// A tool the lists leave out is not offered, bare or prefixed.
+	if c, isErr := r.Call(context.Background(), "resolve_issue", json.RawMessage(`{}`)); !isErr || !strings.Contains(c, "not in your tool list") {
+		t.Errorf("a denied tool stays out by its bare name: %q %v", c, isErr)
+	}
+}

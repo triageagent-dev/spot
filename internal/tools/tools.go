@@ -537,8 +537,9 @@ func IsBuiltin(name string) bool {
 // Some models put their own prefix before the name (Gemini writes
 // "default_api:core__list_open_issues", others "functions.finish"). A name that
 // is offered is used as it is; otherwise what follows the last ':' or '.' is
-// used when that is an offered name. Nothing else is guessed: a name that is
-// not offered after stripping stays unknown.
+// used when that is an offered name. A bare name that exactly one server offers
+// (the instruction names tools without the server prefix) is that tool. Nothing
+// else is guessed: a name that is not offered after this stays unknown.
 func (r *Registry) canonicalName(name string) string {
 	if name == ScheduleNext || name == Finish {
 		return name
@@ -559,7 +560,7 @@ func (r *Registry) canonicalName(name string) string {
 	}
 	i := strings.LastIndexAny(name, ":.")
 	if i < 0 || i == len(name)-1 {
-		return name
+		return r.onlyOffered(name)
 	}
 	bare := name[i+1:]
 	if bare == ScheduleNext || bare == Finish {
@@ -571,7 +572,31 @@ func (r *Registry) canonicalName(name string) string {
 	if ok {
 		return bare
 	}
-	return name
+	return r.onlyOffered(name)
+}
+
+// onlyOffered maps a bare tool name ("say_in_workspace", as the instruction
+// writes it) to the one offered tool of that name ("core__say_in_workspace"),
+// when exactly one server offers it. Two servers with the same tool name stay
+// ambiguous and unknown. The lists were applied when the routes were built, so
+// this offers nothing the model was not given.
+func (r *Registry) onlyOffered(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	found := ""
+	for full, rt := range r.routes {
+		if rt.tool != name {
+			continue
+		}
+		if found != "" {
+			return name
+		}
+		found = full
+	}
+	if found == "" {
+		return name
+	}
+	return found
 }
 
 const readWorkspaceRoom = "read_workspace_room"
