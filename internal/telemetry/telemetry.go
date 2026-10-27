@@ -191,6 +191,20 @@ func (p *Provider) StartTurn(ctx context.Context, reason, prompt string) (contex
 	return ctx, &Turn{p: p, ctx: ctx, span: span, id: id}
 }
 
+// Set adds string attributes to the root span: where the turn ran (the ids of
+// the workflow that drove it, say), so a trace can be found from there and the
+// other way round. It does nothing with telemetry off.
+func (t *Turn) Set(kv map[string]string) {
+	if t == nil {
+		return
+	}
+	for k, v := range kv {
+		if v != "" {
+			t.span.SetAttributes(attribute.String(k, v))
+		}
+	}
+}
+
 // ID is the turn's conversation id; empty with telemetry off.
 func (t *Turn) ID() string {
 	if t == nil {

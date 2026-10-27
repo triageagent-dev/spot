@@ -115,6 +115,8 @@ type ListIn struct {
 	Reason  string
 	Prompt  string // for the trace
 	Limited bool
+	// SpotID and SpotRun are the spot workflow that started the wake, for the trace.
+	SpotID, SpotRun string
 }
 
 // ListOut says which servers are down, or that the core is.
@@ -127,7 +129,7 @@ type ListOut struct {
 
 // ListTools connects to the servers and lists the tools of the wake.
 func (a *Acts) ListTools(ctx context.Context, in ListIn) (ListOut, error) {
-	w, err := a.open(ctx, in.Key, in.Reason, in.Prompt, in.Limited)
+	w, err := a.open(ctx, in.Key, in.Reason, in.Prompt, in.Limited, in.SpotID, in.SpotRun)
 	if errors.Is(err, tools.ErrCoreDown) {
 		return ListOut{CoreDown: true, Err: err.Error()}, nil
 	}
@@ -139,7 +141,7 @@ func (a *Acts) ListTools(ctx context.Context, in ListIn) (ListOut, error) {
 
 // open builds the registry of a wake and lists the tools, replacing what the
 // key held.
-func (a *Acts) open(ctx context.Context, key, reason, prompt string, limited bool) (*wakeTools, error) {
+func (a *Acts) open(ctx context.Context, key, reason, prompt string, limited bool, spotID, spotRun string) (*wakeTools, error) {
 	reg := a.d.NewTools()
 	reg.Limit(limited)
 	reg.Begin()
@@ -151,6 +153,19 @@ func (a *Acts) open(ctx context.Context, key, reason, prompt string, limited boo
 	// The trace has no parent when the wake moved to another process; it is a
 	// trace of the rest of the turn.
 	_, root := a.d.Telemetry.StartTurn(context.Background(), reason, prompt)
+	// The ids of the workflow that runs the turn, so a trace leads to its
+	// workflow in Temporal and the workflow to its trace.
+	info := activity.GetInfo(ctx)
+	root.Set(map[string]string{
+		"temporal.workflow.id":   info.WorkflowExecution.ID,
+		"temporal.run.id":        info.WorkflowExecution.RunID,
+		"temporal.workflow.type": info.WorkflowType.Name,
+		"temporal.namespace":     info.Namespace,
+		"temporal.task_queue":    info.TaskQueue,
+		"temporal.spot.id":       spotID,
+		"temporal.spot.run_id":   spotRun,
+		"tria.wake.key":          key,
+	})
 	w := &wakeTools{reg: reg, defs: defs, down: reg.Down(), root: root, last: time.Now()}
 	a.mu.Lock()
 	old := a.wakes[key]
@@ -175,7 +190,7 @@ func (a *Acts) get(ctx context.Context, key, reason string, limited bool) (*wake
 		return w, nil
 	}
 	a.d.Logger.Info("a wake's tools are built again: this process had not seen it", "wake", key)
-	return a.open(ctx, key, reason, "", limited)
+	return a.open(ctx, key, reason, "", limited, "", "")
 }
 
 // ModelIn is one model request: the conversation. The instruction and the tool

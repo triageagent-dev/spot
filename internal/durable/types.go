@@ -90,17 +90,19 @@ type PrepareOut struct {
 
 // WakeIn starts a turn.
 type WakeIn struct {
-	Key     string
-	Reason  string
-	Lane    string
-	Prompt  string
-	Room    string
-	Limited bool
-	Caps    agent.Caps
-	Tool    time.Duration
-	Turn    time.Duration
-	Typing  bool
-	Model   string
+	// SpotID and SpotRun are the workflow that started this wake, for the trace.
+	SpotID, SpotRun string
+	Key             string
+	Reason          string
+	Lane            string
+	Prompt          string
+	Room            string
+	Limited         bool
+	Caps            agent.Caps
+	Tool            time.Duration
+	Turn            time.Duration
+	Typing          bool
+	Model           string
 }
 
 // WakeOut is what a turn did: the counts and flags of agent.Result, the

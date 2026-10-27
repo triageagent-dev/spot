@@ -273,6 +273,7 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	})
 	var out WakeOut
 	err = workflow.ExecuteChildWorkflow(cctx, WakeWorkflow, WakeIn{
+		SpotID: workflow.GetInfo(ctx).WorkflowExecution.ID, SpotRun: workflow.GetInfo(ctx).WorkflowExecution.RunID,
 		Key: key, Reason: q.reason, Lane: lane, Prompt: po.Prompt, Room: q.room, Limited: po.Limited,
 		Caps: po.Caps, Tool: po.Tool, Turn: po.Turn, Typing: po.Typing, Model: po.Model,
 	}).Get(ctx, &out)
