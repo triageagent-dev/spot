@@ -65,6 +65,37 @@ type Stats struct {
 	NextWake        int64   `json:"nextWake,omitempty"`
 	Triggers        string  `json:"triggers,omitempty"`
 	Version         string  `json:"version,omitempty"`
+	// Pause says why the spot is not waking: "own-ceiling" (its own daily
+	// ceiling) or "workspace-cap" (the core's cap); empty when it is not paused.
+	Pause string `json:"pause,omitempty"`
+	// Config is how the spot is set up, so the core knows its limits.
+	Config *Config `json:"config,omitempty"`
+}
+
+// Config is the spot's limits and choices: no credential, URL or path.
+type Config struct {
+	Provider       string      `json:"provider,omitempty"`
+	Model          string      `json:"model,omitempty"`
+	Effort         string      `json:"effort,omitempty"`
+	MaxSteps       int         `json:"maxSteps,omitempty"`
+	MaxToolCalls   int         `json:"maxToolCalls,omitempty"`
+	MaxTurnTokens  int64       `json:"maxTurnTokens,omitempty"`
+	MinWake        string      `json:"minWake,omitempty"`
+	MaxWake        string      `json:"maxWake,omitempty"`
+	ChatBatch      string      `json:"chatBatch,omitempty"`
+	EdgeCooldown   string      `json:"edgeCooldown,omitempty"`
+	MaxEdgeWakesHr int         `json:"maxEdgeWakesHour,omitempty"`
+	CoreTools      string      `json:"coreTools,omitempty"`
+	RecallFirst    bool        `json:"recallFirst"`
+	PostGate       bool        `json:"postGate"`
+	FenceResults   bool        `json:"fenceResults"`
+	Connectors     []Connector `json:"connectors,omitempty"`
+}
+
+// Connector is one connector the spot may use and the tools it may call there.
+type Connector struct {
+	Name  string   `json:"name"`
+	Tools []string `json:"tools,omitempty"`
 }
 
 // Pending is what happened since the last Take.

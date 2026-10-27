@@ -1628,3 +1628,50 @@ func TestStatsCarryTheBuildVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestStatsCarryTheSpotsConfigAndNoURL(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.PollInterval = time.Hour
+		c.LLMProvider, c.Model, c.MaxToolCalls, c.DailyTokenCeil = "gemini", "model-x", 20, 5000
+		c.Connectors = []config.Connector{{Name: "kube", URL: "http://kube.invalid/mcp", Tools: []string{"get", "describe"}}}
+	})
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("stats with the config", func() bool {
+		trig.mu.Lock()
+		defer trig.mu.Unlock()
+		for _, s := range trig.stats {
+			if c := s.Config; c != nil && c.Model == "model-x" && c.MaxToolCalls == 20 && s.Ceiling == 5000 &&
+				c.MinWake == "2m0s" && len(c.Connectors) == 1 && c.Connectors[0].Name == "kube" && len(c.Connectors[0].Tools) == 2 {
+				b, _ := json.Marshal(s)
+				return !strings.Contains(string(b), "invalid")
+			}
+		}
+		return false
+	})
+}
+
+func TestStatsSayWhoPausedTheSpot(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	trig.mu.Lock()
+	trig.budget = &triggers.Budget{Spent: 1000, Cap: 1000, Blocked: true}
+	trig.mu.Unlock()
+	h.start()
+	defer h.stop()
+	h.waitFor("pause named", func() bool {
+		trig.mu.Lock()
+		defer trig.mu.Unlock()
+		for _, s := range trig.stats {
+			if s.State == "paused-ceiling" && s.Pause == "workspace-cap" {
+				return true
+			}
+		}
+		return false
+	})
+}

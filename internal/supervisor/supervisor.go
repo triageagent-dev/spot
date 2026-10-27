@@ -1208,6 +1208,13 @@ func (s *Supervisor) reportStats(force bool) {
 	for k, v := range s.wakes {
 		st.Wakes[k] = v
 	}
+	st.Config = s.reportedConfig()
+	if s.status.State == "paused-ceiling" {
+		st.Pause = "workspace-cap"
+		if s.led.CeilingReached(s.cfg.DailyTokenCeil) {
+			st.Pause = "own-ceiling"
+		}
+	}
 	if t := s.status.LastTurn; t != nil {
 		st.ContextTokens = t.ContextTokens
 	}
@@ -1217,6 +1224,22 @@ func (s *Supervisor) reportStats(force bool) {
 		}
 	}
 	s.trig.ReportStats(st)
+}
+
+// reportedConfig is the spot's limits and choices as the core is told them.
+func (s *Supervisor) reportedConfig() *triggers.Config {
+	c := s.cfg
+	out := &triggers.Config{
+		Provider: c.LLMProvider, Model: c.Model, Effort: c.Effort,
+		MaxSteps: c.MaxSteps, MaxToolCalls: c.MaxToolCalls, MaxTurnTokens: c.MaxTurnTokens,
+		MinWake: c.MinWake.String(), MaxWake: c.MaxWake.String(), ChatBatch: c.ChatBatch.String(), EdgeCooldown: c.EdgeCooldown.String(),
+		MaxEdgeWakesHr: c.MaxEdgeWakesHr, CoreTools: c.CoreTools,
+		RecallFirst: c.RecallFirst, PostGate: c.PostGate, FenceResults: c.FenceResults,
+	}
+	for _, k := range c.Connectors {
+		out.Connectors = append(out.Connectors, triggers.Connector{Name: k.Name, Tools: k.Tools})
+	}
+	return out
 }
 
 func (s *Supervisor) setState(state string) {
