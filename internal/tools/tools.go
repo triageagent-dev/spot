@@ -42,6 +42,9 @@ type Server struct {
 
 // Options configure a Registry.
 type Options struct {
+	// NotesOnly offers the model one tool, the core's search_memory: nothing
+	// from a connector or ego, no other core tool, no schedule_next or finish.
+	NotesOnly bool
 	// RoomSince gives, for a room, the timestamp (ms) of the newest message the
 	// last finished turn could see; read_workspace_room is then asked only for
 	// what is newer, unless the model names its own since_ts. Nil or 0 = no
@@ -204,6 +207,9 @@ type listed struct {
 func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 	r.End()
 	servers := append([]Server{r.o.Core}, r.o.Others...)
+	if r.o.NotesOnly {
+		servers = servers[:1]
+	}
 	out := make([]listed, len(servers))
 	var wg sync.WaitGroup
 	for i, s := range servers {
@@ -245,6 +251,9 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 		}
 		sessions[l.srv.Name] = &session{conn: l.conn}
 		for _, t := range l.tools {
+			if r.o.NotesOnly && t.Name != searchMemory {
+				continue
+			}
 			if !allowed(l.srv, t.Name) {
 				continue
 			}
@@ -257,7 +266,9 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 			defs = append(defs, llm.ToolDef{Name: name, Description: t.Description, InputSchema: t.InputSchema})
 		}
 	}
-	defs = append(defs, builtinDefs()...)
+	if !r.o.NotesOnly {
+		defs = append(defs, builtinDefs()...)
+	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(down)
 
@@ -290,6 +301,9 @@ func allowed(s Server, tool string) bool {
 // error result the model can read.
 func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage) (content string, isError bool) {
 	name = r.canonicalName(name)
+	if r.o.NotesOnly && IsBuiltin(name) {
+		return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
+	}
 	switch name {
 	case ScheduleNext:
 		return r.scheduleNext(input)

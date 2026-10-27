@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -380,50 +381,140 @@ func str(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// StandingRules returns the instructions people gave the spot that always
-// apply: active global stable facts tagged spot-rule, or titled as a rule. The
-// supervisor puts them in every wake, so they never depend on a search.
-func (c *Client) StandingRules(ctx context.Context) ([]string, error) {
-	text, err := c.call(ctx, "get_memory_items", map[string]any{
-		"tenant": c.tenant, "kind": "stable_fact", "scope": "global", "status": "active", "limit": 50,
-	})
-	if err != nil {
-		return nil, err
-	}
-	type item struct {
-		Title   string   `json:"title"`
-		Content string   `json:"content"`
-		Tags    []string `json:"tags"`
-	}
-	var items []item
-	if err := json.Unmarshal([]byte(text), &items); err != nil {
-		var w struct {
-			Items []item `json:"items"`
+// Note is a memory item of the spot's own, as the wake shows it.
+type Note struct {
+	ID      string   `json:"id"`
+	Kind    string   `json:"kind"`
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
+	Updated string   `json:"updated_at"`
+}
+
+// StandingNotes reads the spot's own notes (tag spot-note and spot:<name>,
+// kinds stable_fact and note, any scope) and the rules people gave it (tag
+// spot-rule), by tag and kind, not by a query. It returns them as lines for the
+// wake prompt, rules first and then the newest notes, and whether a hold rule
+// is active: a person's instruction to check nothing until they ask.
+func (c *Client) StandingNotes(ctx context.Context, spot string) (lines []string, hold bool, err error) {
+	var all []Note
+	for _, kind := range []string{"stable_fact", "note"} {
+		text, err := c.call(ctx, "get_memory_items", map[string]any{"tenant": c.tenant, "kind": kind, "status": "active", "limit": 50})
+		if err != nil {
+			return nil, false, err
 		}
-		if err2 := json.Unmarshal([]byte(text), &w); err2 != nil {
-			return nil, fmt.Errorf("get_memory_items: unexpected reply: %w", err)
-		}
-		items = w.Items
-	}
-	var out []string
-	for _, it := range items {
-		rule := strings.Contains(strings.ToLower(it.Title), "rule")
-		for _, t := range it.Tags {
-			if t == "spot-rule" {
-				rule = true
+		var items []Note
+		if err := json.Unmarshal([]byte(text), &items); err != nil {
+			var w struct {
+				Items []Note `json:"items"`
 			}
+			if err2 := json.Unmarshal([]byte(text), &w); err2 != nil {
+				return nil, false, fmt.Errorf("get_memory_items: unexpected reply: %w", err)
+			}
+			items = w.Items
 		}
-		if !rule {
+		all = append(all, items...)
+	}
+	lines, hold = SelectNotes(all, spot)
+	return lines, hold, nil
+}
+
+const (
+	maxRuleLines = 8
+	maxNoteLines = 10
+	noteClip     = 320
+)
+
+// SelectNotes picks the standing notes out of memory items: rules first (tag
+// spot-rule, or a title that says rule), then the spot's own notes, newest
+// first, a few of each. hold is true when a rule tells the spot to check
+// nothing until a person asks (tag spot-hold, or wording to that effect).
+func SelectNotes(items []Note, spot string) (lines []string, hold bool) {
+	var rules, notes []Note
+	seen := map[string]bool{}
+	for _, it := range items {
+		if seen[it.ID] {
 			continue
 		}
-		line := strings.Join(strings.Fields(it.Title+": "+it.Content), " ")
-		if len(line) > 400 {
-			line = strings.ToValidUTF8(line[:400], "") + "…"
+		seen[it.ID] = true
+		var own, rule, hd bool
+		for _, t := range it.Tags {
+			switch t {
+			case "spot-rule":
+				rule = true
+			case "spot-hold":
+				rule, hd = true, true
+			}
+			if t == "spot:"+spot {
+				own = true
+			}
 		}
-		out = append(out, line)
-		if len(out) == 8 {
+		if !rule && strings.Contains(strings.ToLower(it.Title), "rule") {
+			rule = own || len(it.Tags) == 0 || hasTag(it.Tags, "spot-note")
+		}
+		switch {
+		case rule:
+			rules = append(rules, it)
+			if hd || holdWording(it.Title+" "+it.Content) {
+				hold = true
+			}
+		case own && hasTag(it.Tags, "spot-note"):
+			notes = append(notes, it)
+		}
+	}
+	newest := func(a []Note) {
+		sort.SliceStable(a, func(i, j int) bool { return a[i].Updated > a[j].Updated })
+	}
+	newest(rules)
+	newest(notes)
+	add := func(prefix string, it Note) {
+		line := strings.Join(strings.Fields(it.Title+": "+it.Content), " ")
+		if len(line) > noteClip {
+			line = strings.ToValidUTF8(line[:noteClip], "") + "…"
+		}
+		lines = append(lines, prefix+line)
+	}
+	for i, r := range rules {
+		if i == maxRuleLines {
+			break
+		}
+		add("RULE: ", r)
+	}
+	for i, n := range notes {
+		if i == maxNoteLines {
+			break
+		}
+		add("", n)
+	}
+	return lines, hold
+}
+
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}
+
+// holdWording reports whether a rule's text says: check nothing until a person
+// asks. It is a fallback for a rule the spot wrote without the spot-hold tag.
+func holdWording(text string) bool {
+	t := strings.ToLower(text)
+	negated := false
+	for _, w := range []string{"dont", "don't", "do not", "never", "no autonomous", "without a human", "without human", "not check", "stop check"} {
+		if strings.Contains(t, w) {
+			negated = true
 			break
 		}
 	}
-	return out, nil
+	asks := false
+	for _, w := range []string{" ask", " aks", "human request", "requested by a human", "a human asks", "until a person", "before i "} {
+		if strings.Contains(t, w) {
+			asks = true
+			break
+		}
+	}
+	return negated && asks && (strings.Contains(t, "check") || strings.Contains(t, "investigat") || strings.Contains(t, "status"))
 }

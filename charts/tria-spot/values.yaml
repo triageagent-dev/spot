@@ -142,6 +142,7 @@ agent:
   pollInterval: 30s
   edgeCooldown: 1m
   chatBatch: 10m              # how long a person's message that does not name the spot waits; 0s = every message wakes it
+  notesOnly: false            # true: the model gets one tool, search_memory over its own notes, and nothing else; the supervisor schedules the next wake
   issueWakes: true            # false: a change of the core's issues waits for the next scheduled wake; only a person's message wakes the spot early
   maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
   turnTimeout: 20m

@@ -57,6 +57,7 @@ type Wake struct {
 	ChatName    string   // what the messenger calls the spot now; empty = unknown
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
+	NotesOnly   bool     // the model has one tool, search_memory: no schedule_next, no finish
 	TokensUsed  int64
 	TokensCeil  int64 // 0 = no ceiling
 	// Digest is the spot's own summaries of its last wakes, oldest first, each
@@ -75,9 +76,11 @@ func Turn(w Wake) string {
 		fmt.Fprintf(&b, "In the messenger you appear as %s: people write to you by that name.\n", w.ChatName)
 	}
 	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is the core's memory and what the core and the room show you now.\n")
-	b.WriteString("read_workspace_room already returns only what is newer than your last wake; pass since_ts yourself to read older messages. Do not read the room again to see what you were just told.\n")
+	if !w.NotesOnly {
+		b.WriteString("read_workspace_room already returns only what is newer than your last wake; pass since_ts yourself to read older messages. Do not read the room again to see what you were just told.\n")
+	}
 	if len(w.Rules) > 0 {
-		b.WriteString("Standing rules from the people you work for. They always apply and override what you would otherwise do; do not search for them again:\n")
+		b.WriteString("Your standing notes, read for you before this wake: the rules people gave you (RULE) always apply and override what you would otherwise do; then your own notes, newest first. Do not search for them again:\n")
 		for _, r := range w.Rules {
 			fmt.Fprintf(&b, "- %s\n", r)
 		}
@@ -123,7 +126,11 @@ func Turn(w Wake) string {
 	if w.Reason == Edge || w.Reason == Tick {
 		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
 	}
-	b.WriteString("End this turn by calling schedule_next.\n")
+	if w.NotesOnly {
+		b.WriteString("You have one tool: search_memory over your own notes. Say in plain text what you read, what you conclude and what you decide; people read that text. You cannot act, post or schedule anything; the supervisor does the scheduling.\n")
+	} else {
+		b.WriteString("End this turn by calling schedule_next.\n")
+	}
 	return b.String()
 }
 

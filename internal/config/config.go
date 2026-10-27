@@ -85,6 +85,10 @@ type Config struct {
 	// issue changes wait for the next scheduled wake; a person's message still
 	// wakes it.
 	IssueWakes bool
+	// NotesOnly gives the model exactly one tool, search_memory over its own
+	// notes: no other core tool, no connector, no ego tool, no schedule_next or
+	// finish. The supervisor schedules the next wake itself.
+	NotesOnly  bool
 	LogLevel   string
 	LogContent bool // allow message, issue and model text in debug logs
 
@@ -170,6 +174,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
+	fs.BoolVar(&c.NotesOnly, "notes-only", false, "the model gets one tool, search_memory over its own notes, and nothing else (no core, connector or ego tools, no schedule_next or finish); the supervisor schedules the next wake")
 	fs.BoolVar(&c.IssueWakes, "issue-wakes", true, "a change of the core's issues wakes the spot early; false = it waits for the next scheduled wake, and only a person's message wakes it early")
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")

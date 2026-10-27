@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -237,5 +238,30 @@ func TestMemoryCellContent(t *testing.T) {
 	f.mu.Unlock()
 	if _, err := c.MemoryCellContent(ctx, "cell-1"); err == nil {
 		t.Error("an empty cell must be an error")
+	}
+}
+
+func TestSelectNotesPutsRulesFirstAndFindsAHoldRule(t *testing.T) {
+	items := []Note{
+		{ID: "n1", Title: "Status update", Content: "all healthy", Tags: []string{"spot-note", "spot:s"}, Updated: "2026-10-27T14:00:00Z"},
+		{ID: "n2", Title: "Status later", Content: "still healthy", Tags: []string{"spot-note", "spot:s"}, Updated: "2026-10-27T15:00:00Z"},
+		{ID: "r1", Title: "Operational Rule: No autonomous checks without human request", Content: `Instruction from a person: "next wakeup dont check any services or statuses before I aks".`, Tags: []string{"spot-note", "spot:s"}, Updated: "2026-10-27T15:03:00Z"},
+		{ID: "x", Title: "Another spot's note", Content: "not mine", Tags: []string{"spot-note", "spot:other"}},
+		{ID: "n1", Title: "Status update", Content: "dup", Tags: []string{"spot-note", "spot:s"}},
+	}
+	lines, hold := SelectNotes(items, "s")
+	if !hold {
+		t.Error("a rule saying not to check before being asked is a hold rule")
+	}
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "RULE: ") || !strings.Contains(lines[1], "still healthy") || !strings.Contains(lines[2], "all healthy") {
+		t.Fatalf("lines: %q", lines)
+	}
+	_, hold = SelectNotes([]Note{{ID: "r", Title: "Rule", Content: "always say hello", Tags: []string{"spot-rule"}}}, "s")
+	if hold {
+		t.Error("a rule that holds nothing back is not a hold rule")
+	}
+	_, hold = SelectNotes([]Note{{ID: "r", Title: "Pause", Content: "stand by", Tags: []string{"spot-rule", "spot-hold"}}}, "s")
+	if !hold {
+		t.Error("the spot-hold tag is a hold rule")
 	}
 }

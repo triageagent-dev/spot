@@ -54,13 +54,14 @@ type fakeCore struct {
 	late       func() []corecli.Issue // extra issues, for changes that land during a turn
 	identity   string                 // the messenger name the core gives; empty = the core has no such tool
 	identities int                    // how many times it was read
-	rules      []string               // the standing rules the core holds
+	rules      []string               // the standing notes the core holds
+	hold       bool                   // a rule says: check nothing until a person asks
 }
 
-func (f *fakeCore) StandingRules(context.Context) ([]string, error) {
+func (f *fakeCore) StandingNotes(context.Context, string) ([]string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.rules, nil
+	return f.rules, f.hold, nil
 }
 
 func (f *fakeCore) Identity(context.Context) (corecli.Identity, error) {
@@ -1752,7 +1753,7 @@ func TestStandingRulesAreInEveryWake(t *testing.T) {
 	defer h.stop()
 	h.waitIdle(1)
 	in := h.script.prompt(1)
-	if !strings.Contains(in, "Standing rules from the people") || !strings.Contains(in, "do not check anything before a person asks") {
+	if !strings.Contains(in, "Your standing notes, read for you") || !strings.Contains(in, "do not check anything before a person asks") {
 		t.Fatalf("the rules are not in the wake:\n%s", in)
 	}
 }
@@ -1772,5 +1773,43 @@ func TestIssueChangesCanWaitForTheScheduledWake(t *testing.T) {
 	h.waitIdle(2)
 	if in := h.script.prompt(2); !strings.Contains(in, "a") {
 		t.Fatalf("the held change is not in the scheduled wake:\n%s", in)
+	}
+}
+
+func TestAHoldRuleMakesNoModelCallOnAnEdgeOrTickWake(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.core.rules = []string{"RULE: Operational Rule: do not check anything before a person asks."}
+	h.core.hold = true
+	h.set("next", `{"after":"3m"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("the startup wake held", func() bool {
+		st := h.status()
+		return st.NextWake != nil && st.NextWake.Source == "hold"
+	})
+	h.core.setIssues(issue("a", "critical", 0))
+	time.Sleep(200 * time.Millisecond)
+	if h.turns() != 0 {
+		t.Fatalf("the model was called under a hold rule: %d turns", h.turns())
+	}
+}
+
+func TestAHoldRuleStillLetsAPersonThrough(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.core.roomAbsent = false
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{Sender: "alice", Text: "old"}}
+	h.core.rules = []string{"RULE: do not check anything before a person asks."}
+	h.core.hold = true
+	h.set("next", `{"after":"3m"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("held", func() bool { st := h.status(); return st.NextWake != nil && st.NextWake.Source == "hold" })
+	time.Sleep(80 * time.Millisecond)
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = append(h.core.roomMsgs["team"], corecli.RoomMessage{Sender: "alice", Name: "alice", Text: "status please"})
+	h.core.mu.Unlock()
+	h.waitIdle(1)
+	if in := h.script.prompt(1); !strings.Contains(in, "status please") {
+		t.Fatalf("the person's message is not in the wake:\n%s", in)
 	}
 }

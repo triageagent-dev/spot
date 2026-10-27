@@ -639,3 +639,27 @@ func TestRoomReadsAskOnlyForWhatIsNew(t *testing.T) {
 		t.Errorf("unreadable arguments change: %s", got)
 	}
 }
+
+func TestNotesOnlyOffersOneToolAndRefusesTheRest(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.NotesOnly = true
+		o.Core.Allow = append(o.Core.Allow, "search_memory", "say_in_workspace")
+	})
+	defs, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Name != "core__search_memory" {
+		var names []string
+		for _, d := range defs {
+			names = append(names, d.Name)
+		}
+		t.Fatalf("the model was offered %v, want only core__search_memory", names)
+	}
+	for _, n := range []string{"core__list_open_issues", "core__say_in_workspace", "schedule_next", "finish"} {
+		if _, isErr := r.Call(context.Background(), n, json.RawMessage(`{}`)); !isErr {
+			t.Errorf("%s ran in notes-only mode", n)
+		}
+	}
+}

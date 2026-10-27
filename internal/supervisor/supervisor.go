@@ -32,9 +32,10 @@ type Core interface {
 	RoomMessages(ctx context.Context, room, since string) ([]corecli.RoomMessage, string, error)
 	Typing(ctx context.Context, room string, on bool) error
 	Identity(ctx context.Context) (corecli.Identity, error)
-	// StandingRules are the instructions people gave the spot that always
-	// apply, one line each.
-	StandingRules(ctx context.Context) ([]string, error)
+	// StandingNotes are the spot's own notes and the rules people gave it, one
+	// line each, rules first, and whether a rule says to check nothing until
+	// a person asks.
+	StandingNotes(ctx context.Context, spot string) (lines []string, hold bool, err error)
 }
 
 // Turner runs one turn of the agent. Every turn is an empty conversation.
@@ -450,6 +451,55 @@ func (s *Supervisor) addDigest(reason prompt.Reason, res agent.Result) {
 	if err := s.led.SaveDigest(s.digest); err != nil {
 		s.log.Error("writing digest", "err", err)
 	}
+}
+
+// holdWake ends a wake that a hold rule forbids, without a model call: what
+// woke it is dropped, and the next wake is the longest the spot allows.
+func (s *Supervisor) holdWake(p *pending) {
+	s.log.Info("a hold rule is active: no model call", "reason", p.reason, "dropped", len(p.facts))
+	s.lastTurnEnd = s.now()
+	s.nextTick = s.now().Add(s.cfg.MaxWake)
+	s.scheduledWhy = "a hold rule is active"
+	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: "hold"}
+	s.setState("idle")
+}
+
+// currentFacts drops what the wake need not show: the same fact twice, and a
+// fact about an issue that is no longer open.
+func (s *Supervisor) currentFacts(ctx context.Context, p *pending) []string {
+	gone := map[string]bool{}
+	var ids []string
+	for _, e := range p.edges {
+		if e.Kind != edges.Message && e.IssueID != "" {
+			ids = append(ids, e.IssueID)
+		}
+	}
+	if len(ids) > 0 {
+		pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		issues, err := s.core.ListOpenIssues(pctx)
+		cancel()
+		if err == nil {
+			open := map[string]bool{}
+			for _, is := range issues {
+				open[is.ID] = true
+			}
+			for _, e := range p.edges {
+				if e.Kind != edges.Message && e.IssueID != "" && !open[e.IssueID] {
+					gone[e.Fact] = true
+				}
+			}
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range p.facts {
+		if gone[f] || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	return out
 }
 
 // humanMinWake is the least a wake the agent schedules in a turn a person
@@ -992,11 +1042,17 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	used := s.led.Usage().Tokens
 	s.refreshIdentity(ctx, false, identityEvery)
 	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
-	rules, rerr := s.core.StandingRules(rctx)
+	rules, hold, rerr := s.core.StandingNotes(rctx, s.cfg.Name)
 	rcancel()
 	if rerr != nil && ctx.Err() == nil {
-		s.log.Warn("standing rules not read; the wake goes on without them", "err", rerr)
+		s.log.Warn("standing notes not read; the wake goes on without them", "err", rerr)
 	}
+	if hold && p.reason != prompt.Human {
+		// A person said to check nothing until they ask: no model call at all.
+		s.holdWake(p)
+		return
+	}
+	p.facts = s.currentFacts(ctx, p)
 	text := prompt.Turn(prompt.Wake{
 		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(), Rules: rules,
