@@ -72,10 +72,14 @@ type Supervisor struct {
 
 	nextTick     time.Time
 	scheduledWhy string
-	lastTurnEnd  time.Time
-	failures     int
-	edgeWakes    []time.Time // early wakes in the last hour
-	status       Status
+	// promise is the earliest wake the agent itself asked for that has not
+	// fired. A later turn that wants a later (or no) wake does not move it.
+	promise     time.Time
+	promiseWhy  string
+	lastTurnEnd time.Time
+	failures    int
+	edgeWakes   []time.Time // early wakes in the last hour
+	status      Status
 
 	// What the core is told about how the spot is doing (counted per UTC day).
 	statsDay string
@@ -369,6 +373,10 @@ func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
 	}
 	s.coreHeld = held
 }
+
+// humanMinWake is the least a wake the agent schedules in a turn a person
+// started may be: a person who asked for an answer in a few minutes gets it.
+const humanMinWake = time.Minute
 
 // identityEvery is how long the name the core gave the spot is trusted before
 // it is read again: the workspace's owner can change it at any time.
@@ -994,9 +1002,18 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
 	}
 
+	if p.reason == prompt.Tick {
+		s.promise = time.Time{} // it fired
+	}
 	var w schedule.Wake
 	if res.Next != nil {
-		w = schedule.Request(res.Next.After, res.Next.Why, s.cfg.MinWake, s.cfg.MaxWake)
+		// A person who asks to be told in a few minutes is not held to the
+		// loop's floor: the floor is there to stop the agent spinning.
+		floor := s.cfg.MinWake
+		if p.reason == prompt.Human && floor > humanMinWake {
+			floor = humanMinWake
+		}
+		w = schedule.Request(res.Next.After, res.Next.Why, floor, s.cfg.MaxWake)
 	} else {
 		w = schedule.Default(s.cfg.MinWake, schedule.SourceMissing, "the agent did not call schedule_next")
 	}
@@ -1010,6 +1027,14 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 	s.nextTick = s.now().Add(w.After)
 	s.scheduledWhy = w.Why
+	if s.promise.After(s.now()) && s.promise.Before(s.nextTick) {
+		// Keep the earlier wake the agent promised itself: every edge wake
+		// would otherwise push it back and it would never come.
+		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
+		w.After, w.Why, w.Source, w.Note = s.promise.Sub(s.now()), s.promiseWhy, schedule.SourceAgent, "an earlier wake the agent asked for is kept"
+	} else if w.Source == schedule.SourceAgent || w.Source == schedule.SourceClamped {
+		s.promise, s.promiseWhy = s.nextTick, w.Why
+	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
 
 	// Baseline after the turn. What changed during it, other than comments

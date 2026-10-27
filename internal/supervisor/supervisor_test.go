@@ -1694,3 +1694,22 @@ func TestTheCoresCountOfTheSpotIsTheFloorOfItsCounter(t *testing.T) {
 		t.Fatalf("tokens = %d, want %d", got, own)
 	}
 }
+
+func TestALaterWakeDoesNotPushBackOneTheAgentPromised(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.set("next", `{"after":"3m","why":"report to the person"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	if st := h.status(); st.NextWake == nil || !strings.HasPrefix(st.NextWake.At, "2026-10-21T12:03:00") {
+		t.Fatalf("first wake: %+v", st.NextWake)
+	}
+	// An edge turn asks for much later: the promised wake stays.
+	h.set("next", `{"after":"2h","why":"routine"}`)
+	h.core.setIssues(issue("a", "critical", 0))
+	h.waitIdle(2)
+	st := h.status()
+	if st.NextWake == nil || !strings.HasPrefix(st.NextWake.At, "2026-10-21T12:03:00") || st.NextWake.Why != "report to the person" {
+		t.Fatalf("the promised wake was pushed back: %+v", st.NextWake)
+	}
+}
