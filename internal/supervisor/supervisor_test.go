@@ -339,6 +339,11 @@ func (h *harness) waitFor(what string, cond func() bool) {
 func (h *harness) waitIdle(n int) {
 	h.t.Helper()
 	h.waitFor(fmt.Sprintf("turn %d to finish", n), func() bool {
+		// The count first: turn n sets "running" before it counts, so a status read
+		// after the count is never the "idle" of the turn before.
+		if h.turns() != n {
+			return false
+		}
 		st := h.status().State
 		return h.turns() == n && (st == "idle" || st == "paused-ceiling")
 	})

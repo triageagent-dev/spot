@@ -280,205 +280,39 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	if a.o.MaxTurnTokens > 0 {
 		first += fmt.Sprintf("The turn also ends at about %dk tokens: every step sends the whole conversation again, so a long run costs most.\n", a.o.MaxTurnTokens/1000)
 	}
-	msgs := []llm.Message{llm.UserText(first)}
-	truncated, paused, told := false, false, false
-
-	for res.Steps < a.o.MaxSteps {
-		if err := ctx.Err(); err != nil {
-			res.Err = err
-			return res
-		}
-		elideOld(msgs)
-		req := llm.Request{
-			System: a.o.System, Messages: msgs, Tools: defs, MaxTokens: a.o.MaxTokens, Effort: a.o.Effort,
-		}
-		chat := root.Chat(a.o.Model, req)
-		resp, err := a.o.LLM.Complete(ctx, req)
-		chat.End(resp, err)
-		if err != nil {
-			res.Err = err
-			if isCtxErr(ctx, err) {
-				return res
+	steps := Steps{
+		Complete: func(req llm.Request) (llm.Response, error) {
+			chat := root.Chat(a.o.Model, req)
+			resp, err := a.o.LLM.Complete(ctx, req)
+			chat.End(resp, err)
+			return resp, err
+		},
+		Call: func(c llm.Block) (string, bool) {
+			span := root.Tool(c.Name, c.ID, c.Input)
+			began := time.Now()
+			content, isErr := a.o.Tools.Call(ctx, c.Name, c.Input)
+			span.End(content, isErr)
+			attrs := []any{"tool", c.Name, "ms", time.Since(began).Milliseconds(), "error", isErr}
+			if a.o.LogContent {
+				attrs = append(attrs, "input", clip(string(c.Input), 600))
 			}
-			res.Failed = true
-			res.AuthFailed = llm.IsAuth(err)
-			return res
-		}
-		res.Steps++
-		res.Usage = res.Usage.Add(resp.Usage)
-		res.ContextTokens = resp.Usage.Context()
-		if resp.Model != "" {
-			res.Model = resp.Model
-		}
-		res.Text = textOf(resp.Content)
-		if a.o.LogContent && res.Text != "" {
-			log.Debug("model text", "step", res.Steps, "text", clip(res.Text, 600))
-		}
-
-		switch resp.StopReason {
-		case llm.StopToolUse:
-			calls := toolUses(resp.Content)
-			if len(calls) == 0 {
-				if a.endOrInject(&msgs, resp) {
-					return res
-				}
-				continue
-			}
-			if told && !onlyBuiltins(calls) {
-				// The model was told the cap was reached and still asks for tools.
-				res.ToolLimit = true
-				res.TokenLimit = res.ToolCalls < a.o.MaxToolCalls && a.overTokens(&res)
-				log.Warn("the turn stopped at its cap", "toolCalls", res.ToolCalls, "billable", res.Usage.Billable(), "tokenCap", res.TokenLimit)
-				return res
-			}
-			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
-			results, refused := a.runTools(ctx, root, calls, &res)
-			if refused && !told {
-				told = true
-				log.Warn("turn cap reached; the model is told to wrap up", "toolCalls", res.ToolCalls, "cap", a.o.MaxToolCalls, "billable", res.Usage.Billable(), "tokenCap", a.o.MaxTurnTokens)
-			}
-			if _, done := a.o.Tools.Finished(); done {
-				return res
-			}
-			if len(results) == 0 {
-				return res
-			}
-			for _, extra := range a.take() {
-				results = append(results, llm.Text(extra))
-			}
-			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: results})
-
-		case llm.StopMaxTokens:
-			if truncated {
-				res.Failed, res.Err = true, errors.New("the model's answer was cut at the output cap twice")
-				return res
-			}
-			truncated = true
-			// A tool call cut in the middle has no valid input: drop it. What is
-			// left (thinking, text) is kept and the model is asked to go on.
-			keep := withoutToolUses(resp.Content)
-			if len(keep) > 0 {
-				msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: keep})
-			}
-			msgs = append(msgs, llm.UserText(continueText))
-
-		case llm.StopRefusal:
-			res.Failed = true
-			res.Err = errors.New("the model refused the request" + categoryText(resp.RefusalCategory))
-			return res
-
-		case llm.StopPauseTurn:
-			if paused {
-				res.Failed, res.Err = true, errors.New("the model paused the turn twice")
-				return res
-			}
-			paused = true
-			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
-
-		default: // end_turn, and any stop with nothing left to do
-			if a.endOrInject(&msgs, resp) {
-				return res
-			}
-		}
+			log.Debug("tool call", attrs...)
+			return content, isErr
+		},
+		Finished: func() bool { _, done := a.o.Tools.Finished(); return done },
+		Stopped:  ctx.Err,
+		IsStop:   func(err error) bool { return isCtxErr(ctx, err) },
+		Take:     a.take, FinishOrTake: a.finishOrTake,
 	}
-	res.StepsExhausted = true
-	log.Warn("the turn stopped at the step cap", "steps", res.Steps)
-	return res
-}
-
-// endOrInject ends the turn, unless a person's message arrived while the model
-// was answering: then it is added to the conversation and the turn goes on.
-// It reports whether the turn ends.
-func (a *Agent) endOrInject(msgs *[]llm.Message, resp llm.Response) bool {
-	extra := a.finishOrTake()
-	if len(extra) == 0 {
-		return true
-	}
-	if len(resp.Content) > 0 {
-		*msgs = append(*msgs, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
-	}
-	blocks := make([]llm.Block, 0, len(extra))
-	for _, e := range extra {
-		blocks = append(blocks, llm.Text(e))
-	}
-	*msgs = append(*msgs, llm.Message{Role: llm.RoleUser, Content: blocks})
-	return false
-}
-
-// runTools runs the calls of one assistant message, in order, and returns the
-// tool_result blocks for all of them.
-// Past the cap a call is answered with an error and not run, except the
-// spot's own schedule_next and finish; refused reports whether any was.
-func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.Block, res *Result) (out []llm.Block, refused bool) {
-	out = make([]llm.Block, len(calls))
-	held := false // a call of this batch was held back by a gate and did not run
-	var finishes []int
-	for i, c := range calls {
-		if tools.IsFinish(c.Name) {
-			finishes = append(finishes, i) // last, once the others have shown whether they ran
-			continue
-		}
-		if text := a.limitText(res); text != "" && !tools.IsBuiltin(c.Name) {
-			refused = true
-			out[i] = llm.ToolResult(c.ID, text, true)
-			continue
-		}
-		content, isErr := a.call(ctx, root, c, res)
-		held = held || (isErr && tools.Held(content))
-		out[i] = llm.ToolResult(c.ID, content, isErr)
-	}
-	for _, i := range finishes {
-		c := calls[i]
-		if held {
-			// The turn must not end on a post or a read that did not run: the
-			// model would report it as done. It sees why and goes on.
-			out[i] = llm.ToolResult(c.ID, finishHeldText, true)
-			continue
-		}
-		content, isErr := a.call(ctx, root, c, res)
-		out[i] = llm.ToolResult(c.ID, content, isErr)
-	}
-	return out, refused
-}
-
-// finishHeldText answers a finish that came in the same step as a call a gate
-// held back.
-const finishHeldText = "not finished: a call in this step did not run (see its result). Do what it says and call it again, " +
-	"or, if you will not do it, say so plainly in your summary; do not report as done what did not run. Then call finish."
-
-// call runs one tool call of the model and records its span and count.
-func (a *Agent) call(ctx context.Context, root *telemetry.Turn, c llm.Block, res *Result) (content string, isErr bool) {
-	span := root.Tool(c.Name, c.ID, c.Input)
-	began := time.Now()
-	if !json.Valid(c.Input) {
-		content, isErr = "the tool input was not valid JSON", true
-	} else {
-		content, isErr = a.o.Tools.Call(ctx, c.Name, c.Input)
-	}
-	span.End(content, isErr)
-	res.ToolCalls++
-	attrs := []any{"tool", c.Name, "ms", time.Since(began).Milliseconds(), "error", isErr}
 	if a.o.LogContent {
-		attrs = append(attrs, "input", clip(string(c.Input), 600))
+		steps.Text = func(step int, text string) { log.Debug("model text", "step", step, "text", clip(text, 600)) }
 	}
-	a.o.Logger.Debug("tool call", attrs...)
-	return content, isErr
-}
-
-// overTokens reports whether the turn has spent its token cap.
-func (a *Agent) overTokens(res *Result) bool {
-	return a.o.MaxTurnTokens > 0 && res.Usage.Billable() >= a.o.MaxTurnTokens
-}
-
-// limitText is the refusal for a tool call when a cap is spent, or empty.
-func (a *Agent) limitText(res *Result) string {
-	if res.ToolCalls >= a.o.MaxToolCalls {
-		return fmt.Sprintf(toolLimitText, a.o.MaxToolCalls)
-	}
-	if a.overTokens(res) {
-		return fmt.Sprintf(tokenLimitText, a.o.MaxTurnTokens)
-	}
-	return ""
+	loop := RunLoop(steps, Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens},
+		Request{System: a.o.System, Tools: defs, MaxTokens: a.o.MaxTokens, Effort: a.o.Effort, Model: a.o.Model}, first, log)
+	// The deferred closure above fills the rest of res from the world.
+	res.Text, res.Steps, res.ToolCalls, res.Usage, res.ContextTokens, res.Model = loop.Text, loop.Steps, loop.ToolCalls, loop.Usage, loop.ContextTokens, loop.Model
+	res.StepsExhausted, res.ToolLimit, res.TokenLimit, res.Failed, res.AuthFailed, res.Err = loop.StepsExhausted, loop.ToolLimit, loop.TokenLimit, loop.Failed, loop.AuthFailed, loop.Err
+	return res
 }
 
 func onlyBuiltins(calls []llm.Block) bool {
