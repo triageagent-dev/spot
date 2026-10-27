@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/triageagent-dev/spot/internal/agent"
@@ -74,8 +75,11 @@ type Supervisor struct {
 	scheduledWhy string
 	// promise is the earliest wake the agent itself asked for that has not
 	// fired. A later turn that wants a later (or no) wake does not move it.
-	promise     time.Time
-	promiseWhy  string
+	promise    time.Time
+	promiseWhy string
+	// digest is the spot's own summary of each of its last wakes, the only
+	// thing carried from one wake to the next (the conversation is not).
+	digest      []ledger.DigestEntry
 	lastTurnEnd time.Time
 	failures    int
 	edgeWakes   []time.Time // early wakes in the last hour
@@ -97,6 +101,8 @@ type heldEdge struct {
 }
 
 type roomState struct {
+	seenTS   int64        // newest message the polls have seen (ms)
+	readTS   atomic.Int64 // what the last finished turn could see; read_workspace_room asks for newer only
 	cursor   string
 	primed   bool
 	disabled time.Time // do not ask again before this
@@ -170,11 +176,17 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 		rooms: map[string]*roomState{"team": {}, "agents": {}},
 	}
 	// A saved cursor means the messages after it are news, restart or not.
+	for room, ts := range led.LoadRoomRead() {
+		if rs, ok := s.rooms[room]; ok {
+			rs.readTS.Store(ts)
+		}
+	}
 	for room, cur := range led.LoadRoomCursors() {
 		if rs, ok := s.rooms[room]; ok && cur != "" {
 			rs.cursor, rs.primed = cur, true
 		}
 	}
+	s.digest = led.LoadDigest()
 	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID}
 	return s
 }
@@ -372,6 +384,69 @@ func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
 		s.nextTick = s.now()
 	}
 	s.coreHeld = held
+}
+
+// RoomSince is the timestamp (ms) of the newest message of room the last
+// finished turn could see; 0 when none is known.
+func (s *Supervisor) RoomSince(room string) int64 {
+	if rs, ok := s.rooms[room]; ok {
+		return rs.readTS.Load()
+	}
+	return 0
+}
+
+// markRoomsRead records what the turn that just ended could see of each room,
+// so the next wake reads only what is newer.
+func (s *Supervisor) markRoomsRead() {
+	m := map[string]int64{}
+	for room, rs := range s.rooms {
+		if rs.seenTS > 0 {
+			rs.readTS.Store(rs.seenTS)
+		}
+		if ts := rs.readTS.Load(); ts > 0 {
+			m[room] = ts
+		}
+	}
+	if err := s.led.SaveRoomRead(m); err != nil {
+		s.log.Warn("saving room watermarks", "err", err)
+	}
+}
+
+// digestKeep is how many wakes the digest holds; digestLine clips one summary.
+const (
+	digestKeep = 4
+	digestLine = 500
+)
+
+// digestLines renders the digest for the wake prompt.
+func (s *Supervisor) digestLines() []string {
+	out := make([]string, 0, len(s.digest))
+	for _, d := range s.digest {
+		line := d.At + " (" + d.Reason + "): " + d.Summary
+		if d.Next != "" {
+			line += " Next: " + d.Next
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// addDigest records the spot's own summary of the wake that just ended.
+func (s *Supervisor) addDigest(reason prompt.Reason, res agent.Result) {
+	sum := strings.Join(strings.Fields(res.Summary), " ")
+	if sum == "" {
+		sum = "no summary: the wake ended at a cap or without finish."
+	}
+	if len(sum) > digestLine {
+		sum = strings.ToValidUTF8(sum[:digestLine], "") + "…"
+	}
+	s.digest = append(s.digest, ledger.DigestEntry{At: s.now().UTC().Format("15:04Z"), Reason: string(reason), Summary: sum, Next: s.scheduledWhy})
+	if len(s.digest) > digestKeep {
+		s.digest = s.digest[len(s.digest)-digestKeep:]
+	}
+	if err := s.led.SaveDigest(s.digest); err != nil {
+		s.log.Error("writing digest", "err", err)
+	}
 }
 
 // humanMinWake is the least a wake the agent schedules in a turn a person
@@ -681,6 +756,11 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 	first := !rs.primed
 	moved := next != rs.cursor
 	rs.primed, rs.cursor = true, next
+	for _, m := range msgs {
+		if m.TS > rs.seenTS {
+			rs.seenTS = m.TS
+		}
+	}
 	if first {
 		return nil, moved // history at startup is not news
 	}
@@ -910,7 +990,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.refreshIdentity(ctx, false, identityEvery)
 	text := prompt.Turn(prompt.Wake{
 		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
-		Interrupted: interrupted, Note: p.note,
+		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(),
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
 	})
 
@@ -1036,6 +1116,10 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.promise, s.promiseWhy = s.nextTick, w.Why
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
+	if !failed {
+		s.addDigest(p.reason, res)
+		s.markRoomsRead()
+	}
 
 	// Baseline after the turn. What changed during it, other than comments
 	// (the agent writes those itself), is held and wakes the agent again by

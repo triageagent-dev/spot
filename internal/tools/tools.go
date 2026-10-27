@@ -42,6 +42,11 @@ type Server struct {
 
 // Options configure a Registry.
 type Options struct {
+	// RoomSince gives, for a room, the timestamp (ms) of the newest message the
+	// last finished turn could see; read_workspace_room is then asked only for
+	// what is newer, unless the model names its own since_ts. Nil or 0 = no
+	// narrowing.
+	RoomSince func(room string) int64
 	// Core is the core's MCP server. Without it a turn cannot run.
 	Core Server
 	// Others are ego and the connectors. One that cannot be reached is left
@@ -316,6 +321,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	if rt.server == CoreServer && rt.tool == upsertMemoryItem && r.o.SpotName != "" {
 		args = withSpotTag(args, SpotTagPrefix+r.o.SpotName)
 	}
+	if rt.server == CoreServer && rt.tool == readWorkspaceRoom && r.o.RoomSince != nil {
+		args = withRoomSince(args, r.o.RoomSince)
+	}
 	cctx, cancel := context.WithTimeout(ctx, r.o.CallTimeout)
 	defer cancel()
 	res, err := s.conn.Call(cctx, rt.tool, args)
@@ -487,6 +495,45 @@ func (r *Registry) canonicalName(name string) string {
 		return bare
 	}
 	return name
+}
+
+const readWorkspaceRoom = "read_workspace_room"
+
+// roomReadLimit is how many messages one read of a room returns when the model
+// names no limit and the spot narrowed the read.
+const roomReadLimit = 10
+
+// withRoomSince asks for only the messages newer than the last finished turn
+// could see, and for at most roomReadLimit of them, unless the model passed its
+// own since_ts or limit. Arguments it cannot read are returned as they are.
+func withRoomSince(args json.RawMessage, since func(room string) int64) json.RawMessage {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return args
+	}
+	if _, ok := m["since_ts"]; ok {
+		return args
+	}
+	room := "team"
+	if raw, ok := m["room"]; ok {
+		var v string
+		if json.Unmarshal(raw, &v) == nil && v != "" {
+			room = v
+		}
+	}
+	ts := since(room)
+	if ts <= 0 {
+		return args
+	}
+	m["since_ts"], _ = json.Marshal(ts)
+	if _, ok := m["limit"]; !ok {
+		m["limit"], _ = json.Marshal(roomReadLimit)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return args
+	}
+	return out
 }
 
 // withSpotTag adds tag to the comma-separated tags of a memory item the model

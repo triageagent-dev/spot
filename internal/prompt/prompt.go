@@ -59,6 +59,9 @@ type Wake struct {
 	Note        string   // supervisor note, e.g. the schedule was defaulted
 	TokensUsed  int64
 	TokensCeil  int64 // 0 = no ceiling
+	// Digest is the spot's own summaries of its last wakes, oldest first, each
+	// one line. They are its claims, not facts.
+	Digest []string
 }
 
 // Turn builds the prompt for a turn.
@@ -69,6 +72,13 @@ func Turn(w Wake) string {
 		fmt.Fprintf(&b, "In the messenger you appear as %s: people write to you by that name.\n", w.ChatName)
 	}
 	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is the core's memory and what the core and the room show you now.\n")
+	b.WriteString("read_workspace_room already returns only what is newer than your last wake; pass since_ts yourself to read older messages. Do not read the room again to see what you were just told.\n")
+	if len(w.Digest) > 0 {
+		b.WriteString("Your own summaries of your last wakes, oldest first. They are what you said then, not facts: check what you will act on, and do not read again what they already tell you.\n")
+		for _, d := range w.Digest {
+			fmt.Fprintf(&b, "- %s\n", d)
+		}
+	}
 	switch w.Reason {
 	case Startup:
 		b.WriteString("The pod (re)started. Read your notes to yourself in the core's memory, then look at the tenant.\n")
@@ -100,6 +110,9 @@ func Turn(w Wake) string {
 		fmt.Fprintf(&b, "Tokens today: %d used, %d left of %d.\n", w.TokensUsed, left, w.TokensCeil)
 	} else {
 		fmt.Fprintf(&b, "Tokens today: %d used (no ceiling set).\n", w.TokensUsed)
+	}
+	if w.Reason == Edge || w.Reason == Tick {
+		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
 	}
 	b.WriteString("End this turn by calling schedule_next.\n")
 	return b.String()

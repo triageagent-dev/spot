@@ -617,3 +617,25 @@ func TestResultsAreNotFencedByDefault(t *testing.T) {
 		t.Errorf("without the option the result is as it came: %q", c)
 	}
 }
+
+func TestRoomReadsAskOnlyForWhatIsNew(t *testing.T) {
+	since := func(room string) int64 {
+		if room == "agents" {
+			return 0
+		}
+		return 1700
+	}
+	got := string(withRoomSince(json.RawMessage(`{"tenant":"t"}`), since))
+	if !strings.Contains(got, `"since_ts":1700`) || !strings.Contains(got, `"limit":10`) {
+		t.Errorf("a read of the default room is not narrowed: %s", got)
+	}
+	if got := string(withRoomSince(json.RawMessage(`{"tenant":"t","since_ts":5,"limit":50}`), since)); strings.Contains(got, "1700") || !strings.Contains(got, `"limit":50`) {
+		t.Errorf("the model's own since_ts and limit stand: %s", got)
+	}
+	if got := string(withRoomSince(json.RawMessage(`{"room":"agents"}`), since)); strings.Contains(got, "since_ts") {
+		t.Errorf("a room with no watermark is left alone: %s", got)
+	}
+	if got := string(withRoomSince(json.RawMessage(`not json`), since)); got != "not json" {
+		t.Errorf("unreadable arguments change: %s", got)
+	}
+}

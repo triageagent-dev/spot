@@ -23,10 +23,12 @@ const (
 	// SupervisorDir holds the supervisor's own files.
 	SupervisorDir = "supervisor"
 
-	SessionFile = "session.json"
-	UsageFile   = "usage.json"
-	StatusFile  = "status.json"
-	RoomsFile   = "rooms.json"
+	SessionFile  = "session.json"
+	UsageFile    = "usage.json"
+	StatusFile   = "status.json"
+	RoomsFile    = "rooms.json"
+	DigestFile   = "digest.json"
+	RoomReadFile = "roomread.json"
 )
 
 // migrated are the files an earlier layout kept at the state root. New
@@ -191,6 +193,48 @@ func (l *Ledger) SaveRoomCursors(c map[string]string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return writeJSON(l.Path(RoomsFile), c, 0o600)
+}
+
+// LoadRoomRead returns, per room, the timestamp (ms) of the newest message the
+// last finished turn could have seen.
+func (l *Ledger) LoadRoomRead() map[string]int64 {
+	out := map[string]int64{}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = readJSON(l.Path(RoomReadFile), &out)
+	return out
+}
+
+// SaveRoomRead persists it.
+func (l *Ledger) SaveRoomRead(m map[string]int64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return writeJSON(l.Path(RoomReadFile), m, 0o600)
+}
+
+// DigestEntry is what one wake left for the next: the spot's own summary of it.
+type DigestEntry struct {
+	At      string `json:"at"`
+	Reason  string `json:"reason"`
+	Summary string `json:"summary"`
+	Next    string `json:"next,omitempty"` // why it scheduled the next wake
+}
+
+// LoadDigest returns the saved digest of the last wakes, oldest first; a
+// missing file is an empty digest.
+func (l *Ledger) LoadDigest() []DigestEntry {
+	var out []DigestEntry
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = readJSON(l.Path(DigestFile), &out)
+	return out
+}
+
+// SaveDigest persists the digest.
+func (l *Ledger) SaveDigest(d []DigestEntry) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return writeJSON(l.Path(DigestFile), d, 0o600)
 }
 
 func readJSON(path string, v any) error {

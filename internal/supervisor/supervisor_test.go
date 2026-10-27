@@ -1713,3 +1713,26 @@ func TestALaterWakeDoesNotPushBackOneTheAgentPromised(t *testing.T) {
 		t.Fatalf("the promised wake was pushed back: %+v", st.NextWake)
 	}
 }
+
+func TestTheNextWakeSeesTheSpotsOwnSummaryOfTheLastOnes(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.set("next", `{"after":"3m","why":"look again"}`)
+	h.set("summary", "namespace healthy, nothing to report")
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	if strings.Contains(h.script.prompt(1), "summaries of your last wakes") {
+		t.Fatalf("the first wake has nothing to be told:\n%s", h.script.prompt(1))
+	}
+	h.core.setIssues(issue("a", "critical", 0))
+	h.waitIdle(2)
+	in := h.script.prompt(2)
+	for _, want := range []string{"summaries of your last wakes", "namespace healthy, nothing to report", "Next: look again", "read_workspace_room already returns only what is newer"} {
+		if !strings.Contains(in, want) {
+			t.Errorf("second wake lacks %q:\n%s", want, in)
+		}
+	}
+	if got := h.sup.led.LoadDigest(); len(got) < 2 {
+		t.Errorf("the digest is not kept for a restart: %+v", got)
+	}
+}
