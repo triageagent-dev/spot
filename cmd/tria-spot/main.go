@@ -169,15 +169,32 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			log.Error("temporal engine", "err", err)
 			return 1
 		}
-		defer eng.Close()
 		if err := eng.Start(); err != nil {
+			eng.Close()
 			log.Error("temporal worker", "err", err)
 			return 1
 		}
 		log.Info("engine: temporal", "address", cfg.TemporalAddress, "namespace", cfg.TemporalNamespace, "workflow", eng.WorkflowID(),
 			"encrypted", cfg.TemporalPayloadKeyFile != "")
-		if err := sup.RunBridge(ctx, eng); err != nil {
-			log.Error("supervisor", "err", err)
+		// The supervisor keeps serving the workflow's calls (the notes, the books)
+		// until the worker has drained its activities: a turn that ends during the
+		// shutdown is still booked. The turns it cannot finish are resumed by the
+		// next pod.
+		bctx, bstop := context.WithCancel(context.Background())
+		defer bstop()
+		done := make(chan error, 1)
+		go func() { done <- sup.RunBridge(bctx, eng) }()
+		var runErr error
+		select {
+		case <-ctx.Done():
+			eng.Close()
+			bstop()
+			runErr = <-done
+		case runErr = <-done:
+			eng.Close()
+		}
+		if runErr != nil {
+			log.Error("supervisor", "err", runErr)
 			return 1
 		}
 		log.Info("stopped")

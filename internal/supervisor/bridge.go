@@ -44,6 +44,7 @@ var errBridgeStopped = errors.New("the supervisor has stopped")
 func (s *Supervisor) RunBridge(ctx context.Context, sink Sink) error {
 	defer s.stopOnce.Do(func() { close(s.stopped) })
 	s.sink, s.bctx = sink, ctx
+	s.status.Engine = "temporal"
 	s.status.StartedAt = s.now().UTC().Format(time.RFC3339)
 	s.setState("starting")
 

@@ -90,7 +90,7 @@ func WakeWorkflow(ctx workflow.Context, in WakeIn) (WakeOut, error) {
 	var lo ListOut
 	err := workflow.ExecuteActivity(workflow.WithActivityOptions(turnCtx, workflow.ActivityOptions{
 		StartToCloseTimeout: time.Minute, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2, InitialInterval: time.Second},
-	}), (*Acts).ListTools, ListIn{Key: in.Key, Reason: in.Reason, Limited: in.Limited}).Get(ctx, &lo)
+	}), (*Acts).ListTools, ListIn{Key: in.Key, Reason: in.Reason, Prompt: in.Prompt, Limited: in.Limited}).Get(ctx, &lo)
 	switch {
 	case err != nil:
 		out.Failed, out.Err = true, "the tools could not be listed: "+errText(err)

@@ -138,7 +138,8 @@ type roomState struct {
 type Status struct {
 	Name        string `json:"name"`
 	Tenant      string `json:"tenant"`
-	State       string `json:"state"` // starting, idle, running, paused-ceiling, stopping, stopped
+	Engine      string `json:"engine,omitempty"` // "temporal" when the schedule and the turns run in a workflow; empty = local
+	State       string `json:"state"`            // starting, idle, running, paused-ceiling, stopping, stopped
 	StartedAt   string `json:"startedAt"`
 	UpdatedAt   string `json:"updatedAt"`
 	LastTurn    *Turn  `json:"lastTurn,omitempty"`

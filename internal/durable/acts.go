@@ -113,6 +113,7 @@ func (a *Acts) janitor() {
 type ListIn struct {
 	Key     string
 	Reason  string
+	Prompt  string // for the trace
 	Limited bool
 }
 
@@ -126,7 +127,7 @@ type ListOut struct {
 
 // ListTools connects to the servers and lists the tools of the wake.
 func (a *Acts) ListTools(ctx context.Context, in ListIn) (ListOut, error) {
-	w, err := a.open(ctx, in.Key, in.Reason, in.Limited)
+	w, err := a.open(ctx, in.Key, in.Reason, in.Prompt, in.Limited)
 	if errors.Is(err, tools.ErrCoreDown) {
 		return ListOut{CoreDown: true, Err: err.Error()}, nil
 	}
@@ -138,7 +139,7 @@ func (a *Acts) ListTools(ctx context.Context, in ListIn) (ListOut, error) {
 
 // open builds the registry of a wake and lists the tools, replacing what the
 // key held.
-func (a *Acts) open(ctx context.Context, key, reason string, limited bool) (*wakeTools, error) {
+func (a *Acts) open(ctx context.Context, key, reason, prompt string, limited bool) (*wakeTools, error) {
 	reg := a.d.NewTools()
 	reg.Limit(limited)
 	reg.Begin()
@@ -149,7 +150,7 @@ func (a *Acts) open(ctx context.Context, key, reason string, limited bool) (*wak
 	}
 	// The trace has no parent when the wake moved to another process; it is a
 	// trace of the rest of the turn.
-	_, root := a.d.Telemetry.StartTurn(context.Background(), reason, "")
+	_, root := a.d.Telemetry.StartTurn(context.Background(), reason, prompt)
 	w := &wakeTools{reg: reg, defs: defs, down: reg.Down(), root: root, last: time.Now()}
 	a.mu.Lock()
 	old := a.wakes[key]
@@ -174,7 +175,7 @@ func (a *Acts) get(ctx context.Context, key, reason string, limited bool) (*wake
 		return w, nil
 	}
 	a.d.Logger.Info("a wake's tools are built again: this process had not seen it", "wake", key)
-	return a.open(ctx, key, reason, limited)
+	return a.open(ctx, key, reason, "", limited)
 }
 
 // ModelIn is one model request: the conversation. The instruction and the tool

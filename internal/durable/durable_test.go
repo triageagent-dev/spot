@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,15 +25,54 @@ import (
 
 var srv *testsuite.DevServer
 
+// The tests run against Temporal's local dev server. A build with the tag cloud
+// (cloud_test.go) points them at a live service instead: these hooks are what it
+// replaces.
+var (
+	useCloud = func() bool { return false }
+	// testClient is the client of a test: the dev server's, with the payload codec
+	// when the options name a key.
+	testClient = func(t *testing.T, o Options) client.Client {
+		if o.PayloadKeyFile == "" {
+			return srv.Client()
+		}
+		dc, fc, err := dataConverter(o.PayloadKeyFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := client.Dial(client.Options{HostPort: srv.FrontendHostPort(), Namespace: "default", DataConverter: dc, FailureConverter: fc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	// rawClient reads what the service holds: no converter, no codec.
+	rawClient = func(t *testing.T) client.Client {
+		c, err := client.Dial(client.Options{HostPort: srv.FrontendHostPort(), Namespace: "default"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// slow scales the waits of a test: a live service is further away.
+	slow = time.Duration(1)
+)
+
 func TestMain(m *testing.M) {
-	var err error
-	srv, err = testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{LogLevel: "error"})
-	if err != nil {
-		panic(err)
+	flag.Parse()
+	if !useCloud() {
+		var err error
+		srv, err = testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{LogLevel: "error"})
+		if err != nil {
+			panic(err)
+		}
 	}
 	heartbeatEvery = 150 * time.Millisecond
 	code := m.Run()
-	_ = srv.Stop()
+	if srv != nil {
+		_ = srv.Stop()
+	}
 	os.Exit(code)
 }
 
@@ -41,6 +81,7 @@ type room struct {
 	mu    sync.Mutex
 	posts []string
 	slow  map[string]time.Duration // a post that takes this long, by text
+	begun chan string              // the text of a slow post, when it begins
 }
 
 func (r *room) add(s string) { r.mu.Lock(); r.posts = append(r.posts, s); r.mu.Unlock() }
@@ -80,6 +121,10 @@ func coreServer(t *testing.T, rm *room) string {
 		d := rm.slow[msg]
 		rm.mu.Unlock()
 		if d > 0 {
+			select {
+			case rm.begun <- msg:
+			default:
+			}
 			time.Sleep(d)
 		}
 		rm.add(msg)
@@ -249,28 +294,19 @@ type rig struct {
 func newRig(t *testing.T, mut func(*Options)) *rig {
 	t.Helper()
 	name := fmt.Sprintf("t%s-%d", strings.ToLower(strings.NewReplacer("/", "-", "_", "-").Replace(t.Name())), time.Now().UnixNano()%1_000_000)
-	rm := &room{slow: map[string]time.Duration{}}
+	rm := &room{slow: map[string]time.Duration{}, begun: make(chan string, 4)}
 	r := &rig{t: t, room: rm, url: coreServer(t, rm), host: &host{min: time.Second, max: time.Hour}, model: &model{}, id: "spot-" + name}
 	r.opts = Options{Name: name, TaskQueue: "tq-" + name, WorkflowID: r.id, StopTimeout: 100 * time.Millisecond}
 	if mut != nil {
 		mut(&r.opts)
 	}
-	var err error
-	if r.opts.PayloadKeyFile != "" {
-		dc, fc, derr := dataConverter(r.opts.PayloadKeyFile)
-		if derr != nil {
-			t.Fatal(derr)
-		}
-		r.c, err = client.Dial(client.Options{HostPort: srv.FrontendHostPort(), Namespace: "default", DataConverter: dc, FailureConverter: fc})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(r.c.Close)
-	} else {
-		r.c = srv.Client()
-	}
+	r.c = testClient(t, r.opts)
 	r.startWorker()
-	t.Cleanup(r.stopWorker)
+	t.Cleanup(func() {
+		r.stopWorker()
+		// A spot workflow runs for ever: end it (and its wakes) with the test.
+		_ = r.c.TerminateWorkflow(context.Background(), r.id, "", "the test is over")
+	})
 	return r
 }
 
@@ -327,7 +363,7 @@ func (r *rig) waitPost(text string, within time.Duration) {
 
 func (r *rig) waitFor(what string, within time.Duration, cond func() bool) {
 	r.t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(within * slow)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -375,6 +411,9 @@ func TestAMessageIsAnsweredWhileALongTurnWorks(t *testing.T) {
 	if st.Wakes != 2 {
 		t.Fatalf("state: %+v", st)
 	}
+	time.Sleep(500 * time.Millisecond)
+	n, by := actions(t, r.id, r.opts.Name+"-wake-1", r.opts.Name+"-wake-2")
+	t.Logf("two wakes (one of 5 model steps and 4 tool calls, one of 1 step) billed about %d actions: %v", n, by)
 }
 
 // A wake a person asked for is a durable timer: it comes due while no worker
@@ -510,7 +549,11 @@ func TestAWriteCutByACrashIsReportedAndNotRepeated(t *testing.T) {
 		return use(finish("done"))
 	}
 	r.wake(ReasonEdge, "post something")
-	time.Sleep(600 * time.Millisecond) // inside the post
+	select {
+	case <-r.room.begun: // inside the post
+	case <-time.After(30 * time.Second * slow):
+		t.Fatal("the post never began")
+	}
 	r.stopWorker()
 	r.startWorker()
 	select {
@@ -585,10 +628,7 @@ func TestAPausedSpotMakesNoModelCall(t *testing.T) {
 // wake holds the text, as the Temporal service has it (no converter).
 func historyHolds(t *testing.T, r *rig, text string) bool {
 	t.Helper()
-	raw, err := client.Dial(client.Options{HostPort: srv.FrontendHostPort(), Namespace: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := rawClient(t)
 	defer raw.Close()
 	events := 0
 	found := false
@@ -608,6 +648,33 @@ func historyHolds(t *testing.T, r *rig, text string) bool {
 		t.Fatal("no history")
 	}
 	return found
+}
+
+// actions counts what the service bills in a workflow and its children: the
+// start, each activity attempt, each timer, each signal, each child start. It is
+// an estimate for the log of a test, not an assertion.
+func actions(t *testing.T, ids ...string) (n int, by map[string]int) {
+	t.Helper()
+	raw := rawClient(t)
+	defer raw.Close()
+	by = map[string]int{}
+	for _, id := range ids {
+		it := raw.GetWorkflowHistory(context.Background(), id, "", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		for it.HasNext() {
+			ev, err := it.Next()
+			if err != nil {
+				return n, by
+			}
+			switch ev.GetEventType() {
+			case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED, enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+				enumspb.EVENT_TYPE_TIMER_STARTED, enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED,
+				enumspb.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED:
+				n++
+				by[ev.GetEventType().String()]++
+			}
+		}
+	}
+	return n, by
 }
 
 func secretTurn(r *rig, secret string) {
@@ -639,6 +706,9 @@ func TestTheHistoryHoldsNoClearText(t *testing.T) {
 // The control: without a key the same check finds the text, so the test above
 // can fail.
 func TestTheHistoryHoldsTheTextWithoutAKey(t *testing.T) {
+	if useCloud() {
+		t.Skip("the control sends clear text: never to a live service")
+	}
 	r := newRig(t, nil)
 	secretTurn(r, "the payments database is down in the east cluster")
 	if !historyHolds(t, r, "payments") {
