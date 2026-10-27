@@ -4,3 +4,6 @@
 *.test
 .DS_Store
 /charts/tria-spot/charts/
+
+# Manifests, values and notes for real installs (cluster, tenant and host names). Never committed.
+/data/
