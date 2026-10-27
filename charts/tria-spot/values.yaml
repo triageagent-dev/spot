@@ -143,7 +143,12 @@ agent:
   edgeCooldown: 1m
   chatBatch: 10m              # how long a person's message that does not name the spot waits; 0s = every message wakes it
   notesOnly: false            # true: the model gets one tool, search_memory over its own notes, and nothing else; the supervisor schedules the next wake
-  issueWakes: true            # false: a change of the core's issues waits for the next scheduled wake; only a person's message wakes the spot early
+  issueWakes: true
+  # fastLane: a person's message and a wake the spot promised run in a second
+  # short turn while a long one is working.
+  fastLane: true
+  fastMaxToolCalls: 8
+  fastMaxTurnTokens: 120000            # false: a change of the core's issues waits for the next scheduled wake; only a person's message wakes the spot early
   maxEdgeWakesPerHour: 12     # early wakes (edges, messages) per hour; 0 = no cap
   turnTimeout: 20m
   toolTimeout: 60s            # one tool call; past it the model gets an error result

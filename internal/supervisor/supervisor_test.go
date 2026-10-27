@@ -236,6 +236,8 @@ type harness struct {
 	trig Trigger
 	// wrap, when set, puts something around the scripted turner.
 	wrap func(Turner) Turner
+	// fast, when set, is the spot's second lane.
+	fast *scriptTurner
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -284,6 +286,9 @@ func (h *harness) start() {
 	h.sup = New(h.cfg, led, h.core, tn, log)
 	h.sup.SetClock(h.clock.Now)
 	h.sup.typingEvery = h.typingEvery
+	if h.fast != nil {
+		h.sup.SetFastTurner(h.fast)
+	}
 	if h.trig != nil {
 		h.sup.SetTrigger(h.trig)
 		h.sup.triggerWait = 10 * time.Millisecond
@@ -1875,5 +1880,85 @@ func TestAPersonsMessageUnderAHoldRuleGetsTheLimitedTools(t *testing.T) {
 	h.script.mu.Unlock()
 	if !limited {
 		t.Fatal("the turn was not limited")
+	}
+}
+
+// lanes starts a supervisor with a second lane and a long second turn held open.
+func lanes(t *testing.T) (*harness, *fakeTrigger, *gateTurner) {
+	t.Helper()
+	trig := newFakeTrigger(true)
+	g := newGateTurner()
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.trig = trig
+	h.fast = newScriptTurner(time.Second)
+	h.wrap = func(in Turner) Turner { g.inner = in; return g }
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	h.waitIdle(1)
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	time.Sleep(80 * time.Millisecond)
+	return h, trig, g
+}
+
+func TestAPersonsMessageDuringALongTurnRunsOnTheShortLane(t *testing.T) {
+	h, trig, g := lanes(t)
+	defer h.stop()
+	g.set(func() { g.gated = true })
+	h.post("team", say("alice", "alice", "@example-spot look at checkout"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the long turn to run", g.isRunning)
+	h.post("team", say("alice", "alice", "@example-spot are you there?"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the short lane to take the message", func() bool { return h.fast.turnCount() == 1 })
+	if got := g.injected(); len(got) != 0 {
+		t.Fatalf("the message went into the long turn: %v", got)
+	}
+	if in := h.fast.prompt(1); !strings.Contains(in, "are you there?") || !strings.Contains(in, "short lane") || !strings.Contains(in, "Wake reason: human") {
+		t.Fatalf("short lane prompt:\n%s", in)
+	}
+	if !g.isRunning() {
+		t.Fatal("the long turn was cut for the short one")
+	}
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(2)
+	if h.turns() != 2 || h.fast.turnCount() != 1 {
+		t.Fatalf("turns: long %d short %d", h.turns(), h.fast.turnCount())
+	}
+}
+
+func TestAWakeAPersonAskedForRunsOnTheShortLaneWhileALongTurnWorks(t *testing.T) {
+	h, trig, g := lanes(t)
+	defer h.stop()
+	// A person asks for a note in 3 minutes: the wake is promised.
+	h.set("next", `{"after":"3m","why":"give the note"}`)
+	h.post("team", say("alice", "alice", "@example-spot give me a note in 3 min"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitIdle(2)
+	// Then a long job starts and is still running when the time comes.
+	g.set(func() { g.gated = true })
+	h.post("team", say("alice", "alice", "@example-spot look at checkout"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the long turn to run", g.isRunning)
+	h.set("next", `{"after":"2h"}`)
+	h.fast.set("next", `{"after":"2h"}`)
+	h.clock.Advance(4 * time.Minute)
+	h.waitFor("the short lane to run the promised wake", func() bool { return h.fast.turnCount() == 1 })
+	if in := h.fast.prompt(1); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "give the note") {
+		t.Fatalf("the promised wake:\n%s", in)
+	}
+	if !g.isRunning() {
+		t.Fatal("the long turn was cut for the promised wake")
+	}
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(3)
+	time.Sleep(100 * time.Millisecond)
+	if h.fast.turnCount() != 1 {
+		t.Fatalf("the promised wake ran twice: %d", h.fast.turnCount())
+	}
+	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
+		t.Errorf("a wake that fired is still promised: %+v", got)
 	}
 }

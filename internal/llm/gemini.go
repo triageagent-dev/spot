@@ -452,13 +452,17 @@ const (
 	geminiCacheBackoff = 15 * time.Minute
 )
 
-// geminiCache is the explicit cache of the request prefix.
+// geminiCache holds the explicit caches of the request prefixes: one entry per
+// prefix, because the spot's lanes do not offer the same tools.
 type geminiCache struct {
 	mu      sync.Mutex
-	name    string
-	key     string
-	expires time.Time
+	entries map[string]cacheEntry
 	off     time.Time // do not try to make one before this
+}
+
+type cacheEntry struct {
+	name    string
+	expires time.Time
 }
 
 // use puts the prefix in the cache and takes it out of cfg, and reports
@@ -471,7 +475,8 @@ func (gc *geminiCache) use(ctx context.Context, c *genai.Client, model string, c
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	now := time.Now()
-	if gc.name == "" || gc.key != key || now.After(gc.expires.Add(-geminiCacheRenew)) {
+	e, ok := gc.entries[key]
+	if !ok || now.After(e.expires.Add(-geminiCacheRenew)) {
 		if now.Before(gc.off) {
 			return false
 		}
@@ -480,20 +485,24 @@ func (gc *geminiCache) use(ctx context.Context, c *genai.Client, model string, c
 			SystemInstruction: cfg.SystemInstruction, Tools: cfg.Tools,
 		})
 		if err != nil || made == nil || made.Name == "" {
-			gc.name, gc.off = "", now.Add(geminiCacheBackoff)
+			gc.entries, gc.off = nil, now.Add(geminiCacheBackoff)
 			return false
 		}
-		gc.name, gc.key, gc.expires = made.Name, key, now.Add(geminiCacheTTL)
+		if gc.entries == nil {
+			gc.entries = map[string]cacheEntry{}
+		}
+		e = cacheEntry{name: made.Name, expires: now.Add(geminiCacheTTL)}
+		gc.entries[key] = e
 	}
-	cfg.CachedContent = gc.name
+	cfg.CachedContent = e.name
 	cfg.SystemInstruction, cfg.Tools = nil, nil
 	return true
 }
 
-// drop forgets the cache after the API refused it.
+// drop forgets the caches after the API refused one.
 func (gc *geminiCache) drop() {
 	gc.mu.Lock()
-	gc.name, gc.off = "", time.Now().Add(geminiCacheBackoff)
+	gc.entries, gc.off = nil, time.Now().Add(geminiCacheBackoff)
 	gc.mu.Unlock()
 }
 

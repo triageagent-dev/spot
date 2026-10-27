@@ -57,6 +57,7 @@ type Wake struct {
 	ChatName    string   // what the messenger calls the spot now; empty = unknown
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
+	Side        bool     // a long turn of the spot is still working; this one is the short lane
 	Limited     bool     // a hold rule is active and a person wrote: notes, room and post tools only
 	NotesOnly   bool     // the model has one tool, search_memory: no schedule_next, no finish
 	TokensUsed  int64
@@ -126,6 +127,9 @@ func Turn(w Wake) string {
 	}
 	if w.Reason == Edge || w.Reason == Tick {
 		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
+	}
+	if w.Side {
+		b.WriteString("Another turn of yours is busy with a longer task right now, and it carries on after this one. You are the short lane: answer the person, or do exactly what you promised, in a few calls (about eight), post it, call schedule_next only if you promised something later, and finish. Do not start an investigation; if one is needed, say so and schedule it.\n")
 	}
 	if w.Limited {
 		b.WriteString("A standing rule says to check nothing until asked, so for this message you have only your notes, the room, posting and scheduling: no situation, issue, service or cluster tools. If the person wants a check or a report, now or later, write a one-line note of what they asked, say in one short message when you will do it, and call schedule_next for that time (a minute is allowed). The wake you schedule has every tool; do the check there, once.\n")

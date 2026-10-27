@@ -57,6 +57,12 @@ type Supervisor struct {
 	led    *ledger.Ledger
 	core   Core
 	turner Turner
+	// fast is the second, short lane: while the turner runs a long turn, a
+	// person's message and a wake the spot promised run on it, in a turn of
+	// their own with its own tool state, instead of waiting or interrupting.
+	// Nil = no second lane. side is the turn running on it, if any.
+	fast Turner
+	side *sideTurn
 	// readNext is set when the stream said, during a turn, that the core's
 	// issues or everything may have changed: the next wait reads the core at
 	// once instead of sleeping for a frame the supervisor has already taken.
@@ -200,6 +206,9 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID}
 	return s
 }
+
+// SetFastTurner gives the spot its second lane (see Supervisor.fast).
+func (s *Supervisor) SetFastTurner(t Turner) { s.fast = t }
 
 // SetClock replaces the clock, for tests.
 func (s *Supervisor) SetClock(f func() time.Time) { s.now = f }
@@ -979,14 +988,146 @@ func (s *Supervisor) run(ctx context.Context, t agent.Turn) agent.Result {
 	}
 	done := make(chan agent.Result, 1)
 	go func() { done <- s.turner.Run(ctx, t) }()
+	var due <-chan time.Time
+	if s.fast != nil {
+		tk := time.NewTicker(s.sideEvery())
+		defer tk.Stop()
+		due = tk.C
+	}
 	for {
 		select {
 		case res := <-done:
+			s.endSide(ctx) // a short turn still running is waited for: it is capped
 			return res
+		case res := <-s.sideDone():
+			s.finishSide(ctx, res)
+		case <-due:
+			s.startPromised(ctx)
 		case <-s.trig.C():
 			s.interject(ctx, inj)
 		}
 	}
+}
+
+// sideEvery is how often a long turn looks for a promised wake that is due.
+func (s *Supervisor) sideEvery() time.Duration {
+	if s.cfg.PollInterval > 0 && s.cfg.PollInterval < time.Second {
+		return s.cfg.PollInterval
+	}
+	return time.Second
+}
+
+// sideTurn is the short lane's turn while it runs.
+type sideTurn struct {
+	p    *pending
+	done chan agent.Result
+	inj  Interjector
+	// talk are the edges the turn was started for, put back if it fails before
+	// the model saw them.
+	talk []edges.Edge
+}
+
+func (s *Supervisor) sideDone() <-chan agent.Result {
+	if s.side == nil {
+		return nil
+	}
+	return s.side.done
+}
+
+// startPromised starts the wake a person asked for when its time comes while a
+// long turn is still running.
+func (s *Supervisor) startPromised(ctx context.Context) {
+	if s.side != nil || !s.promiseHuman || s.promise.IsZero() || s.now().Before(s.promise) {
+		return
+	}
+	why := s.promiseWhy
+	if s.startSide(ctx, prompt.Tick, nil, nil, why) {
+		s.setPromise(time.Time{}, "", false) // it fired
+	}
+}
+
+// startSide runs a short turn on the second lane. It reports false when there is
+// none, one is running, or the daily ceiling holds the spot back.
+func (s *Supervisor) startSide(ctx context.Context, reason prompt.Reason, facts []string, talk []edges.Edge, why string) bool {
+	if s.fast == nil || s.side != nil || s.paused() {
+		return false
+	}
+	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
+	rules, hold, rerr := s.core.StandingNotes(rctx, s.cfg.Name)
+	rcancel()
+	if rerr != nil && ctx.Err() == nil {
+		s.log.Warn("standing notes not read; the short turn goes on without them", "err", rerr)
+	}
+	limited := hold && reason == prompt.Human
+	text := prompt.Turn(prompt.Wake{
+		Reason: reason, Now: s.now(), ChatName: s.messengerName(), Facts: facts, ScheduledBy: why,
+		Digest: s.digestLines(), Rules: rules, Side: true, Limited: limited,
+		TokensUsed: s.led.Usage().Tokens, TokensCeil: s.cfg.DailyTokenCeil,
+	})
+	st := &sideTurn{p: &pending{reason: reason, facts: facts, scheduledBy: why}, done: make(chan agent.Result, 1), talk: talk}
+	st.inj, _ = s.fast.(Interjector)
+	s.side = st
+	s.rollDay()
+	s.wakes["side-"+string(reason)]++
+	s.log.Info("short turn start", "reason", reason, "facts", len(facts))
+	go func() { st.done <- s.fast.Run(ctx, agent.Turn{Reason: string(reason), Prompt: text, Limited: limited}) }()
+	return true
+}
+
+// endSide waits for the short turn when the long one ends, and books it.
+func (s *Supervisor) endSide(ctx context.Context) {
+	if s.side == nil {
+		return
+	}
+	s.finishSide(ctx, <-s.side.done)
+}
+
+// finishSide books a short turn: its tokens, what it promised for later, its
+// summary for the digest. The long turn's own end settles the schedule.
+func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
+	st := s.side
+	s.side = nil
+	u := res.Usage
+	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
+		s.log.Error("saving usage", "err", err)
+	}
+	if s.trig != nil && (u.Billable() > 0 || u.CacheRead > 0) {
+		s.trig.ReportTurn(triggers.Turn{
+			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead,
+			Cached: u.CacheRead, Output: u.Output, DurationMs: res.Duration.Milliseconds(), Failed: res.Failed,
+		})
+	}
+	failed := (res.Failed || res.CoreDown) && !res.Canceled
+	if res.Steps == 0 && failed && len(st.talk) > 0 {
+		s.hold(st.talk)
+	}
+	for _, text := range res.Undelivered {
+		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: "team", Fact: text}})
+	}
+	if res.Canceled {
+		return
+	}
+	if failed {
+		s.log.Error("short turn failed", "err", failureText(res, s.cfg.LLMAuth), "tokens", u.Billable())
+		return
+	}
+	s.log.Info("short turn done", "reason", st.p.reason, "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
+	if res.Next != nil {
+		floor := s.cfg.MinWake
+		if floor > humanMinWake {
+			floor = humanMinWake
+		}
+		w := schedule.Request(res.Next.After, res.Next.Why, floor, s.cfg.MaxWake)
+		if w.Source == schedule.SourceAgent || w.Source == schedule.SourceClamped {
+			at := s.now().Add(w.After)
+			if s.promise.IsZero() || at.Before(s.promise) {
+				s.setPromise(at, w.Why, w.After < s.cfg.MaxWake)
+			}
+		}
+	}
+	s.addDigest(st.p.reason, res)
+	s.markRoomsRead()
+	s.reportStats(true)
 }
 
 // interject reads what the stream said during a turn. A person's message in a
@@ -1034,6 +1175,19 @@ func (s *Supervisor) interject(ctx context.Context, inj Interjector) {
 	for _, e := range talk {
 		facts = append(facts, e.Fact)
 	}
+	if s.fast != nil {
+		// A person's message does not wait for the long turn and does not
+		// interrupt it: the short lane takes it, or the short turn already
+		// running does.
+		if s.side != nil && s.side.inj != nil && s.side.inj.Inject(prompt.Interjection(s.messengerName(), facts)) {
+			s.log.Info("passed to the running short turn", "count", len(talk), "mentioned", anyMentioned(talk))
+			return
+		}
+		if s.startSide(ctx, prompt.Human, facts, talk, "") {
+			s.log.Info("a person's message runs on the short lane", "count", len(talk), "mentioned", anyMentioned(talk))
+			return
+		}
+	}
 	if !inj.Inject(prompt.Interjection(s.messengerName(), facts)) {
 		s.hold(talk) // the turn ended first: they wake the agent as usual
 		s.log.Info("the running turn did not take the message; held for the next wake", "count", len(talk))
@@ -1073,6 +1227,10 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return
+	}
+	if p.reason == prompt.Tick && s.promiseHuman {
+		// This wake is the promised one: the short lane must not run it again.
+		s.setPromise(time.Time{}, "", false)
 	}
 	p.facts = s.currentFacts(ctx, p)
 	// A person writes while a rule says to check nothing until asked: the turn

@@ -140,6 +140,31 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	})
 
 	sup = supervisor.New(cfg, led, core, ag, log)
+	if cfg.FastLane {
+		// The short lane: its own tool state (the gates and the connections are
+		// per turn), the same model client, and tighter caps.
+		fastTools := tools.New(tools.Options{
+			RoomSince: func(room string) int64 {
+				if sup == nil {
+					return 0
+				}
+				return sup.RoomSince(room)
+			},
+			Core: coreServer(cfg), Others: otherServers(cfg),
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
+		})
+		fast := agent.New(agent.Options{
+			LLM: model, Tools: fastTools, Model: cfg.Model, Effort: cfg.Effort,
+			System: []string{prompt.Instruction(template, prompt.Params{
+				Name: cfg.Name, Tenant: cfg.Tenant, MinWake: cfg.MinWake, MaxWake: cfg.MaxWake,
+				Connectors: promptConnectors(cfg.Connectors),
+			})},
+			MaxSteps: min(cfg.MaxSteps, cfg.FastMaxToolCalls+4), MaxToolCalls: cfg.FastMaxToolCalls, MaxTurnTokens: cfg.FastMaxTurnTokens,
+			Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
+		})
+		sup.SetFastTurner(fast)
+		log.Info("short lane on", "maxToolCalls", cfg.FastMaxToolCalls, "maxTurnTokens", cfg.FastMaxTurnTokens)
+	}
 	if cfg.CoreAPIURL != "" {
 		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
 		if err != nil {

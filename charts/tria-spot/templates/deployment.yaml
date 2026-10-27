@@ -113,6 +113,15 @@ spec:
             {{- if not .Values.agent.issueWakes }}
             - --issue-wakes=false
             {{- end }}
+            {{- if and (hasKey .Values.agent "fastLane") (not .Values.agent.fastLane) }}
+            - --fast-lane=false
+            {{- end }}
+            {{- if ne (int (default 8 .Values.agent.fastMaxToolCalls)) 8 }}
+            - --fast-max-tool-calls={{ int .Values.agent.fastMaxToolCalls }}
+            {{- end }}
+            {{- if ne (int (default 120000 .Values.agent.fastMaxTurnTokens)) 120000 }}
+            - --fast-max-turn-tokens={{ int .Values.agent.fastMaxTurnTokens }}
+            {{- end }}
             - --max-edge-wakes-per-hour={{ int .Values.agent.maxEdgeWakesPerHour }}
             - --turn-timeout={{ .Values.agent.turnTimeout }}
             - --tool-timeout={{ .Values.agent.toolTimeout }}
