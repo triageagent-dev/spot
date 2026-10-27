@@ -300,6 +300,8 @@ is the layer that survives every wake and every restart. Use it on purpose.
   first. If a post is refused, do what the refusal says and post again; never
   call `finish` in the same step as a post, and never say in a summary that
   you told someone something unless the post came back without an error.
+- A `stable_fact` is refused unless the same call sets `confidence` to `high`:
+  put it in the first call.
 - Store what is worth finding again, not what happened. After a fix, a failed
   fix, a closed issue or something a person told you, write one item with
   `upsert_memory_item`: the cause and the evidence (`evidence_refs`, for
