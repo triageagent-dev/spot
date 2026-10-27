@@ -581,3 +581,69 @@ func TestGeneratedID(t *testing.T) {
 		}
 	}
 }
+
+func TestGeminiPrefixGoesInAnExplicitCacheAndRequestsNameIt(t *testing.T) {
+	var creates int
+	s := newGeminiServer(t, func(n int) (int, string) { return 200, okReply })
+	s.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		s.mu.Lock()
+		s.bodies = append(s.bodies, m)
+		s.urls = append(s.urls, r.URL.Path)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/cachedContents") {
+			creates++
+			_, _ = io.WriteString(w, `{"name":"cachedContents/abc","model":"models/gemini-2.5-flash"}`)
+			return
+		}
+		_, _ = io.WriteString(w, okReply)
+	})
+	g, err := NewGemini(context.Background(), GeminiOptions{Auth: AuthKey, Model: "gemini-2.5-flash", KeyFile: keyFile(t, "k"), BaseURL: s.URL, HTTPClient: s.Client(), Cache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{System: []string{"the instruction"}, Tools: []ToolDef{{Name: "core__a", InputSchema: json.RawMessage(`{"type":"object"}`)}}, Messages: []Message{UserText("hi")}}
+	for i := 0; i < 2; i++ {
+		if _, err := g.Complete(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("the cache was made %d times, want once", creates)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last := s.bodies[len(s.bodies)-1]
+	if last["cachedContent"] != "cachedContents/abc" {
+		t.Errorf("the request does not name the cache: %v", last)
+	}
+	if _, has := last["systemInstruction"]; has {
+		t.Errorf("the prefix is sent again beside the cache: %v", last)
+	}
+	if _, has := last["tools"]; has {
+		t.Errorf("the tools are sent again beside the cache: %v", last)
+	}
+}
+
+func TestGeminiGoesOnWithoutTheCacheWhenItCannotBeMade(t *testing.T) {
+	s := newGeminiServer(t, func(n int) (int, string) { return 200, okReply })
+	s.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/cachedContents") {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"error":{"code":400,"message":"too small","status":"INVALID_ARGUMENT"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, okReply)
+	})
+	g, err := NewGemini(context.Background(), GeminiOptions{Auth: AuthKey, Model: "gemini-2.5-flash", KeyFile: keyFile(t, "k"), BaseURL: s.URL, HTTPClient: s.Client(), Cache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Complete(context.Background(), Request{System: []string{"x"}, Messages: []Message{UserText("hi")}}); err != nil {
+		t.Fatalf("a cache that cannot be made must not fail the request: %v", err)
+	}
+}

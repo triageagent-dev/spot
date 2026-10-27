@@ -3,20 +3,28 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/genai"
 )
 
 // GeminiOptions configure NewGemini.
 type GeminiOptions struct {
+	// Cache puts the system instruction and the tools in an explicit Gemini
+	// cache (see Gemini). Off, the API's implicit caching is all there is.
+	Cache bool
+
 	// Auth is AuthKey (the Gemini API with a key from a file) or AuthVertex
 	// (Gemini on Vertex AI through Application Default Credentials). Federation
 	// is an Anthropic auth mode.
@@ -39,11 +47,17 @@ type GeminiOptions struct {
 
 // Gemini is a Client over the Google GenAI SDK.
 //
-// Caching: Gemini caches a stable prefix implicitly on 2.5 models and later,
-// and the tool list (sorted) and the system instruction are that prefix, so
-// nothing is done explicitly here. Explicit CachedContent with a TTL is a
-// follow-up.
+// Caching: the system instruction and the tool list (sorted) are the stable
+// prefix of every request. Gemini caches a prefix implicitly, but only when it
+// hits, and a miss bills the whole prefix again at every step of a wake. So the
+// prefix is also put in an explicit cache (CachedContent, one hour, remade when
+// the prefix changes or is about to expire) and requests name it instead of
+// carrying the prefix. If the cache cannot be made or used (a model that does
+// not support it, a prefix under the minimum size) the request goes without it
+// and the cache is not tried again for a while.
 type Gemini struct {
+	cache   geminiCache
+	cacheOn bool
 	// vertex is built once (it holds the ADC); in key mode it is nil and a
 	// client is built per request, because the SDK fixes the key at build time.
 	vertex  *genai.Client
@@ -82,7 +96,7 @@ func NewGemini(ctx context.Context, o GeminiOptions) (*Gemini, error) {
 	if strings.TrimSpace(o.Model) == "" {
 		return nil, errors.New("llm: no model")
 	}
-	g := &Gemini{model: o.Model, baseURL: o.BaseURL, httpc: o.HTTPClient}
+	g := &Gemini{model: o.Model, baseURL: o.BaseURL, httpc: o.HTTPClient, cacheOn: o.Cache}
 	switch o.Auth {
 	case AuthKey:
 		if _, err := readKey(o.KeyFile); err != nil {
@@ -154,7 +168,14 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	full := *cfg
+	cached := g.cacheOn && g.cache.use(ctx, c, g.model, cfg)
 	resp, err := c.Models.GenerateContent(ctx, g.model, contents, cfg)
+	if err != nil && cached {
+		// The cache may have been dropped by the API: go on without it.
+		g.cache.drop()
+		resp, err = c.Models.GenerateContent(ctx, g.model, contents, &full)
+	}
 	if err != nil {
 		return Response{}, wrapGeminiError(err)
 	}
@@ -421,4 +442,70 @@ func wrapGeminiError(err error) error {
 		msg = msg[:500]
 	}
 	return &APIError{Status: ae.Code, Type: ae.Status, Message: msg}
+}
+
+// geminiCacheTTL is how long an explicit cache lives; it is remade a few
+// minutes before it ends.
+const (
+	geminiCacheTTL     = time.Hour
+	geminiCacheRenew   = 5 * time.Minute
+	geminiCacheBackoff = 15 * time.Minute
+)
+
+// geminiCache is the explicit cache of the request prefix.
+type geminiCache struct {
+	mu      sync.Mutex
+	name    string
+	key     string
+	expires time.Time
+	off     time.Time // do not try to make one before this
+}
+
+// use puts the prefix in the cache and takes it out of cfg, and reports
+// whether it did. On any failure cfg is left as it is.
+func (gc *geminiCache) use(ctx context.Context, c *genai.Client, model string, cfg *genai.GenerateContentConfig) bool {
+	if cfg.SystemInstruction == nil && len(cfg.Tools) == 0 {
+		return false
+	}
+	key := cachePrefixKey(model, cfg)
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	now := time.Now()
+	if gc.name == "" || gc.key != key || now.After(gc.expires.Add(-geminiCacheRenew)) {
+		if now.Before(gc.off) {
+			return false
+		}
+		made, err := c.Caches.Create(ctx, model, &genai.CreateCachedContentConfig{
+			TTL: geminiCacheTTL, DisplayName: "tria-spot-prefix",
+			SystemInstruction: cfg.SystemInstruction, Tools: cfg.Tools,
+		})
+		if err != nil || made == nil || made.Name == "" {
+			gc.name, gc.off = "", now.Add(geminiCacheBackoff)
+			return false
+		}
+		gc.name, gc.key, gc.expires = made.Name, key, now.Add(geminiCacheTTL)
+	}
+	cfg.CachedContent = gc.name
+	cfg.SystemInstruction, cfg.Tools = nil, nil
+	return true
+}
+
+// drop forgets the cache after the API refused it.
+func (gc *geminiCache) drop() {
+	gc.mu.Lock()
+	gc.name, gc.off = "", time.Now().Add(geminiCacheBackoff)
+	gc.mu.Unlock()
+}
+
+// cachePrefixKey identifies a prefix: the model, the system instruction and
+// the tools as they will be sent.
+func cachePrefixKey(model string, cfg *genai.GenerateContentConfig) string {
+	h := sha256.New()
+	h.Write([]byte(model))
+	b, _ := json.Marshal(struct {
+		S *genai.Content
+		T []*genai.Tool
+	}{cfg.SystemInstruction, cfg.Tools})
+	h.Write(b)
+	return hex.EncodeToString(h.Sum(nil))
 }

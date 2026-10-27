@@ -169,6 +169,7 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Cli
 		} else {
 			log.Info("model auth: Gemini API key from a file")
 		}
+		o.Cache = true
 		return llm.NewGemini(ctx, o)
 	}
 	o := llm.Options{Auth: cfg.LLMAuth, Model: cfg.Model, KeyFile: cfg.AnthropicKeyFile}

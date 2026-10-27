@@ -90,7 +90,7 @@ func Turn(w Wake) string {
 	}
 	switch w.Reason {
 	case Startup:
-		b.WriteString("The pod (re)started. Read your notes to yourself in the core's memory, then look at the tenant.\n")
+		b.WriteString("The pod (re)started. Your standing rules and digest are above. Look at the tenant only if they ask you to.\n")
 	case Tick:
 		if w.ScheduledBy != "" {
 			fmt.Fprintf(&b, "You scheduled this wake. Your reason: %s\n", w.ScheduledBy)
