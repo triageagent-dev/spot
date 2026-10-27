@@ -470,6 +470,10 @@ func (s *Supervisor) addDigest(reason prompt.Reason, res agent.Result) {
 
 // setPromise records the earliest wake the agent promised itself; human says it
 // answers a person's request, and only those are kept on disk.
+func (s *Supervisor) promiseNow() schedule.Promise {
+	return schedule.Promise{At: s.promise, Why: s.promiseWhy, Human: s.promiseHuman}
+}
+
 func (s *Supervisor) setPromise(at time.Time, why string, human bool) {
 	s.promise, s.promiseWhy, s.promiseHuman = at, why, human
 	pr := ledger.Promise{}
@@ -532,10 +536,6 @@ func (s *Supervisor) currentFacts(ctx context.Context, p *pending) []string {
 	}
 	return out
 }
-
-// humanMinWake is the least a wake the agent schedules in a turn a person
-// started may be: a person who asked for an answer in a few minutes gets it.
-const humanMinWake = time.Minute
 
 // identityEvery is how long the name the core gave the spot is trusted before
 // it is read again: the workspace's owner can change it at any time.
@@ -1112,18 +1112,13 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 		return
 	}
 	s.log.Info("short turn done", "reason", st.p.reason, "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
-	if res.Next != nil {
-		floor := s.cfg.MinWake
-		if floor > humanMinWake {
-			floor = humanMinWake
-		}
-		w := schedule.Request(res.Next.After, res.Next.Why, floor, s.cfg.MaxWake)
-		if w.Source == schedule.SourceAgent || w.Source == schedule.SourceClamped {
-			at := s.now().Add(w.After)
-			if s.promise.IsZero() || at.Before(s.promise) {
-				s.setPromise(at, w.Why, w.After < s.cfg.MaxWake)
-			}
-		}
+	asked, after, why := res.Next != nil, "", ""
+	if asked {
+		after, why = res.Next.After, res.Next.Why
+	}
+	cur := s.promiseNow()
+	if pr := schedule.AfterShortTurn(s.now(), s.cfg.MinWake, s.cfg.MaxWake, asked, after, why, cur); pr != cur {
+		s.setPromise(pr.At, pr.Why, pr.Human)
 	}
 	s.addDigest(st.p.reason, res)
 	s.markRoomsRead()
@@ -1332,41 +1327,24 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Info("turn done", "billable", u.Billable(), "read", u.CacheRead, "out", u.Output, "steps", res.Steps, "toolCalls", res.ToolCalls, "seconds", int(res.Duration.Seconds()))
 	}
 
-	if p.reason == prompt.Tick {
-		s.setPromise(time.Time{}, "", false) // it fired
+	te := schedule.TurnEnd{
+		Now: s.now(), Min: s.cfg.MinWake, Max: s.cfg.MaxWake,
+		Human: p.reason == prompt.Human, Tick: p.reason == prompt.Tick,
+		Failed: failed, Promise: s.promiseNow(),
 	}
-	var w schedule.Wake
 	if res.Next != nil {
-		// A person who asks to be told in a few minutes is not held to the
-		// loop's floor: the floor is there to stop the agent spinning.
-		floor := s.cfg.MinWake
-		if p.reason == prompt.Human && floor > humanMinWake {
-			floor = humanMinWake
-		}
-		w = schedule.Request(res.Next.After, res.Next.Why, floor, s.cfg.MaxWake)
-	} else {
-		w = schedule.Default(s.cfg.MinWake, schedule.SourceMissing, "the agent did not call schedule_next")
+		te.Asked, te.After, te.Why = true, res.Next.After, res.Next.Why
 	}
+	if failed {
+		te.Backoff = s.backoff()
+	}
+	plan := schedule.AfterTurn(te)
+	w := plan.Wake
 	if w.Source != schedule.SourceAgent {
 		s.log.Warn("schedule not taken as written", "source", w.Source, "note", w.Note, "after", w.After)
 	}
-	if failed {
-		if b := s.backoff(); b > w.After {
-			w.After = b
-		}
-	}
-	s.nextTick = s.now().Add(w.After)
-	s.scheduledWhy = w.Why
-	if !s.promise.IsZero() && (s.promise.After(s.now()) || s.promiseHuman) && s.promise.Before(s.nextTick) {
-		// Keep the earlier wake the agent promised itself: every edge wake
-		// would otherwise push it back and it would never come.
-		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
-		w.After, w.Why, w.Source, w.Note = s.promise.Sub(s.now()), s.promiseWhy, schedule.SourceAgent, "an earlier wake the agent asked for is kept"
-	} else if w.Source == schedule.SourceAgent || w.Source == schedule.SourceClamped {
-		// A wake asked for on a person's request, sooner than the longest
-		// the spot sleeps, is a promise; an idle schedule is not.
-		s.setPromise(s.nextTick, w.Why, p.reason == prompt.Human && w.After < s.cfg.MaxWake)
-	}
+	s.nextTick, s.scheduledWhy = plan.At, plan.Why
+	s.setPromise(plan.Promise.At, plan.Promise.Why, plan.Promise.Human)
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
 	if !failed {
 		s.addDigest(p.reason, res)

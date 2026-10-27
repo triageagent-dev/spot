@@ -153,6 +153,42 @@ func (r *Registry) Limit(on bool) {
 	r.mu.Unlock()
 }
 
+// State is what the gates and the built-in tools have recorded in a turn. A
+// durable engine carries it between calls, which may run in different processes.
+type State struct {
+	Next     *ScheduleRequest
+	Summary  string
+	Finished bool
+	Recalled bool // a search_memory succeeded
+	Read     bool // a ContextTools call succeeded
+	Noted    bool // a NoteTools call succeeded
+}
+
+// State returns what the turn has recorded so far.
+func (r *Registry) State() State {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := State{Summary: r.summary, Finished: r.finished, Recalled: r.recalled, Read: r.read, Noted: r.noted}
+	if r.next != nil {
+		n := *r.next
+		st.Next = &n
+	}
+	return st
+}
+
+// SetState puts back what an earlier call recorded, so a registry built anew
+// for the next call of a turn holds the gates the turn has already passed.
+func (r *Registry) SetState(st State) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.summary, r.finished, r.recalled, r.read, r.noted = st.Summary, st.Finished, st.Recalled, st.Read, st.Noted
+	r.next = nil
+	if st.Next != nil {
+		n := *st.Next
+		r.next = &n
+	}
+}
+
 // Begin starts a turn: what the built-in tools recorded in the last one is
 // forgotten and any connection left open is closed.
 func (r *Registry) Begin() {

@@ -57,3 +57,49 @@ func TestDefault(t *testing.T) {
 		t.Fatalf("%+v", w)
 	}
 }
+
+func TestAfterTurnKeepsAnEarlierPromiseAndMakesAPersonsRequestOne(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	min, max := 10*time.Minute, 2*time.Hour
+
+	// A person asks for a note in 3 minutes: not held to the floor, and a promise.
+	p := AfterTurn(TurnEnd{Now: now, Min: min, Max: max, Human: true, Asked: true, After: "3m", Why: "the note"})
+	if p.Wake.After != 3*time.Minute || p.Promise.At != now.Add(3*time.Minute) || !p.Promise.Human || p.Promise.Why != "the note" {
+		t.Fatalf("a person's request: %+v", p)
+	}
+
+	// An edge wake that wants the idle schedule does not push the promise back.
+	q := AfterTurn(TurnEnd{Now: now.Add(time.Minute), Min: min, Max: max, Asked: true, After: "1h", Why: "idle", Promise: p.Promise})
+	if q.At != p.Promise.At || q.Why != "the note" || q.Wake.Note == "" || q.Promise != p.Promise {
+		t.Fatalf("an earlier promise is kept: %+v", q)
+	}
+
+	// The promised wake itself clears it; the agent's own request is then not a human promise.
+	r := AfterTurn(TurnEnd{Now: now.Add(3 * time.Minute), Min: min, Max: max, Tick: true, Asked: true, After: "1h", Why: "idle", Promise: p.Promise})
+	if r.At != now.Add(3*time.Minute).Add(time.Hour) || r.Promise.Human {
+		t.Fatalf("after the promised wake: %+v", r)
+	}
+
+	// No call: the minimum; a failure raises it to the backoff.
+	f := AfterTurn(TurnEnd{Now: now, Min: min, Max: max, Failed: true, Backoff: 40 * time.Minute})
+	if f.Wake.Source != SourceMissing || f.Wake.After != 40*time.Minute || !f.Promise.None() {
+		t.Fatalf("a failed turn: %+v", f)
+	}
+}
+
+func TestAfterShortTurnMovesThePromiseOnlyEarlier(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	cur := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "5m", "later", Promise{})
+	if cur.At != now.Add(5*time.Minute) || !cur.Human {
+		t.Fatalf("first: %+v", cur)
+	}
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "30m", "much later", cur); got != cur {
+		t.Fatalf("a later request moved the promise: %+v", got)
+	}
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "2m", "sooner", cur); got.At != now.Add(2*time.Minute) {
+		t.Fatalf("an earlier request was not taken: %+v", got)
+	}
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, false, "", "", cur); got != cur {
+		t.Fatalf("no request changed it: %+v", got)
+	}
+}

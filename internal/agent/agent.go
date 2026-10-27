@@ -127,6 +127,21 @@ const (
 	DefaultMaxToolCalls = 20
 )
 
+// FirstMessage is the first user message of a turn: the wake prompt, the
+// servers whose tools are not there and the turn's caps, so the model knows how
+// much room it has.
+func FirstMessage(prompt string, down []string, c Caps) string {
+	first := prompt
+	if len(down) > 0 {
+		first += fmt.Sprintf("\nThe tools of these servers are not available in this turn, because they could not be reached: %s.\n", strings.Join(down, ", "))
+	}
+	first += fmt.Sprintf("\nYou have at most %d model steps and %d tool calls in this turn.\n", c.MaxSteps, c.MaxToolCalls)
+	if c.MaxTurnTokens > 0 {
+		first += fmt.Sprintf("The turn also ends at about %dk tokens: every step sends the whole conversation again, so a long run costs most.\n", c.MaxTurnTokens/1000)
+	}
+	return first
+}
+
 // toolLimitText is the result of a tool call refused at the cap.
 const toolLimitText = "not run: this turn has used its %d tool calls. Do not call more tools. " +
 	"Answer from what you have, say what is still open, then call schedule_next and finish."
@@ -272,14 +287,7 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 		return res
 	}
 
-	first := t.Prompt
-	if down := a.o.Tools.Down(); len(down) > 0 {
-		first += fmt.Sprintf("\nThe tools of these servers are not available in this turn, because they could not be reached: %s.\n", strings.Join(down, ", "))
-	}
-	first += fmt.Sprintf("\nYou have at most %d model steps and %d tool calls in this turn.\n", a.o.MaxSteps, a.o.MaxToolCalls)
-	if a.o.MaxTurnTokens > 0 {
-		first += fmt.Sprintf("The turn also ends at about %dk tokens: every step sends the whole conversation again, so a long run costs most.\n", a.o.MaxTurnTokens/1000)
-	}
+	first := FirstMessage(t.Prompt, a.o.Tools.Down(), Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens})
 	steps := Steps{
 		Complete: func(req llm.Request) (llm.Response, error) {
 			chat := root.Chat(a.o.Model, req)

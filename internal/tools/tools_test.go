@@ -724,3 +724,52 @@ func TestALimitedTurnHasOnlyTheNotesTheRoomAndThePost(t *testing.T) {
 		t.Error("the next turn stayed limited")
 	}
 }
+
+func TestRetryableIsAReadOfTheCoreOrEgoOnly(t *testing.T) {
+	for name, want := range map[string]bool{
+		"core__get_memory_context": true, "core__list_open_issues": true, "core__search_memory": true,
+		"ego__get_ego_score": true, "core__say_in_workspace": false, "core__upsert_memory_item": false,
+		"core__comment_on_issue": false, "aks-kube__get_pods": false, "schedule_next": false, "finish": false,
+	} {
+		if got := Retryable(name); got != want {
+			t.Errorf("Retryable(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// What a turn recorded can be put into a registry built anew: a durable engine
+// runs the calls of one turn on different registries.
+func TestStateCarriesTheGatesAndTheBuiltinsToANewRegistry(t *testing.T) {
+	url, _ := fakeServer(t)
+	mut := func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = append(o.Core.Allow, "search_memory")
+	}
+	a := newRegistry(t, url, mut)
+	a.Begin()
+	if _, err := a.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := a.Call(context.Background(), "core__list_open_issues", json.RawMessage(`{}`)); !isErr || !Held(got) {
+		t.Fatalf("the gate did not hold the call: %q", got)
+	}
+	a.Call(context.Background(), "core__search_memory", json.RawMessage(`{}`))
+	a.Call(context.Background(), "schedule_next", json.RawMessage(`{"after":"5m","why":"the note"}`))
+	a.Call(context.Background(), "finish", json.RawMessage(`{"summary":"done"}`))
+	st := a.State()
+	if !st.Recalled || !st.Finished || st.Summary != "done" || st.Next == nil || st.Next.Why != "the note" {
+		t.Fatalf("state: %+v", st)
+	}
+
+	b := newRegistry(t, url, mut)
+	if _, err := b.List(context.Background()); err != nil { // no Begin: it would forget
+		t.Fatal(err)
+	}
+	b.SetState(st)
+	if got, isErr := b.Call(context.Background(), "core__list_open_issues", json.RawMessage(`{}`)); isErr {
+		t.Fatalf("the new registry held a call the turn had already searched for: %q", got)
+	}
+	if sum, ok := b.Finished(); !ok || sum != "done" || b.Schedule() == nil || b.State().Next.After != "5m" {
+		t.Fatalf("builtins not carried: %+v", b.State())
+	}
+}
