@@ -391,6 +391,18 @@ const (
 		"extend your own note if one exists. Then call this again."
 )
 
+// Held reports whether result is a gate holding a call back (the notes were
+// not searched, the core's memory not read, or no note written): the call did
+// not run, and the model is to do that and call again.
+func Held(result string) bool {
+	for _, t := range []string{"not run: search your notes first", "not run: read what the core holds first", "not run: write your note first"} {
+		if strings.HasPrefix(result, t) {
+			return true
+		}
+	}
+	return false
+}
+
 // heldForPost returns the refusal text of a call to rt that waits for a memory
 // read or a note, or "" when it may run. The caller holds r.mu.
 func (r *Registry) heldForPost(rt route) string {
@@ -424,6 +436,15 @@ func inList(list []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// IsFinish reports whether name is the spot's finish tool, with or without a
+// prefix the model added.
+func IsFinish(name string) bool {
+	if i := strings.LastIndexAny(name, ":."); i >= 0 && i < len(name)-1 {
+		name = name[i+1:]
+	}
+	return name == Finish
 }
 
 // IsBuiltin reports whether name is one of the spot's own tools, schedule_next

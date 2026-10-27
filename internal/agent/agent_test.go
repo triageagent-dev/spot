@@ -443,3 +443,48 @@ func TestFinishAndScheduleAreNeverRefusedAtTheCap(t *testing.T) {
 		t.Errorf("finished=%v %q result %+v", ok, sum, res)
 	}
 }
+
+func TestFinishInTheStepOfAHeldPostDoesNotEndTheTurn(t *testing.T) {
+	ft := newFakeTools()
+	ft.defs = append(ft.defs, llm.ToolDef{Name: "core__say_in_workspace", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	ft.results["core__say_in_workspace"] = "!not run: read what the core holds first. Call get_memory_context, then call this again."
+	f := llm.NewFake(
+		// The model posts and finishes in one step; the post is held back.
+		llm.ToolUse(u, llm.Call{Name: "core__say_in_workspace"}, llm.Call{Name: "schedule_next", Input: `{"after":"15m"}`}, llm.Call{Name: "finish", Input: `{"summary":"told them"}`}),
+		// It reads, posts again and finishes.
+		llm.ToolUse(u, llm.Call{Name: "core__list_open_issues"}),
+		llm.ToolUse(u, llm.Call{Name: "finish", Input: `{"summary":"posted"}`}),
+	)
+	ft.onCall = func(name string) {
+		if name == "core__list_open_issues" {
+			ft.mu.Lock()
+			ft.results["core__say_in_workspace"] = "posted"
+			ft.mu.Unlock()
+		}
+	}
+	res := newAgent(f, ft, nil).Run(context.Background(), Turn{Reason: "human", Prompt: "Wake reason: human"})
+	if res.Failed || res.Summary != "posted" || res.Steps != 3 {
+		t.Fatalf("the turn ended on a post that did not run: %+v", res)
+	}
+	reqs := f.Requests()
+	var told bool
+	for _, b := range reqs[1].Messages[len(reqs[1].Messages)-1].Content {
+		if strings.Contains(b.Content, "not finished") {
+			told = true
+		}
+	}
+	if !told {
+		t.Errorf("the model was not told its finish was held: %+v", reqs[1].Messages[len(reqs[1].Messages)-1])
+	}
+}
+
+func TestFinishAfterTheCapStillEndsTheTurn(t *testing.T) {
+	ft := newFakeTools()
+	f := llm.NewFake(
+		llm.ToolUse(u, llm.Call{Name: "core__list_open_issues"}, llm.Call{Name: "core__list_open_issues"}, llm.Call{Name: "finish", Input: `{"summary":"stopped at the cap"}`}),
+	)
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 1 }).Run(context.Background(), Turn{Reason: "tick", Prompt: "Wake reason: tick"})
+	if res.Summary != "stopped at the cap" {
+		t.Fatalf("a cap refusal is not a gate: %+v", res)
+	}
+}

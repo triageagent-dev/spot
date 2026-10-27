@@ -403,32 +403,59 @@ func (a *Agent) endOrInject(msgs *[]llm.Message, resp llm.Response) bool {
 // Past the cap a call is answered with an error and not run, except the
 // spot's own schedule_next and finish; refused reports whether any was.
 func (a *Agent) runTools(ctx context.Context, root *telemetry.Turn, calls []llm.Block, res *Result) (out []llm.Block, refused bool) {
-	out = make([]llm.Block, 0, len(calls))
-	for _, c := range calls {
-		if text := a.limitText(res); text != "" && !tools.IsBuiltin(c.Name) {
-			refused = true
-			out = append(out, llm.ToolResult(c.ID, text, true))
+	out = make([]llm.Block, len(calls))
+	held := false // a call of this batch was held back by a gate and did not run
+	var finishes []int
+	for i, c := range calls {
+		if tools.IsFinish(c.Name) {
+			finishes = append(finishes, i) // last, once the others have shown whether they ran
 			continue
 		}
-		span := root.Tool(c.Name, c.ID, c.Input)
-		began := time.Now()
-		var content string
-		var isErr bool
-		if !json.Valid(c.Input) {
-			content, isErr = "the tool input was not valid JSON", true
-		} else {
-			content, isErr = a.o.Tools.Call(ctx, c.Name, c.Input)
+		if text := a.limitText(res); text != "" && !tools.IsBuiltin(c.Name) {
+			refused = true
+			out[i] = llm.ToolResult(c.ID, text, true)
+			continue
 		}
-		span.End(content, isErr)
-		res.ToolCalls++
-		attrs := []any{"tool", c.Name, "ms", time.Since(began).Milliseconds(), "error", isErr}
-		if a.o.LogContent {
-			attrs = append(attrs, "input", clip(string(c.Input), 600))
+		content, isErr := a.call(ctx, root, c, res)
+		held = held || (isErr && tools.Held(content))
+		out[i] = llm.ToolResult(c.ID, content, isErr)
+	}
+	for _, i := range finishes {
+		c := calls[i]
+		if held {
+			// The turn must not end on a post or a read that did not run: the
+			// model would report it as done. It sees why and goes on.
+			out[i] = llm.ToolResult(c.ID, finishHeldText, true)
+			continue
 		}
-		a.o.Logger.Debug("tool call", attrs...)
-		out = append(out, llm.ToolResult(c.ID, content, isErr))
+		content, isErr := a.call(ctx, root, c, res)
+		out[i] = llm.ToolResult(c.ID, content, isErr)
 	}
 	return out, refused
+}
+
+// finishHeldText answers a finish that came in the same step as a call a gate
+// held back.
+const finishHeldText = "not finished: a call in this step did not run (see its result). Do what it says and call it again, " +
+	"or, if you will not do it, say so plainly in your summary; do not report as done what did not run. Then call finish."
+
+// call runs one tool call of the model and records its span and count.
+func (a *Agent) call(ctx context.Context, root *telemetry.Turn, c llm.Block, res *Result) (content string, isErr bool) {
+	span := root.Tool(c.Name, c.ID, c.Input)
+	began := time.Now()
+	if !json.Valid(c.Input) {
+		content, isErr = "the tool input was not valid JSON", true
+	} else {
+		content, isErr = a.o.Tools.Call(ctx, c.Name, c.Input)
+	}
+	span.End(content, isErr)
+	res.ToolCalls++
+	attrs := []any{"tool", c.Name, "ms", time.Since(began).Milliseconds(), "error", isErr}
+	if a.o.LogContent {
+		attrs = append(attrs, "input", clip(string(c.Input), 600))
+	}
+	a.o.Logger.Debug("tool call", attrs...)
+	return content, isErr
 }
 
 // overTokens reports whether the turn has spent its token cap.
