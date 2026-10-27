@@ -62,6 +62,9 @@ type Wake struct {
 	// Digest is the spot's own summaries of its last wakes, oldest first, each
 	// one line. They are its claims, not facts.
 	Digest []string
+	// Rules are the instructions people gave that always apply, one line each,
+	// read by the supervisor so a wake never depends on the model finding them.
+	Rules []string
 }
 
 // Turn builds the prompt for a turn.
@@ -73,6 +76,12 @@ func Turn(w Wake) string {
 	}
 	b.WriteString("This is a new, empty conversation: you remember nothing of earlier wakes. Your memory is the core's memory and what the core and the room show you now.\n")
 	b.WriteString("read_workspace_room already returns only what is newer than your last wake; pass since_ts yourself to read older messages. Do not read the room again to see what you were just told.\n")
+	if len(w.Rules) > 0 {
+		b.WriteString("Standing rules from the people you work for. They always apply and override what you would otherwise do; do not search for them again:\n")
+		for _, r := range w.Rules {
+			fmt.Fprintf(&b, "- %s\n", r)
+		}
+	}
 	if len(w.Digest) > 0 {
 		b.WriteString("Your own summaries of your last wakes, oldest first. They are what you said then, not facts: check what you will act on, and do not read again what they already tell you.\n")
 		for _, d := range w.Digest {

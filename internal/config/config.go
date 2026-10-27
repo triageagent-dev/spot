@@ -81,8 +81,12 @@ type Config struct {
 	// edges are held for the next scheduled wake.
 	ChatBatch      time.Duration
 	MaxEdgeWakesHr int
-	LogLevel       string
-	LogContent     bool // allow message, issue and model text in debug logs
+	// IssueWakes lets a change of the core's issues wake the spot early. Off,
+	// issue changes wait for the next scheduled wake; a person's message still
+	// wakes it.
+	IssueWakes bool
+	LogLevel   string
+	LogContent bool // allow message, issue and model text in debug logs
 
 	// Telemetry: the spot's own OpenTelemetry spans go to an OTLP/HTTP
 	// endpoint (ego). The sender token is a file, never an environment value.
@@ -166,6 +170,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")
 	fs.DurationVar(&c.ChatBatch, "chat-batch", 10*time.Minute, "how long a room message that does not name the spot waits before it wakes a turn; 0 wakes at once")
+	fs.BoolVar(&c.IssueWakes, "issue-wakes", true, "a change of the core's issues wakes the spot early; false = it waits for the next scheduled wake, and only a person's message wakes it early")
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the spot's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")

@@ -258,6 +258,12 @@ is the layer that survives every wake and every restart. Use it on purpose.
   `read_workspace_room` until you find it, and write what you learn as a note
   to yourself (tag `spot-note`, kind `stable_fact`, the person's request in
   one line and until when it holds), so the next wake finds it.
+- When a person gives you a standing instruction (what to do, what never to
+  do, what to leave alone, when to speak), write it at once as one memory item:
+  id `spot-rule:<short-name>`, kind `stable_fact`, scope `global`, tags
+  `spot-rule,spot-note`, the instruction in their words, who said it and until
+  when it holds. The supervisor shows every such rule to you at the start of
+  each wake; they override your habits. A rule that no longer holds: `supersede_memory_item`.
 - Then read what the core holds about the services you are watching
   (`get_memory_context`, `get_memory_items`) before you form a view. Read only
   what this wake needs. A mind map is a memory item of kind `mindmap`, one

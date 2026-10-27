@@ -32,6 +32,9 @@ type Core interface {
 	RoomMessages(ctx context.Context, room, since string) ([]corecli.RoomMessage, string, error)
 	Typing(ctx context.Context, room string, on bool) error
 	Identity(ctx context.Context) (corecli.Identity, error)
+	// StandingRules are the instructions people gave the spot that always
+	// apply, one line each.
+	StandingRules(ctx context.Context) ([]string, error)
 }
 
 // Turner runs one turn of the agent. Every turn is an empty conversation.
@@ -620,7 +623,7 @@ func (s *Supervisor) dueFromHeld() *pending {
 	for _, h := range s.held {
 		switch {
 		case h.Kind != edges.Message:
-			urgent = true
+			urgent = s.cfg.IssueWakes
 		case h.Mentioned:
 			urgent = true
 		case h.Human && now.Sub(h.at) >= s.cfg.ChatBatch:
@@ -988,9 +991,15 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 	used := s.led.Usage().Tokens
 	s.refreshIdentity(ctx, false, identityEvery)
+	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
+	rules, rerr := s.core.StandingRules(rctx)
+	rcancel()
+	if rerr != nil && ctx.Err() == nil {
+		s.log.Warn("standing rules not read; the wake goes on without them", "err", rerr)
+	}
 	text := prompt.Turn(prompt.Wake{
 		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
-		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(),
+		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(), Rules: rules,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
 	})
 

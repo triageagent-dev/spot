@@ -379,3 +379,51 @@ func str(m map[string]any, keys ...string) string {
 	}
 	return ""
 }
+
+// StandingRules returns the instructions people gave the spot that always
+// apply: active global stable facts tagged spot-rule, or titled as a rule. The
+// supervisor puts them in every wake, so they never depend on a search.
+func (c *Client) StandingRules(ctx context.Context) ([]string, error) {
+	text, err := c.call(ctx, "get_memory_items", map[string]any{
+		"tenant": c.tenant, "kind": "stable_fact", "scope": "global", "status": "active", "limit": 50,
+	})
+	if err != nil {
+		return nil, err
+	}
+	type item struct {
+		Title   string   `json:"title"`
+		Content string   `json:"content"`
+		Tags    []string `json:"tags"`
+	}
+	var items []item
+	if err := json.Unmarshal([]byte(text), &items); err != nil {
+		var w struct {
+			Items []item `json:"items"`
+		}
+		if err2 := json.Unmarshal([]byte(text), &w); err2 != nil {
+			return nil, fmt.Errorf("get_memory_items: unexpected reply: %w", err)
+		}
+		items = w.Items
+	}
+	var out []string
+	for _, it := range items {
+		rule := strings.Contains(strings.ToLower(it.Title), "rule")
+		for _, t := range it.Tags {
+			if t == "spot-rule" {
+				rule = true
+			}
+		}
+		if !rule {
+			continue
+		}
+		line := strings.Join(strings.Fields(it.Title+": "+it.Content), " ")
+		if len(line) > 400 {
+			line = strings.ToValidUTF8(line[:400], "") + "…"
+		}
+		out = append(out, line)
+		if len(out) == 8 {
+			break
+		}
+	}
+	return out, nil
+}

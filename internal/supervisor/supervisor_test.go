@@ -54,6 +54,13 @@ type fakeCore struct {
 	late       func() []corecli.Issue // extra issues, for changes that land during a turn
 	identity   string                 // the messenger name the core gives; empty = the core has no such tool
 	identities int                    // how many times it was read
+	rules      []string               // the standing rules the core holds
+}
+
+func (f *fakeCore) StandingRules(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rules, nil
 }
 
 func (f *fakeCore) Identity(context.Context) (corecli.Identity, error) {
@@ -243,7 +250,7 @@ func newHarness(t *testing.T, mut func(*config.Config)) *harness {
 		Tenant: "example", Name: "example-spot", CoreMCPURL: "http://core.invalid/mcp",
 		CoreTokenFile: tok, AnthropicKeyFile: key, StateDir: h.state,
 		MinWake: 2 * time.Minute, MaxWake: 2 * time.Hour, MaxSteps: 7, TurnTimeout: 20 * time.Second,
-		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0,
+		PollInterval: 5 * time.Millisecond, EdgeCooldown: 0, IssueWakes: true,
 		LLMAuth: config.AuthKey, HeartbeatID: "system2-heartbeat-example", LogLevel: "debug",
 	}
 	if mut != nil {
@@ -1734,5 +1741,36 @@ func TestTheNextWakeSeesTheSpotsOwnSummaryOfTheLastOnes(t *testing.T) {
 	}
 	if got := h.sup.led.LoadDigest(); len(got) < 2 {
 		t.Errorf("the digest is not kept for a restart: %+v", got)
+	}
+}
+
+func TestStandingRulesAreInEveryWake(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.core.rules = []string{"Operational Rule: do not check anything before a person asks."}
+	h.set("next", `{"after":"3m"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	in := h.script.prompt(1)
+	if !strings.Contains(in, "Standing rules from the people") || !strings.Contains(in, "do not check anything before a person asks") {
+		t.Fatalf("the rules are not in the wake:\n%s", in)
+	}
+}
+
+func TestIssueChangesCanWaitForTheScheduledWake(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond; c.IssueWakes = false })
+	h.set("next", `{"after":"3m"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.core.setIssues(issue("a", "critical", 0))
+	time.Sleep(200 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("an issue change woke the spot with issue wakes off: %d turns", h.turns())
+	}
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(2)
+	if in := h.script.prompt(2); !strings.Contains(in, "a") {
+		t.Fatalf("the held change is not in the scheduled wake:\n%s", in)
 	}
 }
