@@ -47,6 +47,9 @@ type Turn struct {
 	Prompt string
 	// Room is where the spot shows that it is working; the loop does not use it.
 	Room string
+	// Limited gives the turn only the notes, room, post and status tools and
+	// the built-ins, when the toolbox can narrow itself.
+	Limited bool
 }
 
 // Result is what a turn did.
@@ -236,6 +239,9 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 		}
 	}()
 
+	if l, ok := a.o.Tools.(interface{ Limit(bool) }); ok {
+		l.Limit(t.Limited)
+	}
 	a.o.Tools.Begin()
 	defer a.o.Tools.End()
 	defer func() {

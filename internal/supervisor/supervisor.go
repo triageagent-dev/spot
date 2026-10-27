@@ -1075,8 +1075,13 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		return
 	}
 	p.facts = s.currentFacts(ctx, p)
+	// A person writes while a rule says to check nothing until asked: the turn
+	// has the notes, the room and the post tools only. A check they ask for is a
+	// wake the spot schedules, and that one has every tool.
+	limited := hold && p.reason == prompt.Human
 	text := prompt.Turn(prompt.Wake{
-		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
+		Limited: limited,
+		Reason:  p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(), Rules: rules,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
 	})
@@ -1092,7 +1097,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
-	res := s.run(ctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room})
+	res := s.run(ctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room, Limited: limited})
 	stopTyping()
 	s.lastTurnEnd = s.now()
 

@@ -1851,3 +1851,29 @@ func TestAWakeAPersonAskedForRunsUnderAHoldRuleAndAfterARestart(t *testing.T) {
 		t.Errorf("a wake that fired is still promised: %+v", got)
 	}
 }
+
+func TestAPersonsMessageUnderAHoldRuleGetsTheLimitedTools(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.core.roomAbsent = false
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{Sender: "alice", Text: "old"}}
+	h.core.rules = []string{"RULE: do not check anything before a person asks."}
+	h.core.hold = true
+	h.set("next", `{"after":"3m"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("held", func() bool { st := h.status(); return st.NextWake != nil && st.NextWake.Source == "hold" })
+	time.Sleep(80 * time.Millisecond)
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = append(h.core.roomMsgs["team"], corecli.RoomMessage{Sender: "alice", Name: "alice", Text: "status in 3 min"})
+	h.core.mu.Unlock()
+	h.waitIdle(1)
+	if in := h.script.prompt(1); !strings.Contains(in, "you have only your notes, the room, posting and scheduling") {
+		t.Fatalf("the model was not told its tools are limited:\n%s", in)
+	}
+	h.script.mu.Lock()
+	limited := h.script.turns[1].Limited
+	h.script.mu.Unlock()
+	if !limited {
+		t.Fatal("the turn was not limited")
+	}
+}

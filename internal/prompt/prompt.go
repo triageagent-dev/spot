@@ -57,6 +57,7 @@ type Wake struct {
 	ChatName    string   // what the messenger calls the spot now; empty = unknown
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
+	Limited     bool     // a hold rule is active and a person wrote: notes, room and post tools only
 	NotesOnly   bool     // the model has one tool, search_memory: no schedule_next, no finish
 	TokensUsed  int64
 	TokensCeil  int64 // 0 = no ceiling
@@ -125,6 +126,9 @@ func Turn(w Wake) string {
 	}
 	if w.Reason == Edge || w.Reason == Tick {
 		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
+	}
+	if w.Limited {
+		b.WriteString("A standing rule says to check nothing until asked, so for this message you have only your notes, the room, posting and scheduling: no situation, issue, service or cluster tools. If the person wants a check or a report, now or later, write a one-line note of what they asked, say in one short message when you will do it, and call schedule_next for that time (a minute is allowed). The wake you schedule has every tool; do the check there, once.\n")
 	}
 	if w.NotesOnly {
 		b.WriteString("You have one tool: search_memory over your own notes. Say in plain text what you read, what you conclude and what you decide; people read that text. You cannot act, post or schedule anything; the supervisor does the scheduling.\n")

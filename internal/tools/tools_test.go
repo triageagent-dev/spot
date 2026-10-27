@@ -685,3 +685,42 @@ func TestNotesOnlyOffersOneToolAndRefusesTheRest(t *testing.T) {
 		}
 	}
 }
+
+func TestALimitedTurnHasOnlyTheNotesTheRoomAndThePost(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.Core.Allow = []string{"say_in_workspace", "get_memory_context", "upsert_memory_item", "list_open_issues"}
+	})
+	ctx := context.Background()
+	r.Limit(true)
+	r.Begin()
+	defs, err := r.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, d := range defs {
+		got[d.Name] = true
+	}
+	for _, want := range []string{"core__say_in_workspace", "core__get_memory_context", "core__upsert_memory_item", ScheduleNext, Finish} {
+		if !got[want] {
+			t.Errorf("a limited turn lacks %s: %v", want, got)
+		}
+	}
+	if got["core__list_open_issues"] {
+		t.Error("a limited turn offers a tool that reads the tenant")
+	}
+	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
+		t.Error("a tool outside the limit ran")
+	}
+	r.Limit(false)
+	r.Begin()
+	defs, _ = r.List(ctx)
+	found := false
+	for _, d := range defs {
+		found = found || d.Name == "core__list_open_issues"
+	}
+	if !found {
+		t.Error("the next turn stayed limited")
+	}
+}

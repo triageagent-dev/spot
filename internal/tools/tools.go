@@ -125,6 +125,7 @@ type Registry struct {
 	summary  string
 	finished bool
 	recalled bool // a search_memory succeeded in this turn
+	limited  bool // List offers only HoldTools and the built-ins (see Limit)
 	read     bool // a ContextTools call succeeded in this turn
 	noted    bool // a NoteTools call succeeded in this turn
 }
@@ -142,6 +143,14 @@ func New(o Options) *Registry {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Registry{o: o, log: log}
+}
+
+// Limit narrows the next List to HoldTools and the built-ins, and drops every
+// other server (the connectors and ego). The agent sets it before each turn.
+func (r *Registry) Limit(on bool) {
+	r.mu.Lock()
+	r.limited = on
+	r.mu.Unlock()
 }
 
 // Begin starts a turn: what the built-in tools recorded in the last one is
@@ -208,7 +217,10 @@ type listed struct {
 func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 	r.End()
 	servers := append([]Server{r.o.Core}, r.o.Others...)
-	if r.o.NotesOnly {
+	r.mu.Lock()
+	limited := r.limited
+	r.mu.Unlock()
+	if r.o.NotesOnly || limited {
 		servers = servers[:1]
 	}
 	out := make([]listed, len(servers))
@@ -253,6 +265,9 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 		sessions[l.srv.Name] = &session{conn: l.conn}
 		for _, t := range l.tools {
 			if r.o.NotesOnly && t.Name != searchMemory {
+				continue
+			}
+			if limited && !inList(HoldTools, t.Name) {
 				continue
 			}
 			if !allowed(l.srv, t.Name) {

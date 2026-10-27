@@ -48,6 +48,16 @@ var RecallTools = []string{
 	"get_triage_instructions", "read_workspace_room", "set_workspace_typing", "set_spot_status",
 }
 
+// HoldTools are the only core tools a turn has when a standing rule says to
+// check nothing until asked and a person has just written (see
+// Registry.Limit): the notes, the room, a post and the status line. No
+// situation, issue or cluster reads; those wait for a wake the spot schedules.
+var HoldTools = []string{
+	"search_memory", "get_memory_context", "get_memory_items", "get_memory_cell", "get_memory",
+	"read_workspace_room", "say_in_workspace", "set_workspace_typing", "set_spot_status",
+	"upsert_memory_item", "supersede_memory_item",
+}
+
 // PostTools are the core tools that put words where people read them. With
 // PostGate a turn may call them only after a ContextTools call and a NoteTools
 // call succeeded in it.
