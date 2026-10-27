@@ -372,6 +372,9 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 		return false, false
 	case <-t.C:
 		return false, true
+	case f := <-s.callc:
+		f() // the durable engine's call; the loop goes round and waits again
+		return false, true
 	case <-s.trig.C():
 		wait := s.triggerWait
 		if wait == 0 {

@@ -98,6 +98,12 @@ type bridgeRig struct {
 
 func newBridgeRig(t *testing.T, mut func(*config.Config)) *bridgeRig {
 	t.Helper()
+	return newBridgeRigOn(t, mut, nil)
+}
+
+// newBridgeRigOn is newBridgeRig with the core's push channel, when trig is set.
+func newBridgeRigOn(t *testing.T, mut func(*config.Config), trig Trigger) *bridgeRig {
+	t.Helper()
 	h := newHarness(t, mut)
 	mcpSrv := server.NewMCPServer("example", "1")
 	for _, n := range []string{"search_memory", "say_in_workspace"} {
@@ -113,6 +119,10 @@ func newBridgeRig(t *testing.T, mut func(*config.Config)) *bridgeRig {
 	r := &bridgeRig{t: t, h: h, model: &bmodel{}, done: make(chan error, 1)}
 	log := slog.New(slog.NewTextHandler(&r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.sup = New(h.cfg, led, h.core, nil, log)
+	if trig != nil {
+		r.sup.SetTrigger(trig)
+		r.sup.triggerWait = 10 * time.Millisecond
+	}
 
 	name := fmt.Sprintf("b%s-%d", strings.ToLower(strings.NewReplacer("/", "-", "_", "-").Replace(t.Name())), time.Now().UnixNano()%1_000_000)
 	newTools := func() *tools.Registry {
@@ -268,4 +278,16 @@ func TestTheBridgeAnswersAPersonWhileALongTurnWorks(t *testing.T) {
 		st := r.h.status()
 		return st.State == "idle" && r.sup.led.Usage().Turns == 2
 	})
+}
+
+// With the core's stream connected the loop waits on the stream and not on a
+// sleep; the workflow's calls must be served there too, or the first wake never
+// starts.
+func TestTheBridgeServesTheWorkflowWhileWatchingTheStream(t *testing.T) {
+	r := newBridgeRigOn(t, func(c *config.Config) { c.PollInterval = time.Hour }, newFakeTrigger(true))
+	r.model.fn = func(string, int) (llm.Response, error) { return bfinish("all quiet", "2h"), nil }
+	r.idleWithTurns(1)
+	if st := r.h.status(); st.Triggers != "stream" {
+		t.Fatalf("watching by %q, want the stream", st.Triggers)
+	}
 }
