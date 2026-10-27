@@ -50,6 +50,25 @@ type Turn struct {
 	Failed     bool   `json:"failed,omitempty"`
 }
 
+// Wake is one line of the spot's activity, sent when a wake ends: a turn, or a
+// wake that made no model call (quiet, hold, ceiling). Counts and labels, never
+// content, so a client can draw a timeline. Next is when the spot wakes again,
+// in ms; 0 = not known (a short-lane turn does not set the schedule).
+type Wake struct {
+	TS         int64  `json:"ts"`
+	Reason     string `json:"reason,omitempty"`
+	Lane       string `json:"lane,omitempty"`
+	Outcome    string `json:"outcome"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	Steps      int64  `json:"steps,omitempty"`
+	ToolCalls  int64  `json:"toolCalls,omitempty"`
+	Billable   int64  `json:"billable,omitempty"`
+	CacheRead  int64  `json:"cacheRead,omitempty"`
+	Output     int64  `json:"output,omitempty"`
+	Next       int64  `json:"next,omitempty"`
+	NextSource string `json:"nextSource,omitempty"`
+}
+
 // Stats is how the spot is doing, a snapshot the core keeps for its clients.
 type Stats struct {
 	State         string           `json:"state,omitempty"`
@@ -199,6 +218,10 @@ func (c *Client) ReportTurn(t Turn) {
 	c.mu.Unlock()
 	c.flush()
 }
+
+// ReportWake sends one line of activity. It is dropped while the stream is
+// down: a timeline with a gap is the truth, a replay of old wakes is not.
+func (c *Client) ReportWake(w Wake) { _ = c.send(map[string]any{"wake": w}) }
 
 // ReportStats sends the supervisor's snapshot; it is dropped while the stream
 // is down, the next one replaces it.

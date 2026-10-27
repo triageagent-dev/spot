@@ -20,6 +20,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
 	"github.com/triageagent-dev/spot/internal/tools"
+	"github.com/triageagent-dev/spot/internal/triggers"
 )
 
 var bridgeSrv *testsuite.DevServer
@@ -303,5 +304,26 @@ func TestTheBridgeMakesNoModelCallOnAQuietStartup(t *testing.T) {
 	})
 	if n := len(r.model.turns()); n != 0 {
 		t.Fatalf("a model call on a quiet startup: %d", n)
+	}
+}
+
+// The durable engine reports the same line of activity per wake: a quiet
+// startup, then a turn with its counts.
+func TestTheBridgeReportsEachWakeToTheCore(t *testing.T) {
+	trig := newFakeTrigger(true)
+	r := newBridgeRigOn(t, func(c *config.Config) { c.SkipQuietWakes = true; c.PollInterval = time.Hour }, trig)
+	r.model.fn = func(string, int) (llm.Response, error) { return bfinish("x", "2h"), nil }
+	r.waitFor("the quiet line", func() bool { return len(trig.wakeLines()) >= 1 })
+	if w := trig.wakeLines()[0]; w.Outcome != "quiet" || w.Reason != "startup" || w.Lane != "long" || w.Steps != 0 || w.NextSource != "quiet" {
+		t.Fatalf("quiet line: %+v", w)
+	}
+	time.Sleep(100 * time.Millisecond) // the supervisor has read the empty core
+	trig.say(triggers.Pending{Issues: true})
+	time.Sleep(100 * time.Millisecond)
+	r.h.core.setIssues(issue("a", "critical", 0))
+	trig.say(triggers.Pending{Issues: true})
+	r.waitFor("the turn line", func() bool { return len(trig.wakeLines()) >= 2 })
+	if w := trig.wakeLines()[1]; w.Outcome != "turn" || w.Lane != "long" || w.Steps == 0 || w.Next == 0 {
+		t.Fatalf("turn line: %+v", w)
 	}
 }

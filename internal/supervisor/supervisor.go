@@ -19,6 +19,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/agent"
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/durable"
 	"github.com/triageagent-dev/spot/internal/edges"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/prompt"
@@ -243,6 +244,8 @@ type Trigger interface {
 	// spot is doing.
 	ReportTurn(triggers.Turn)
 	ReportStats(triggers.Stats)
+	// ReportWake tells the core one line of the spot's activity.
+	ReportWake(triggers.Wake)
 }
 
 // SetTrigger switches the supervisor from polling to the core's stream. It
@@ -283,6 +286,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if pend != nil {
 			if s.paused() {
 				s.pauseForCeiling()
+				s.reportWake(string(pend.reason), durable.LaneLong, "ceiling", agent.Result{}, s.nextTick, "ceiling")
 			} else {
 				s.turn(ctx, pend)
 				pend = nil
@@ -558,16 +562,16 @@ func (s *Supervisor) setPromise(at time.Time, why string, human bool) {
 // woke it is dropped, and the next wake is the longest the spot allows.
 func (s *Supervisor) holdWake(p *pending) {
 	s.log.Info("a hold rule is active: no model call", "reason", p.reason, "dropped", len(p.facts))
-	s.idleWake("a hold rule is active", "hold")
+	s.idleWake(string(p.reason), "a hold rule is active", "hold")
 }
 
 // quietWake ends a wake with nothing to work on, without a model call.
 func (s *Supervisor) quietWake(p *pending) {
 	s.log.Info("nothing to act on: no facts, no open issue; no model call", "reason", p.reason)
-	s.idleWake("nothing to act on: waiting for an event", "quiet")
+	s.idleWake(string(p.reason), "nothing to act on: waiting for an event", "quiet")
 }
 
-func (s *Supervisor) idleWake(why, source string) {
+func (s *Supervisor) idleWake(reason, why, source string) {
 	s.lastTurnEnd = s.now()
 	s.nextTick = s.now().Add(s.cfg.MaxWake)
 	s.scheduledWhy = why
@@ -575,7 +579,34 @@ func (s *Supervisor) idleWake(why, source string) {
 		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: source}
+	s.reportWake(reason, durable.LaneLong, source, agent.Result{}, s.nextTick, source)
 	s.setState("idle")
+}
+
+// reportWake tells the core one line of the spot's activity, when a wake ends:
+// the turn's counts, or zeros for a wake that made no model call. Labels and
+// counts only, never what was said.
+func (s *Supervisor) reportWake(reason, lane, outcome string, res agent.Result, next time.Time, nextSource string) {
+	if s.trig == nil {
+		return
+	}
+	w := triggers.Wake{
+		TS: s.now().UnixMilli(), Reason: reason, Lane: lane, Outcome: outcome,
+		DurationMs: res.Duration.Milliseconds(), Steps: int64(res.Steps), ToolCalls: int64(res.ToolCalls),
+		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
+	}
+	if !next.IsZero() {
+		w.Next = next.UnixMilli()
+	}
+	s.trig.ReportWake(w)
+}
+
+// turnOutcome is the label of a turn that ran: it went well or it failed.
+func turnOutcome(failed bool) string {
+	if failed {
+		return "failed"
+	}
+	return "turn"
 }
 
 // quiet reports whether a wake has nothing to work on: a startup or a timer
@@ -1205,6 +1236,9 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 	u := res.Usage
 	s.book(res)
 	failed := (res.Failed || res.CoreDown) && !res.Canceled
+	if !res.Canceled {
+		s.reportWake(string(st.p.reason), durable.LaneShort, turnOutcome(failed), res, time.Time{}, "")
+	}
 	if res.Steps == 0 && failed && len(st.talk) > 0 {
 		s.hold(st.talk)
 	}
@@ -1440,6 +1474,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.nextTick, s.scheduledWhy = plan.At, plan.Why
 	s.setPromise(plan.Promise.At, plan.Promise.Why, plan.Promise.Human)
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
+	s.reportWake(string(p.reason), durable.LaneLong, turnOutcome(failed), res, s.nextTick, string(w.Source))
 	if !failed {
 		s.addDigest(p.reason, res)
 		s.markRoomsRead()

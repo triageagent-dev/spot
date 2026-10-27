@@ -33,6 +33,10 @@ type wakeRec struct {
 	p    *pending
 	pre  edges.Snapshot
 	lane string
+	// res is what the turn did, set when it is accounted, for the activity line
+	// the announce sends.
+	res    agent.Result
+	failed bool
 }
 
 var errBridgeStopped = errors.New("the supervisor has stopped")
@@ -259,6 +263,9 @@ func (s *Supervisor) account(in durable.AccountIn) durable.AccountOut {
 	s.book(res)
 
 	failed := res.Failed || res.CoreDown
+	if rec != nil {
+		rec.res, rec.failed = res, failed
+	}
 	if rec != nil && res.Steps == 0 && failed {
 		s.requeue(rec.p.edges)
 	}
@@ -311,6 +318,11 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 	reason := prompt.Reason(in.Reason)
 	if in.Held {
 		// No turn ran (a rule, or the ceiling): only the schedule is told.
+		var next time.Time
+		if long {
+			next = in.At
+		}
+		s.reportWake(in.Reason, in.Lane, in.Source, agent.Result{}, next, in.Source)
 		if long {
 			s.lastTurnEnd = s.now()
 			s.nextTick, s.scheduledWhy = in.At, in.Why
@@ -320,6 +332,18 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 			s.setState("idle")
 		}
 		return
+	}
+	{
+		var res agent.Result
+		failed := in.Failed
+		if rec != nil {
+			res, failed = rec.res, rec.failed
+		}
+		var next time.Time
+		if long {
+			next = in.At
+		}
+		s.reportWake(in.Reason, in.Lane, turnOutcome(failed), res, next, in.Source)
 	}
 	if long {
 		s.nextTick, s.scheduledWhy = in.At, in.Why

@@ -578,6 +578,7 @@ type fakeTrigger struct {
 	sig       chan struct{}
 	budget    *triggers.Budget
 	turns     []triggers.Turn
+	wakes     []triggers.Wake
 	stats     []triggers.Stats
 }
 
@@ -592,6 +593,11 @@ func (f *fakeTrigger) Budget() (triggers.Budget, bool) {
 func (f *fakeTrigger) ReportTurn(t triggers.Turn) {
 	f.mu.Lock()
 	f.turns = append(f.turns, t)
+	f.mu.Unlock()
+}
+func (f *fakeTrigger) ReportWake(w triggers.Wake) {
+	f.mu.Lock()
+	f.wakes = append(f.wakes, w)
 	f.mu.Unlock()
 }
 func (f *fakeTrigger) ReportStats(s triggers.Stats) {
@@ -2022,5 +2028,38 @@ func TestAWakeAPersonAskedForRunsOnTheShortLaneWhileALongTurnWorks(t *testing.T)
 	}
 	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
 		t.Errorf("a wake that fired is still promised: %+v", got)
+	}
+}
+
+func (f *fakeTrigger) wakeLines() []triggers.Wake {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]triggers.Wake(nil), f.wakes...)
+}
+
+// A wake that makes no model call and a turn each tell the core one line of
+// activity: labels and counts, no content.
+func TestEachWakeReportsOneLineOfActivity(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.SkipQuietWakes = true; c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitFor("the quiet startup line", func() bool { return len(trig.wakeLines()) == 1 })
+	w := trig.wakeLines()[0]
+	if w.Outcome != "quiet" || w.Reason != "startup" || w.Lane != "long" || w.Steps != 0 || w.Billable != 0 || w.Next == 0 || w.NextSource != "quiet" || w.TS == 0 {
+		t.Fatalf("quiet line: %+v", w)
+	}
+
+	trig.say(triggers.Pending{Issues: true}) // the supervisor reads the empty core: the baseline
+	time.Sleep(100 * time.Millisecond)
+	h.core.setIssues(issue("a", "critical", 0))
+	trig.say(triggers.Pending{Issues: true})
+	h.waitIdle(1)
+	h.waitFor("the turn line", func() bool { return len(trig.wakeLines()) == 2 })
+	w = trig.wakeLines()[1]
+	if w.Outcome != "turn" || w.Lane != "long" || w.Steps == 0 || w.NextSource != "agent" {
+		t.Fatalf("turn line: %+v", w)
 	}
 }

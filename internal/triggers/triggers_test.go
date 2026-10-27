@@ -185,11 +185,13 @@ func TestStreamCarriesTheCoresFactsDownAndTheSpotsReportsUp(t *testing.T) {
 		t.Fatal("a name and a budget must not wake the supervisor")
 	}
 	c.ReportStats(Stats{State: "idle", Turns: 3, Wakes: map[string]int64{"chat": 2}})
-	wait(t, "both reports", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 })
+	c.ReportWake(Wake{TS: 1000, Reason: "tick", Lane: "long", Outcome: "quiet", Next: 2000, NextSource: "quiet"})
+	wait(t, "all reports", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 3 })
 	mu.Lock()
 	defer mu.Unlock()
 	if !strings.Contains(got[0], `"turn":{"model":"m","input":900,"cached":600,"output":100,"durationMs":1500}`) ||
-		!strings.Contains(got[1], `"stats":{"state":"idle","turns":3,"wakes":{"chat":2}}`) {
+		!strings.Contains(got[1], `"stats":{"state":"idle","turns":3,"wakes":{"chat":2}}`) ||
+		!strings.Contains(got[2], `"wake":{"ts":1000,"reason":"tick","lane":"long","outcome":"quiet","next":2000,"nextSource":"quiet"}`) {
 		t.Fatalf("frames %v", got)
 	}
 }
