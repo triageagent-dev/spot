@@ -142,6 +142,21 @@ func (l *Ledger) AddUsage(tokens, cacheRead, output int64) (Usage, error) {
 	return u, writeJSON(l.Path(UsageFile), u, 0o600)
 }
 
+// RaiseTokens lifts today's token counter to tokens when it is lower, and says
+// whether it did: the core's count of this spot's turns is the floor, so a lost
+// or rewritten state directory cannot give the day's budget back.
+func (l *Ledger) RaiseTokens(tokens int64) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	u := l.usageLocked()
+	if tokens <= u.Tokens {
+		return false, nil
+	}
+	u.Tokens = tokens
+	l.usage = u
+	return true, writeJSON(l.Path(UsageFile), u, 0o600)
+}
+
 // CeilingReached reports whether ceiling (> 0) is used up today.
 func (l *Ledger) CeilingReached(ceiling int64) bool {
 	return ceiling > 0 && l.Usage().Tokens >= ceiling

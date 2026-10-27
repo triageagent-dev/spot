@@ -352,6 +352,13 @@ func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
 	if !p.Budget {
 		return
 	}
+	if b, ok := s.trig.Budget(); ok && b.Own > 0 {
+		if raised, err := s.led.RaiseTokens(b.Own); err != nil {
+			s.log.Error("writing usage", "err", err)
+		} else if raised {
+			s.log.Info("the core counts more than this spot did: taking the core's number", "own", b.Own)
+		}
+	}
 	held := s.coreBlocked()
 	if held != s.coreHeld {
 		b, _ := s.trig.Budget()

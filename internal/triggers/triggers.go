@@ -28,9 +28,12 @@ import (
 const Path = "/v2/messenger/spot/ws"
 
 // Budget is the spot's daily token budget as the core holds it. Cap 0 is none;
-// Blocked is the core refusing the spot until 00:00 UTC.
+// Blocked is the core refusing the spot until 00:00 UTC. Spent and Cap are the
+// workspace's, shared by all its spots; Own is what this spot spent today as
+// the core counted its reported turns.
 type Budget struct {
 	Spent     int64 `json:"spent"`
+	Own       int64 `json:"own"`
 	Cap       int64 `json:"cap"`
 	Remaining int64 `json:"remaining"`
 	Blocked   bool  `json:"blocked"`

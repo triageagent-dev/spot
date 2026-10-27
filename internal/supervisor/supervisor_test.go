@@ -1675,3 +1675,22 @@ func TestStatsSayWhoPausedTheSpot(t *testing.T) {
 		return false
 	})
 }
+
+func TestTheCoresCountOfTheSpotIsTheFloorOfItsCounter(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
+	h.trig = trig
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	own := h.sup.led.Usage().Tokens + 5000
+	trig.setBudget(triggers.Budget{Spent: own + 1000, Own: own, Cap: 1_000_000, Remaining: 1000})
+	h.waitFor("the counter lifted to the core's number", func() bool { return h.sup.led.Usage().Tokens == own })
+	// A lower number from the core never lowers it.
+	trig.setBudget(triggers.Budget{Spent: own, Own: 10, Cap: 1_000_000})
+	time.Sleep(100 * time.Millisecond)
+	if got := h.sup.led.Usage().Tokens; got != own {
+		t.Fatalf("tokens = %d, want %d", got, own)
+	}
+}
