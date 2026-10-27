@@ -28,6 +28,7 @@ const (
 	StatusFile   = "status.json"
 	RoomsFile    = "rooms.json"
 	DigestFile   = "digest.json"
+	PromiseFile  = "promise.json"
 	RoomReadFile = "roomread.json"
 )
 
@@ -235,6 +236,30 @@ func (l *Ledger) SaveDigest(d []DigestEntry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return writeJSON(l.Path(DigestFile), d, 0o600)
+}
+
+// Promise is a wake the agent asked for on a person's request ("in 3
+// minutes"): it must come even when the pod restarts or a hold rule is active.
+type Promise struct {
+	At  time.Time `json:"at"`
+	Why string    `json:"why"`
+}
+
+// LoadPromise returns the saved promised wake; a missing file is the zero
+// Promise.
+func (l *Ledger) LoadPromise() Promise {
+	var p Promise
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = readJSON(l.Path(PromiseFile), &p)
+	return p
+}
+
+// SavePromise persists the promised wake; the zero Promise clears it.
+func (l *Ledger) SavePromise(p Promise) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return writeJSON(l.Path(PromiseFile), p, 0o600)
 }
 
 func readJSON(path string, v any) error {

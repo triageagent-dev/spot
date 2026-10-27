@@ -421,7 +421,7 @@ func (c *Client) StandingNotes(ctx context.Context, spot string) (lines []string
 
 const (
 	maxRuleLines = 8
-	maxNoteLines = 10
+	maxNoteLines = 4
 	noteClip     = 320
 )
 

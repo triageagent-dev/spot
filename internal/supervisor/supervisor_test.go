@@ -1813,3 +1813,41 @@ func TestAHoldRuleStillLetsAPersonThrough(t *testing.T) {
 		t.Fatalf("the person's message is not in the wake:\n%s", in)
 	}
 }
+
+func TestAWakeAPersonAskedForRunsUnderAHoldRuleAndAfterARestart(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 5 * time.Millisecond })
+	h.core.roomAbsent = false
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{{Sender: "alice", Text: "old"}}
+	h.core.rules = []string{"RULE: do not check anything before a person asks."}
+	h.core.hold = true
+	h.set("next", `{"after":"3m","why":"give the note"}`)
+	h.start()
+	h.waitFor("held", func() bool { st := h.status(); return st.NextWake != nil && st.NextWake.Source == "hold" })
+	time.Sleep(80 * time.Millisecond)
+	h.core.mu.Lock()
+	h.core.roomMsgs["team"] = append(h.core.roomMsgs["team"], corecli.RoomMessage{Sender: "alice", Name: "alice", Text: "give me a note in 3 min"})
+	h.core.mu.Unlock()
+	h.waitIdle(1)
+	if got := h.sup.led.LoadPromise(); got.At.IsZero() || got.Why != "give the note" {
+		t.Fatalf("the promise is not kept for a restart: %+v", got)
+	}
+	// The pod restarts: the startup wake is held, the promise stays.
+	h.stop()
+	h.start()
+	defer h.stop()
+	h.waitFor("startup held", func() bool {
+		st := h.status()
+		return st.NextWake != nil && st.NextWake.Why == "give the note"
+	})
+	if h.turns() != 1 {
+		t.Fatalf("the model was called by the held startup wake: %d turns", h.turns())
+	}
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(2)
+	if in := h.script.prompt(2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "give the note") {
+		t.Fatalf("the promised wake did not run with its reason:\n%s", in)
+	}
+	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
+		t.Errorf("a wake that fired is still promised: %+v", got)
+	}
+}

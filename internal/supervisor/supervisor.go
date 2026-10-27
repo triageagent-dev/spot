@@ -81,6 +81,9 @@ type Supervisor struct {
 	// fired. A later turn that wants a later (or no) wake does not move it.
 	promise    time.Time
 	promiseWhy string
+	// promiseHuman is set when the promised wake answers a person's request for
+	// later: it runs even under a hold rule, and it survives a restart.
+	promiseHuman bool
 	// digest is the spot's own summary of each of its last wakes, the only
 	// thing carried from one wake to the next (the conversation is not).
 	digest      []ledger.DigestEntry
@@ -191,6 +194,9 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 		}
 	}
 	s.digest = led.LoadDigest()
+	if pr := led.LoadPromise(); !pr.At.IsZero() {
+		s.promise, s.promiseWhy, s.promiseHuman = pr.At, pr.Why, true
+	}
 	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID}
 	return s
 }
@@ -453,6 +459,19 @@ func (s *Supervisor) addDigest(reason prompt.Reason, res agent.Result) {
 	}
 }
 
+// setPromise records the earliest wake the agent promised itself; human says it
+// answers a person's request, and only those are kept on disk.
+func (s *Supervisor) setPromise(at time.Time, why string, human bool) {
+	s.promise, s.promiseWhy, s.promiseHuman = at, why, human
+	pr := ledger.Promise{}
+	if human {
+		pr = ledger.Promise{At: at, Why: why}
+	}
+	if err := s.led.SavePromise(pr); err != nil {
+		s.log.Error("writing the promised wake", "err", err)
+	}
+}
+
 // holdWake ends a wake that a hold rule forbids, without a model call: what
 // woke it is dropped, and the next wake is the longest the spot allows.
 func (s *Supervisor) holdWake(p *pending) {
@@ -460,6 +479,9 @@ func (s *Supervisor) holdWake(p *pending) {
 	s.lastTurnEnd = s.now()
 	s.nextTick = s.now().Add(s.cfg.MaxWake)
 	s.scheduledWhy = "a hold rule is active"
+	if s.promiseHuman && !s.promise.IsZero() && s.promise.Before(s.nextTick) {
+		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
+	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: "hold"}
 	s.setState("idle")
 }
@@ -1047,7 +1069,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if rerr != nil && ctx.Err() == nil {
 		s.log.Warn("standing notes not read; the wake goes on without them", "err", rerr)
 	}
-	if hold && p.reason != prompt.Human {
+	if hold && p.reason != prompt.Human && (p.reason != prompt.Tick || !s.promiseHuman) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return
@@ -1148,7 +1170,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 
 	if p.reason == prompt.Tick {
-		s.promise = time.Time{} // it fired
+		s.setPromise(time.Time{}, "", false) // it fired
 	}
 	var w schedule.Wake
 	if res.Next != nil {
@@ -1172,13 +1194,15 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	}
 	s.nextTick = s.now().Add(w.After)
 	s.scheduledWhy = w.Why
-	if s.promise.After(s.now()) && s.promise.Before(s.nextTick) {
+	if !s.promise.IsZero() && (s.promise.After(s.now()) || s.promiseHuman) && s.promise.Before(s.nextTick) {
 		// Keep the earlier wake the agent promised itself: every edge wake
 		// would otherwise push it back and it would never come.
 		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
 		w.After, w.Why, w.Source, w.Note = s.promise.Sub(s.now()), s.promiseWhy, schedule.SourceAgent, "an earlier wake the agent asked for is kept"
 	} else if w.Source == schedule.SourceAgent || w.Source == schedule.SourceClamped {
-		s.promise, s.promiseWhy = s.nextTick, w.Why
+		// A wake asked for on a person's request, sooner than the longest
+		// the spot sleeps, is a promise; an idle schedule is not.
+		s.setPromise(s.nextTick, w.Why, p.reason == prompt.Human && w.After < s.cfg.MaxWake)
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
 	if !failed {
