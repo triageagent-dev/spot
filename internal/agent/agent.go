@@ -282,6 +282,7 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 			res.Err = err
 			return res
 		}
+		elideOld(msgs)
 		req := llm.Request{
 			System: a.o.System, Messages: msgs, Tools: defs, MaxTokens: a.o.MaxTokens, Effort: a.o.Effort,
 		}
@@ -529,4 +530,58 @@ func clip(s string, n int) string {
 		return s[:n] + "..."
 	}
 	return s
+}
+
+// Old tool results are cut down to their head, so a long turn does not send
+// every big result again at every step: the model has read it and said what it
+// took from it. The last elideKeep result messages stay whole; a result under
+// elideMin bytes is never touched. A cut result keeps its closing data tag.
+const (
+	elideKeep = 2
+	elideMin  = 1500
+	elideHead = 800
+)
+
+// elideOld shortens the tool results of msgs older than the last elideKeep
+// messages that carry results. It changes msgs in place, once per result, so
+// the conversation prefix stays the same from then on.
+func elideOld(msgs []llm.Message) {
+	seen := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		has := false
+		for _, b := range m.Content {
+			if b.Kind == llm.KindToolResult {
+				has = true
+				break
+			}
+		}
+		if !has {
+			continue
+		}
+		seen++
+		if seen <= elideKeep {
+			continue
+		}
+		for j, b := range m.Content {
+			if b.Kind != llm.KindToolResult || len(b.Content) < elideMin || strings.Contains(b.Content, "[elided: ") {
+				continue
+			}
+			m.Content[j].Content = elided(b.Content)
+		}
+	}
+}
+
+func elided(text string) string {
+	head := strings.ToValidUTF8(text[:elideHead], "")
+	out := fmt.Sprintf("%s\n[elided: %d of %d bytes, to save tokens; call the tool again if you need the rest]", head, len(text)-len(head), len(text))
+	if strings.HasPrefix(text, "<data id=") {
+		if i := strings.LastIndex(text, "\n</data id="); i >= 0 {
+			out += text[i:]
+		}
+	}
+	return out
 }

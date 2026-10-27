@@ -488,3 +488,38 @@ func TestFinishAfterTheCapStillEndsTheTurn(t *testing.T) {
 		t.Fatalf("a cap refusal is not a gate: %+v", res)
 	}
 }
+
+func TestOldToolResultsAreCutButTheRecentOnesAreWhole(t *testing.T) {
+	big := strings.Repeat("x", 4000)
+	fenced := "<data id=ABC from=core__list_open_issues>\n" + big + "\n</data id=ABC>"
+	var msgs []llm.Message
+	for i := 0; i < 4; i++ {
+		msgs = append(msgs,
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{{Kind: llm.KindText, Text: "step"}}},
+			llm.Message{Role: llm.RoleUser, Content: []llm.Block{llm.ToolResult(fmt.Sprintf("t%d", i), fenced, false), llm.ToolResult(fmt.Sprintf("s%d", i), "short", false)}})
+	}
+	elideOld(msgs)
+	for i, m := range msgs {
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		got := m.Content[0].Content
+		recent := i >= len(msgs)-4 // the last two result messages
+		if recent && got != fenced {
+			t.Errorf("message %d: a recent result was cut", i)
+		}
+		if !recent {
+			if len(got) >= 1200 || !strings.Contains(got, "[elided: ") || !strings.HasSuffix(got, "</data id=ABC>") {
+				t.Errorf("message %d: an old result was not cut and closed: %d bytes, %q", i, len(got), got[len(got)-40:])
+			}
+		}
+		if m.Content[1].Content != "short" {
+			t.Errorf("message %d: a short result was touched", i)
+		}
+	}
+	before := msgs[1].Content[0].Content
+	elideOld(msgs)
+	if msgs[1].Content[0].Content != before {
+		t.Error("cutting twice changed the result again")
+	}
+}
