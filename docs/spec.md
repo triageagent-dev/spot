@@ -54,7 +54,7 @@ A **wake** is why the supervisor starts a **turn**. Every wake is an empty conve
 
 ### Between turns
 
-No model is used. With `--core-api-url` the core pushes content-free frames over a websocket (`/v2/messenger/spot/ws`); the supervisor reads the core after a 1.5 s pause, so a burst is read once. While the stream is down, or without the flag, it polls every `--poll-interval`; `status.json` `triggers` says `stream` or `poll`.
+No model is used. With `--core-api-url` the core pushes content-free frames over a websocket (`/v2/messenger/spot/ws` with a core token; `/v2/messenger/spot/join` with a certificate, section 9); the supervisor reads the core after a 1.5 s pause, so a burst is read once. While the stream is down, or without the flag, it polls every `--poll-interval`; `status.json` `triggers` says `stream` or `poll`.
 
 *Diagram: The supervisor between turns: ticks, the trigger stream, issue edges and room messages feed a held-edge queue and a wake gate; a wake that fails before the model sees it is put back; ceilings and per-turn reports sit below.*
 
@@ -197,7 +197,10 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--chat-name` | empty | name shown until the core says |
 | `--core-mcp-url` | required | the core’s `/mcp` (streamable HTTP) |
 | `--core-api-url` | empty | the core’s HTTP API; enables the trigger websocket |
-| `--core-token-file` | required | core bearer token file |
+| `--core-token-file` | required without `--core-ca-fingerprint` | core bearer token file; refused with `--core-ca-fingerprint`, where the token file is the spot’s own |
+| `--core-ca-fingerprint` | empty | `SHA256:<64 lowercase hex>` of the core’s CA. Set, the spot joins the core by certificate (section 9); needs `--core-api-url` |
+| `--enroll-key-file` | empty | file holding the one-time enrollment key the core minted for this spot; only with `--core-ca-fingerprint` |
+| `--identity-dir` | `<state-dir>/identity` | the spot’s key, certificate and access token; only with `--core-ca-fingerprint` |
 | `--core-tools` | `curated` | `curated` or `all` (section 4) |
 | `--connectors-file` | none | JSON list of connectors (section 17) |
 | `--ego-mcp-url` | empty | ego’s MCP endpoint; uses the `--otel-token-file` token |
@@ -234,7 +237,7 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--turn-timeout` | `20m` | wall-clock cap per wake |
 | `--tool-timeout` | `60s` | cap on one tool call |
 | `--tool-result-max-bytes` | `12288` | cap on one tool result the model sees |
-| `--state-dir` | `/state` | the supervisor’s files: usage, cursors, status |
+| `--state-dir` | `/state` | the supervisor’s files: usage, cursors, status; with a certificate identity also the identity directory |
 | `--min-wake / --max-wake` | `2m` / `2h` | clamp for the agent’s schedule |
 | `--daily-token-ceiling` | `2000000` | tokens per UTC day; `0` = none |
 | `--hourly-token-ceiling` | `600000` | tokens in any rolling hour; `0` = none. At the ceiling no wake starts until the oldest turns of the hour have aged out; the hour’s samples are in memory (a restart starts it empty, the daily ceiling still holds) |
@@ -286,8 +289,9 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 |---|---|
 | Key (`key`, default) | A Secret file (`--anthropic-key-file` or `--gemini-key-file` for Gemini), re-read on every request. The SDK is built without its environment defaults, so a stray `ANTHROPIC_*` variable cannot replace the key. |
 | Federation (`federation`) | No Anthropic secret. A projected token (audience `https://api.anthropic.com`, at `/var/run/secrets/anthropic.com/token`) is exchanged by the SDK for a short-lived one. The SDK reads federation from the environment, so the process sets `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_IDENTITY_TOKEN_FILE` and, if set, `ANTHROPIC_WORKSPACE_ID` from its flags: ids and a path, never a credential. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN` and `ANTHROPIC_PROFILE` are unset, since each outranks federation. `--anthropic-key-file` is refused. |
-| Vertex AI (`vertex`) | Application Default Credentials: the pod’s Workload Identity. Annotate the ServiceAccount (`serviceAccount.annotations`, `iam.gke.io/gcp-service-account`) with a Google service account allowed on Vertex AI in `--vertex-project`. The model id has no prefix. |
-| core token | A file read on every request: the pod’s projected token, audience `triage-core` (`core.identity: serviceAccount`), or a Secret (`secret`). |
+| Vertex AI (`vertex`) | Application Default Credentials: the pod’s Workload Identity. Annotate the ServiceAccount (`serviceAccount.annotations`, `iam.gke.io/gcp-service-account`) with a Google service account allowed on Vertex AI in `--vertex-project`. The model id has no prefix. This annotation belongs to `vertex` only; `key` and `federation` need none, and the core identity never needs one. |
+| core token | A file read on every request: the pod’s projected token, audience `triage-core` (`core.identity: serviceAccount`), a Secret (`secret`), or, with `certificate`, the access token the core sends over the stream and the spot writes to `<identity-dir>/token` (section 9). |
+| enrollment key | Certificate identity only. A Secret mounted as a file (`core.enrollKeySecret`, `--enroll-key-file`), read at each join and sent only while the spot has no certificate. It is a one-time key: the first join spends it. |
 | pod token | The default ServiceAccount token is not mounted (`automountServiceAccountToken: false`). |
 
 ### The identity token must be fresh at every exchange
@@ -326,7 +330,22 @@ The spot holds no cluster RBAC; a cluster is reached through a connector, whose 
 |---|---|
 | `serviceAccount` (default) | The spot’s own ServiceAccount: a projected token, audience `triage-core`, no core Secret, validated by TokenReview. The chart renders a Role and RoleBinding `<spot name>-core`, labelled `triageagent.dev/managed: "true"`, granting `core.verbs` (default get, list, create, update) on the one tenant; `core.rbac.create: false` if the grant is made elsewhere. The core accepts only ServiceAccounts from its own namespace, so the chart is installed there. |
 | `secret` | A bearer token from the Secret `core.tokenSecret`, usable from any namespace. |
-| next | A per-spot minted token (ADR-098). |
+| `certificate` | The spot joins the core the way an agent does (the core’s ADR-105) and holds no static credential: no core Secret for a token, no projected token, no Role. It needs `core.apiUrl` and `core.caFingerprint` (the core’s CA) and, for its first join, a one-time enrollment key (`core.enrollKeySecret`). The mechanics are below. The spot’s name is its identity: keep `spot.name` stable. Losing `/state` loses the key, so the core needs a new enrollment key for the spot. |
+
+### Certificate join
+
+| Part | Rule |
+|---|---|
+| state | In `--identity-dir` (`/state/identity`), mode 0600: `key.pem` (an Ed25519 key made on the first start, never sent), `cert.der` (the issued certificate), `ca.der` (the core’s CA) and `token` (the access token). Files are written atomically. |
+| route | A websocket to `GET /v2/messenger/spot/join` on `--core-api-url` (`ws://` for `http://`, `wss://` for `https://`), with the header `X-Triage-Agent-Nonce`: base64 of 32 random bytes. The same socket becomes the trigger stream (section 14) once the spot has said hello. |
+| trust in the core | The core opens with a `challenge` frame (its CA, a nonce, a signature over both nonces). The spot checks the CA against `--core-ca-fingerprint` and the signature before it sends anything; a core that does not match is not talked to. On `wss://` the challenge is bound to the TLS session; on `ws://` in the cluster it is bound to the spot’s nonce. |
+| first join | The spot sends a `join` frame: a certificate request (Ed25519 key, common name `spot:<name>`, URIs `triage:spot/<name>` and `triage:tenant/<workspace>`), a proof (the key signs the core’s nonce and the request’s hash) and the enrollment key from `--enroll-key-file`. The key is sent only while the spot has no certificate. The core answers `join_result` (`issued` with the certificate, `pending` or `refused` with a message) and closes; on `issued` the spot checks the certificate against its key, name and workspace, keeps it and connects again. `pending` is retried with the stream’s backoff, and the spot logs its fingerprint. `refused` is logged with the core’s message and retried the same way. A join without a key the core minted for that name and workspace is refused. |
+| enrollment key | Minted by a workspace admin in the core, for the spot’s name (`POST /v2/tenants/{workspace}/keys` with kind `spot`); valid for 7 days and one use. The first join spends it. A spent key left in the Secret is harmless: the spot reads it only while it has no certificate, and a spot that kept its approval but lost its certificate gets a new one with it. A spot whose approval was revoked needs a new key. |
+| hello | With a usable certificate the spot answers the challenge with `hello` (name, workspace, version, certificate, and a proof over the nonce, name and workspace). The core then sends its frames on that socket (section 14). |
+| renewal | A certificate lives 24 hours. When a third of its life is left, the spot sends `renew` (the current certificate, a new request, a proof from the current key) in place of `hello`, and takes the new certificate. A failed renewal, or one that issued a certificate already due, is not tried again for 5 minutes; the current certificate keeps opening the stream. |
+| closes | Close code 1008 means the core does not accept the certificate (revoked, expired, not approved, wrong name): the spot drops the certificate, keeps its key and joins afresh, sending the enrollment key still in the Secret; a spot whose approval was revoked needs a new key. 1013 means the core cannot say yet: the certificate is kept. Any other close or error reconnects with `hello` and a backoff of 1 s doubling to 30 s. |
+| access token | After a good hello the core sends `{"token":{"value","exp"}}`: a CA-signed token (`spt1.…`) valid 10 minutes, sent again at half its life. The spot writes it to `<identity-dir>/token`; the core client reads that file on every request and the model never sees it. It is accepted by the core’s MCP endpoint only, as the caller `spot:<workspace>/<name>` with read and write on its workspace and never execute, ingest or voice. `control_spot_task` is refused to it. |
+| start | The stream starts before the system prompt is read. The spot waits for its first access token (“identity: the core accepted the spot”), then reads the `spot-instruction` cell (section 7), then opens its tools. |
 
 ## Kill switches
 
@@ -395,8 +414,8 @@ With `telemetry.enabled` (`--otel-endpoint`) the spot exports OpenTelemetry span
 | `--daily-token-ceiling` | Input plus output plus cache-write tokens per UTC day (cache reads not counted), held in memory and written through to `usage.json`, read once at start. At the ceiling no wake starts, edges are held, the loop sleeps to UTC midnight. A turn in flight can overshoot by one turn (bounded by `--max-steps`, `--turn-timeout`). |
 | context | Every wake starts empty; `status.json` shows each turn’s `contextTokens`. |
 | the core’s cap | Policy `budgets.spotTenantDailyTokens` over `budgets.spotDailyDefaultTokens`: new input plus output per workspace per UTC day. After every turn a `turn` frame goes up the trigger stream (model, input incl. cache reads and writes, cached, output, duration, failed); the core books it as usage kind `spot` (TUI usage panel) and answers with the budget: the workspace’s `spent` and `cap`, and `own`, what this spot spent as the core counted its turns, which the spot takes as the floor of its own daily counter (so a lost state directory does not give the day back). Over the cap it refuses `say_in_workspace` and `set_workspace_status`, and the supervisor pauses all wakes until the budget lifts or UTC midnight. Frames sent while the stream is down wait (the last 100 are kept). |
-| `stats` frame | State, turns and wakes by reason today, failures in a row, context size, own token counts and ceiling, why it is paused (its own ceiling or the workspace cap), its limits and choices (model, step, tool-call and token caps, wake timing, core-tools mode, gates, connector names with their tool names; never a URL, path or credential), next wake. After each turn, on a trigger-mode change and every two minutes, for the TUI’s workspace panel. Counts and labels only. |
-| `wake` frame | One line of activity when a wake ends, for the TUI’s timeline: when, the reason (`startup`, `tick`, `edge`, `human`, `promise`), the lane (`long` or `short`), the outcome (`turn`, `failed`, or a wake with no model call: `quiet`, `hold`, `ceiling`), duration, steps, tool calls, paid tokens, cache reads and output, and when the spot wakes next and why. Counts and labels only, never what was said. Dropped while the stream is down: a gap in the timeline is true, a replay of old wakes is not. |
+| `stats` frame | State, turns and wakes by reason today, failures in a row, context size, own token counts and ceiling, why it is paused (its own ceiling or the workspace cap), its limits and choices (model, step, tool-call and token caps, wake timing, core-tools mode, gates, connector names with their tool names; never a URL, path or credential), next wake, and `tasks`: every wake the spot has in hand, running or waiting for a place, each as `{key, title, lane, state, startedMs, ageMs}` (a title is 80 bytes, a key 128; the temporal engine only, empty on `local`). A snapshot replaces the last one; the workflow is asked when a wake has just ended or when the last list was not empty. After each turn, on a trigger-mode change and every two minutes, for the TUI’s workspace panel. Counts and labels only. |
+| `wake` frame | One line of activity when a wake ends, for the TUI’s timeline: when, the reason (`startup`, `tick`, `edge`, `human`, `promise`), the lane (`long` or `short`), the `key` and `title` of the wake when it is a task (the same as in `tasks`), the outcome (`turn`, `failed`, or a wake with no model call: `quiet`, `hold`, `ceiling`), duration, steps, tool calls, paid tokens, cache reads and output, and when the spot wakes next and why. Counts and labels only, never what was said. Dropped while the stream is down: a gap in the timeline is true, a replay of old wakes is not. |
 | `control` frame (core to spot) | `{"control":{"id","op","task"}}`: an operator (a person through the core, never a spot) acts on one wake the spot has in hand. `op` is `list`, `stop` (cancel: the turn ends at its next step and closes its tools; not a failure), `kill` (terminate: cut at once), `restart` (a task: stop, then start the same task again) or `drop` (a task that waits for a place). `task` is a key a list gave (128 bytes at most), empty for `list`; the spot checks it against what it has in hand and acts on that workflow only. A task that has not begun its turn is stopped, not killed. |
 | `controlResult` frame (spot to core) | `{"controlResult":{"id","ok","msg","tasks":[{"key","title","lane","state","startedMs","ageMs"}]}}`: sent once for every control, with the same `id`, within 8 s, a refusal included (an engine other than temporal, an unknown key, an operation that does not fit the state). `tasks` is what the spot has in hand afterwards, running and waiting, 100 at most; a title is 80 bytes. Titles and counts, never a goal or what a turn said. |
 | dollars | No ceiling: the spot has no price table. The spend limit on the Anthropic workspace or Google project that serves the model is the real stop. |
@@ -420,7 +439,11 @@ Logs carry what happened, never what was said.
 |---|---|
 | workload | Deployment, 1 replica, `Recreate`, read-only root, non-root, all capabilities dropped, runtime seccomp; a ServiceAccount; 100m/128Mi requested, 500m/512Mi limit. |
 | storage | A small PVC for `/state`; an emptyDir for `/tmp`. |
-| core identity | A projected token with audience `triage-core` plus the `<name>-core` Role and RoleBinding, or a Secret mounted as a file, mode 0440 with `fsGroup` (section 9). |
+| `spot.replicas` | `1` runs the spot, `0` parks it: the Deployment, the PVC, the ServiceAccount and the Secrets stay, and an upgrade keeps it parked. More than 1 is not supported (one writer on `/state`). |
+| core identity `serviceAccount` | A projected token with audience `triage-core` plus the `<name>-core` Role and RoleBinding (section 9). |
+| core identity `secret` | The Secret `core.tokenSecret` mounted as a file, mode 0440 with `fsGroup`. |
+| core identity `certificate` | No core Secret volume, no Role or RoleBinding, no projected core token, and no cloud annotation: the identity is in `/state/identity` on the PVC. `core.apiUrl` and `core.caFingerprint` (`SHA256:<64 lowercase hex>`) are required, the chart fails to render without them. `core.enrollKeySecret.name` (key `key`) is mounted at `/secrets/enroll` and passed as `--enroll-key-file`; leave it empty once the spot has joined, or leave the spent key in place. |
+| system prompt | Not in the chart: the cell `spot-instruction` must exist in the workspace’s core before the spot starts (`make prompt-cell`), or the spot exits after two minutes. |
 | `llm.auth: key` (default) | The Secret from `llm.keySecret` (anthropic) or `llm.geminiKeySecret` (gemini, at `/secrets/gemini/<key>`), as a file. |
 | `llm.auth: vertex` | Nothing mounted. `llm.vertex.project` required, `region` defaults to `global`; the binding goes in `serviceAccount.annotations`. |
 | `llm.auth: federation` | A projected token volume at `/var/run/secrets/anthropic.com` (`tokenExpirationSeconds` 600; no Secret). `llm.federation.ruleId`, `orgId` and `serviceAccountId` are required, `workspaceId` is optional. Refused with `gemini`. |
@@ -435,12 +458,12 @@ Egress only; nothing in. It allows cluster DNS, the model API, the core, the con
 |---|---|
 | `anthropic` with `key` or `federation` | The CIDRs Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`, platform.claude.com/docs/en/api/ip-addresses). |
 | `gemini` in any mode; `vertex` with either provider | The Google API ranges you name in `networkPolicy.google.cidrs` (required; for example the Private Google Access range). With `vertex` it adds the node’s metadata server for the Workload Identity token (`networkPolicy.google.metadata`, GKE’s addresses by default). |
-| core | Namespace and pod selector, or CIDR. |
+| core | `networkPolicy.core` is required whatever the identity: namespace and pod selector, or CIDR, and `ports` for the MCP endpoint and, with `core.apiUrl`, the API (the stream and the certificate join). |
 | Temporal, with `engine.type: temporal` | `networkPolicy.temporal`: namespace and pod selector, or CIDR, port 7233. Temporal Cloud has no fixed addresses: name the ranges your egress uses. |
 
 ### Lint
 
-`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, connectors, the Temporal engine (a service in the cluster, and Temporal Cloud). It checks that:
+`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, certificate identity, a parked spot (`spot.replicas: 0`), connectors, the Temporal engine (a service in the cluster, and Temporal Cloud). It checks that:
 
 - the pod has no `env`, no rule names Secrets, no ClusterRole renders, and the ServiceAccount token is not mounted;
 - nothing in the pod is loosened for a shell, and each mode mounts and opens only its own;
@@ -512,12 +535,13 @@ The spot reaches no cluster unless `--connectors-file` names a connector. `Ctrl-
 
 ## Verified and not verified
 
-Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core and one Kubernetes connector. That covers full turns with parallel tool calls, cache reads across wakes (`read=` in the turn log), the Workload Identity binding, ego spans for every wake, `read_workspace_room`, and the Helm install and rollout of the image. The Anthropic paths below have not been run against a live deployment.
+Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core and one Kubernetes connector. That covers full turns with parallel tool calls, cache reads across wakes (`read=` in the turn log), the Workload Identity binding, ego spans for every wake, `read_workspace_room`, and the Helm install and rollout of the image. Anthropic with federation also runs live: several spots, each with its own federation rule, make full turns with parallel tool calls and read the cache across steps and wakes. What follows was not seen.
 
 | Area | Not verified |
 |---|---|
-| full turn, Anthropic | Against the real API: adaptive thinking blocks round-tripping with tool results, one-hour prefix cache hits across wakes, real usage numbers. |
-| federation | The exchange from a pod with a valid rule, service account and token; how long the access token lives and whether it is reused (this decides whether `jti_reused` shows up); the SDK’s error on a rejection. The hint matches `Authentication failed`, `authentication_error`, `jti_reused`, `token exchange` and `federation` in the error text. |
+| full turn, Anthropic | Whether the one-hour lifetime of the prefix cache holds across wakes an hour apart (cache reads are seen in every turn log); the same turns with `key` auth, which no live spot uses. |
+| federation | The exchange works from a pod with a valid rule, service account and token. A rule that does not match the pod’s ServiceAccount shows as a 401 on the first model call. Not seen: how long the access token lives and whether it is reused (this decides whether `jti_reused` shows up); the SDK’s error text on a rejection. The hint matches `Authentication failed`, `authentication_error`, `jti_reused`, `token exchange` and `federation` in the error text. |
+| certificate join | First join with an enrollment key, the access token and the stream were run against live cores. The renewal at two thirds of a certificate’s life, the 1008 close and the rejoin after it were run only against a stand-in core in the tests. |
 | Vertex AI, Anthropic models | The egress ranges and the model id for Claude on a real project. |
 | `read_workspace_room` | The reply shape is read loosely (`messages` object or array; `id`, `sender\|from\|author`, `text\|body\|message`, `ts\|time`); re-check when the tool changes. |
 | heartbeat | The ADR says `system2-heartbeat-<tenant>`; the core looks only for `system2-heartbeat`, so until it reads the per-tenant id this heartbeat does not change reflection. `--heartbeat-id` sets either. |

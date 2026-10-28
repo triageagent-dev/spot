@@ -45,12 +45,14 @@ core:
   #   live in any namespace.
   # certificate: the spot joins the core the way an agent does (the core's
   #   ADR-105): it keeps a key of its own in /state/identity, asks the core for a
-  #   certificate, waits for a person to approve its fingerprint in the core,
-  #   and renews the certificate itself. No Secret and no token is given to it;
-  #   the core sends a short-lived access token over the stream. Needs apiUrl and
-  #   caFingerprint. The spot's name (spot.name) is its identity: keep it stable.
+  #   certificate on its first start with the one-time key in enrollKeySecret,
+  #   and renews the certificate itself at two thirds of its 24 hours. No core
+  #   token Secret, projected token, Role or cloud annotation; the core sends a
+  #   10-minute access token over the stream. Needs apiUrl, caFingerprint and,
+  #   for the first join, enrollKeySecret. The spot's name (spot.name) is its
+  #   identity: keep it stable. Losing /state needs a new enrollment key.
   identity: serviceAccount
-  enrollKeySecret:               # identity: certificate. The one-time key the core minted for this spot; a Secret name, mounted as a file. Used for the first join only, a spent key left here is harmless
+  enrollKeySecret:               # identity: certificate. The one-time key a workspace admin minted in the core for this spot (label = spot.name, kind spot, 7 days, one use); a Secret name, mounted as a file at /secrets/enroll. Sent only while the spot has no certificate; a spent key left here is harmless
     name: ""
     key: key
   caFingerprint: ""              # identity: certificate. SHA256:<64 lowercase hex> of the core's CA (required then)

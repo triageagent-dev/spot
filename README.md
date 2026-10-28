@@ -24,8 +24,9 @@ spot:
 core:
   mcpUrl: http://<core-mcp-service>.<core-namespace>.svc:8083/mcp
   apiUrl: http://<core-api-service>.<core-namespace>.svc:8080
-  identity: secret
-  tokenSecret: {name: my-spot-core-token}
+  identity: certificate
+  caFingerprint: SHA256:<64 lowercase hex>      # the core's CA
+  enrollKeySecret: {name: my-spot-enroll-key}   # the one-time key the core minted for my-spot
 llm:
   provider: anthropic           # or gemini
   auth: key                     # key | federation | vertex
@@ -36,7 +37,12 @@ networkPolicy:
     ports: [8083, 8080]
 ```
 
-Every credential is a file from a Secret. Egress is an allow list. Each
+The spot joins the core by certificate: a workspace admin mints a one-time
+spot key in the core (label `my-spot`), you put it in the Secret
+`my-spot-enroll-key` (key `key`), and the spot keeps its own key and certificate
+in `/state`. The core's `spot-instruction` cell must exist first (`make
+prompt-cell`). Every other credential is a file from a Secret. Egress is an
+allow list. Each
 setting is explained in [values.yaml](charts/tria-spot/values.yaml).
 
 ## Engines
