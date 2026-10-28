@@ -1,7 +1,8 @@
 name: Release
 
 # Publishes on a version tag push: the multi-arch image on ghcr.io (built with ko, no Docker), the Helm chart as an
-# OCI artifact next to it and a GitHub release with generated notes. The image tag and the chart version are the git
+# OCI artifact next to it and a GitHub release whose notes are the file docs/releases/<tag>.md; a tag without that
+# file fails before anything is published. The image tag and the chart version are the git
 # tag without its leading v, which is what the chart's default image tag (its appVersion) points at. `make push`
 # does the image part from a maintainer's machine; use one or the other for a tag, never both.
 on:
@@ -22,6 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Release notes exist
+        run: |
+          test -s "docs/releases/${VERSION}.md" || { echo "docs/releases/${VERSION}.md is missing or empty: write the release notes before tagging" >&2; exit 1; }
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -69,4 +74,4 @@ jobs:
         run: |
           prerelease=""
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$VERSION" "dist/tria-spot-${VERSION#v}.tgz" --title "$VERSION" --generate-notes --verify-tag $prerelease
+          gh release create "$VERSION" "dist/tria-spot-${VERSION#v}.tgz" --title "$VERSION" --notes-file "docs/releases/${VERSION}.md" --verify-tag $prerelease
