@@ -332,6 +332,9 @@ func TestTheTemporalEngineNeedsItsSettingsAndEncryptsOverTheNetwork(t *testing.T
 		"temporal flag with local":    {"--temporal-address", "h:7233"},
 		"cloud key, clear payloads":   {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-api-key-file", "/key"},
 		"tls, clear payloads":         {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls"},
+		"local payloads and key":      {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-local-payloads", "--temporal-payload-key-file", "/p"},
+		"local payloads and plain":    {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-local-payloads", "--temporal-plain-payloads"},
+		"local payloads with local":   {"--temporal-local-payloads"},
 		"key and plain":               {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-payload-key-file", "/p", "--temporal-plain-payloads"},
 		"certificate without its key": {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls-cert-file", "/c", "--temporal-payload-key-file", "/p"},
 	} {
@@ -342,6 +345,7 @@ func TestTheTemporalEngineNeedsItsSettingsAndEncryptsOverTheNetwork(t *testing.T
 	for name, args := range map[string][]string{
 		"a service in the cluster, no TLS": {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns"},
 		"cloud with an encryption key":     {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-api-key-file", "/key", "--temporal-payload-key-file", "/p"},
+		"cloud with payloads kept here":    {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-api-key-file", "/key", "--temporal-local-payloads"},
 		"plain payloads said out loud":     {"--engine", "temporal", "--temporal-address", "h:7233", "--temporal-namespace", "ns", "--temporal-tls", "--temporal-plain-payloads"},
 	} {
 		if err := parse(args...); err != nil {

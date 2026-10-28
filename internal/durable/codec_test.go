@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/converter"
 )
 
@@ -80,5 +82,101 @@ func TestAKeyOfTheWrongSizeIsRefused(t *testing.T) {
 	}
 	if _, _, err := dataConverter(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("a missing file was accepted")
+	}
+}
+
+func TestClaimedPayloadsLeaveNothingInThePayloadAndComeBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "payloads")
+	dc, fc, err := converters("", dir)
+	if err != nil || fc == nil {
+		t.Fatalf("converters: %v %v", err, fc)
+	}
+	type msg struct{ Text string }
+	secret := "the cluster has 12 NotReady nodes"
+	ps, err := dc.ToPayloads(msg{Text: secret}, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ps.Payloads {
+		if bytes.Contains(p.Data, []byte("NotReady")) || bytes.Contains(p.Data, []byte(secret)) {
+			t.Fatal("the payload sent to the service holds the text")
+		}
+		if string(p.Metadata["encoding"]) != encodingClaim || len(p.Data) != 64 {
+			t.Fatalf("not a reference: %v %q", p.Metadata, p.Data)
+		}
+	}
+	var got msg
+	var s string
+	if err := dc.FromPayloads(ps, &got, &s); err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != secret || s != "second" {
+		t.Fatalf("round trip: %+v %q", got, s)
+	}
+	// The same payload is stored once; the files are private to the pod.
+	if _, err := dc.ToPayloads(msg{Text: secret}, "second"); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 2 {
+		t.Fatalf("%d files, want one per distinct payload (2)", len(ents))
+	}
+	for _, e := range ents {
+		if info, _ := e.Info(); info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %v", e.Name(), info.Mode())
+		}
+	}
+}
+
+func TestAClaimThatIsGoneFailsClearly(t *testing.T) {
+	dir := t.TempDir()
+	dc, _, err := converters("", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := dc.ToPayloads("x")
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
+	var s string
+	if err := dc.FromPayloads(ps, &s); err == nil || !strings.Contains(err.Error(), "not in this pod's store") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAClaimCannotNameAFileOutsideTheStore(t *testing.T) {
+	c, err := newClaimCodec(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := &commonpb.Payload{Metadata: map[string][]byte{"encoding": []byte(encodingClaim)}, Data: []byte("../../etc/passwd")}
+	if _, err := c.Decode([]*commonpb.Payload{bad}); err == nil {
+		t.Fatal("a path was taken for a payload id")
+	}
+}
+
+func TestSweepRemovesOnlyThePayloadsNobodyReads(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := newClaimCodec(dir)
+	dc := converter.NewCodecDataConverter(converter.GetDefaultDataConverter(), c)
+	old, _ := dc.ToPayloads("old one")
+	kept, _ := dc.ToPayloads("kept one")
+	age := time.Now().Add(-30 * 24 * time.Hour)
+	for _, ps := range []*commonpb.Payloads{old, kept} {
+		_ = os.Chtimes(c.path(string(ps.Payloads[0].Data)), age, age)
+	}
+	var s string
+	if err := dc.FromPayloads(kept, &s); err != nil { // a read keeps it
+		t.Fatal(err)
+	}
+	if n := c.sweep(21 * 24 * time.Hour); n != 1 {
+		t.Fatalf("swept %d, want 1", n)
+	}
+	if _, err := os.Stat(c.path(string(kept.Payloads[0].Data))); err != nil {
+		t.Errorf("the payload that was read is gone: %v", err)
+	}
+	if _, err := os.Stat(c.path(string(old.Payloads[0].Data))); err == nil {
+		t.Error("the old payload is still there")
 	}
 }

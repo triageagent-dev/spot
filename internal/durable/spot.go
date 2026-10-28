@@ -22,6 +22,12 @@ type Carry struct {
 	Min, Max time.Duration
 }
 
+// maxRunAge is how long one run of the spot's workflow lasts before it goes on
+// as a new run when nothing is open. A run is replayed from its history after a
+// restart, and that reads every payload the run kept: the payloads of a run
+// must be younger than the sweep (see Options.PayloadTTL).
+const maxRunAge = 7 * 24 * time.Hour
+
 // queued is a wake that waits for its lane: what came in while the lane was busy
 // is one wake when the lane is free.
 type queued struct {
@@ -70,7 +76,7 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 			}
 			s.onSignal(ctx, w)
 		}
-		if workflow.GetInfo(ctx).GetContinueAsNewSuggested() && s.st.Open == 0 && len(s.waiting) == 0 {
+		if (workflow.GetInfo(ctx).GetContinueAsNewSuggested() || workflow.Now(ctx).Sub(workflow.GetInfo(ctx).WorkflowStartTime) > maxRunAge) && s.st.Open == 0 && len(s.waiting) == 0 {
 			c := s.c
 			c.Wakes = s.st.Wakes
 			return workflow.NewContinueAsNewError(ctx, SpotWorkflow, name, c)

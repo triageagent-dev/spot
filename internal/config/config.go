@@ -112,6 +112,7 @@ type Config struct {
 	TemporalTLSKeyFile     string
 	TemporalPayloadKeyFile string // encrypts every payload before it leaves the process
 	TemporalPlainPayloads  bool   // accept payloads in the clear to a service over the network
+	TemporalLocalPayloads  bool   // keep every payload in the state directory; the service gets a reference
 	TemporalTaskQueue      string // default tria-spot-<name>
 	// NotesOnly gives the model exactly one tool, search_memory over its own
 	// notes: no other core tool, no connector, no ego tool, no schedule_next or
@@ -222,6 +223,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.TemporalTLSCertFile, "temporal-tls-cert-file", "", "temporal: client certificate for mutual TLS (with --temporal-tls-key-file)")
 	fs.StringVar(&c.TemporalTLSKeyFile, "temporal-tls-key-file", "", "temporal: private key of the client certificate")
 	fs.StringVar(&c.TemporalPayloadKeyFile, "temporal-payload-key-file", "", "temporal: file holding a 32-byte key (64 hex characters or base64) that encrypts every payload (prompts, model text, tool results) before it leaves the process; the service holds ciphertext only")
+	fs.BoolVar(&c.TemporalLocalPayloads, "temporal-local-payloads", false, "temporal: keep every payload (prompts, model text, tool results) in the state directory and send the service only a reference to it; no content, not even encrypted, leaves the pod. The state directory must survive restarts; excludes the key file and --temporal-plain-payloads")
 	fs.BoolVar(&c.TemporalPlainPayloads, "temporal-plain-payloads", false, "temporal: send payloads in the clear to a service reached over TLS or with an API key; without the flag that needs --temporal-payload-key-file")
 	fs.StringVar(&c.TemporalTaskQueue, "temporal-task-queue", "", "temporal: the task queue of this spot; default tria-spot-<name>")
 	fs.BoolVar(&c.IssueWakes, "issue-wakes", true, "a change of the core's issues wakes the spot early; false = it waits for the next scheduled wake, and only a person's message wakes it early")
@@ -471,8 +473,8 @@ func (c Config) validateEngine() []error {
 				errs = append(errs, fmt.Errorf("--%s only applies with --engine=temporal", k))
 			}
 		}
-		if c.TemporalTLS || c.TemporalPlainPayloads {
-			errs = append(errs, errors.New("--temporal-tls and --temporal-plain-payloads only apply with --engine=temporal"))
+		if c.TemporalTLS || c.TemporalPlainPayloads || c.TemporalLocalPayloads {
+			errs = append(errs, errors.New("--temporal-tls, --temporal-plain-payloads and --temporal-local-payloads only apply with --engine=temporal"))
 		}
 	case EngineTemporal:
 		if c.TemporalAddress == "" {
@@ -487,9 +489,12 @@ func (c Config) validateEngine() []error {
 		if c.TemporalPayloadKeyFile != "" && c.TemporalPlainPayloads {
 			errs = append(errs, errors.New("--temporal-payload-key-file and --temporal-plain-payloads exclude each other"))
 		}
+		if c.TemporalLocalPayloads && (c.TemporalPayloadKeyFile != "" || c.TemporalPlainPayloads) {
+			errs = append(errs, errors.New("--temporal-local-payloads excludes --temporal-payload-key-file and --temporal-plain-payloads"))
+		}
 		network := c.TemporalAPIKeyFile != "" || c.TemporalTLS || c.TemporalTLSCertFile != ""
-		if network && c.TemporalPayloadKeyFile == "" && !c.TemporalPlainPayloads {
-			errs = append(errs, errors.New("--engine=temporal over TLS or with an API key needs --temporal-payload-key-file: without it the wake prompts, the model's words and the tool results reach the service in the clear (--temporal-plain-payloads accepts that)"))
+		if network && c.TemporalPayloadKeyFile == "" && !c.TemporalPlainPayloads && !c.TemporalLocalPayloads {
+			errs = append(errs, errors.New("--engine=temporal over TLS or with an API key needs --temporal-payload-key-file or --temporal-local-payloads: without them the wake prompts, the model's words and the tool results reach the service in the clear (--temporal-plain-payloads accepts that)"))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("--engine %q is not one of local, temporal", c.Engine))

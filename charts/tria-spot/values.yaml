@@ -119,6 +119,7 @@ engine:
       name: ""
       key: key
     plainPayloads: false       # true = send payloads in the clear to a service over TLS or with an API key (not recommended)
+    localPayloads: false       # true = keep every payload in the state directory and send the service a reference only; nothing readable or encrypted leaves the pod. Needs a state volume that survives restarts; excludes payloadKeySecret and plainPayloads
 
 # Connectors: more MCP servers beside the core. Each is a service that holds
 # its own credentials and limits (a Kubernetes tool server for another

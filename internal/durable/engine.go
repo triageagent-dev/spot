@@ -32,10 +32,18 @@ type Options struct {
 	// PayloadKeyFile holds the key that encrypts every payload before it leaves
 	// the process; empty = payloads are sent as they are.
 	PayloadKeyFile string
+	// PayloadDir keeps every payload in this directory and sends the service
+	// only a reference to it (no content, not even encrypted, leaves the
+	// process); it wins over PayloadKeyFile. A payload nobody read for
+	// PayloadTTL is swept.
+	PayloadDir string
 	// TaskQueue and WorkflowID default to names made of the spot's name.
 	TaskQueue  string
 	WorkflowID string
 	Name       string
+	// PayloadTTL is how long a kept payload lives unread; zero = 21 days, more
+	// than the longest run of the spot's workflow (see maxRunAge).
+	PayloadTTL time.Duration
 	// StopTimeout is how long a stopping worker lets its running activities
 	// finish; zero = 30 seconds.
 	StopTimeout time.Duration
@@ -49,6 +57,9 @@ func (o *Options) defaults() {
 	if o.WorkflowID == "" {
 		o.WorkflowID = "spot-" + o.Name
 	}
+	if o.PayloadTTL == 0 {
+		o.PayloadTTL = 21 * 24 * time.Hour
+	}
 	if o.StopTimeout == 0 {
 		o.StopTimeout = 30 * time.Second
 	}
@@ -60,7 +71,7 @@ func (o *Options) defaults() {
 // Dial connects to the Temporal service.
 func Dial(o Options) (client.Client, error) {
 	o.defaults()
-	dc, fc, err := dataConverter(o.PayloadKeyFile)
+	dc, fc, err := converters(o.PayloadKeyFile, o.PayloadDir)
 	if err != nil {
 		return nil, err
 	}
@@ -103,12 +114,13 @@ type Engine struct {
 	w    worker.Worker
 	acts *Acts
 	own  bool // Close closes the client
+	done chan struct{}
 }
 
 // New builds the worker on a connected client. Start runs it.
 func New(c client.Client, o Options, d Deps) *Engine {
 	o.defaults()
-	e := &Engine{o: o, c: c, acts: NewActs(d)}
+	e := &Engine{o: o, c: c, acts: NewActs(d), done: make(chan struct{})}
 	e.w = worker.New(c, o.TaskQueue, worker.Options{
 		WorkerStopTimeout: o.StopTimeout,
 		// After a crash the workflow's next task waits this long on the dead
@@ -134,11 +146,38 @@ func Open(o Options, d Deps) (*Engine, error) {
 }
 
 // Start starts the worker.
-func (e *Engine) Start() error { return e.w.Start() }
+func (e *Engine) Start() error {
+	if err := e.w.Start(); err != nil {
+		return err
+	}
+	if e.o.PayloadDir != "" {
+		go e.sweepPayloads()
+	}
+	return nil
+}
+
+// sweepPayloads removes the kept payloads nobody has read for the TTL, now and
+// every hour.
+func (e *Engine) sweepPayloads() {
+	c := &claimCodec{dir: e.o.PayloadDir}
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if n := c.sweep(e.o.PayloadTTL); n > 0 {
+			e.o.Logger.Info("payloads swept", "removed", n, "olderThan", e.o.PayloadTTL.String())
+		}
+		select {
+		case <-e.done:
+			return
+		case <-t.C:
+		}
+	}
+}
 
 // Close stops the worker (the turns it is running are resumed by the next
 // worker) and closes what the engine opened.
 func (e *Engine) Close() {
+	close(e.done)
 	e.w.Stop()
 	e.acts.shutdown()
 	if e.own {

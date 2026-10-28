@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/triageagent-dev/spot/internal/config"
@@ -95,6 +97,7 @@ type bridgeRig struct {
 	cancel context.CancelFunc
 	done   chan error
 	logs   safeBuf
+	name   string
 }
 
 func newBridgeRig(t *testing.T, mut func(*config.Config)) *bridgeRig {
@@ -104,6 +107,13 @@ func newBridgeRig(t *testing.T, mut func(*config.Config)) *bridgeRig {
 
 // newBridgeRigOn is newBridgeRig with the core's push channel, when trig is set.
 func newBridgeRigOn(t *testing.T, mut func(*config.Config), trig Trigger) *bridgeRig {
+	t.Helper()
+	return newBridgeRigIn(t, mut, trig, "")
+}
+
+// newBridgeRigIn is newBridgeRigOn with the engine keeping its payloads in
+// payloadDir (and sending references), when it is set.
+func newBridgeRigIn(t *testing.T, mut func(*config.Config), trig Trigger, payloadDir string) *bridgeRig {
 	t.Helper()
 	h := newHarness(t, mut)
 	mcpSrv := server.NewMCPServer("example", "1")
@@ -132,7 +142,15 @@ func newBridgeRigOn(t *testing.T, mut func(*config.Config), trig Trigger) *bridg
 			CallTimeout: 10 * time.Second,
 		})
 	}
-	eng := durable.New(devServer(t).Client(), durable.Options{Name: name, TaskQueue: "tq-" + name, WorkflowID: "spot-" + name, StopTimeout: 100 * time.Millisecond},
+	r.name = name
+	cl := devServer(t).Client()
+	if payloadDir != "" {
+		var err error
+		cl, err = durable.Dial(durable.Options{Address: devServer(t).FrontendHostPort(), Namespace: "default", PayloadDir: payloadDir, Name: name})
+		must(t, err)
+		t.Cleanup(cl.Close)
+	}
+	eng := durable.New(cl, durable.Options{PayloadDir: payloadDir, Name: name, TaskQueue: "tq-" + name, WorkflowID: "spot-" + name, StopTimeout: 100 * time.Millisecond},
 		durable.Deps{LLM: r.model, NewTools: newTools, System: []string{"system"}, Model: "fake-model", Host: r.sup.Host()})
 	must(t, eng.Start())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -325,5 +343,42 @@ func TestTheBridgeReportsEachWakeToTheCore(t *testing.T) {
 	r.waitFor("the turn line", func() bool { return len(trig.wakeLines()) >= 2 })
 	if w := trig.wakeLines()[1]; w.Outcome != "turn" || w.Lane != "long" || w.Steps == 0 || w.Next == 0 {
 		t.Fatalf("turn line: %+v", w)
+	}
+}
+
+// With the engine keeping its payloads, the workflow's history holds no content:
+// not the wake prompt, not the model's summary, not as ciphertext either.
+func TestTheHistoryHoldsNoContentWhenPayloadsAreKept(t *testing.T) {
+	dir := t.TempDir()
+	r := newBridgeRigIn(t, func(c *config.Config) { c.SkipQuietWakes = false }, nil, dir)
+	r.model.fn = func(string, int) (llm.Response, error) { return bfinish("the secret summary of this wake", "2h"), nil }
+	r.idleWithTurns(1)
+
+	// The default client has no codec: it reads the history as the service holds it.
+	raw := devServer(t).Client()
+	var all []byte
+	for _, id := range []string{"spot-" + r.name, r.name + "-wake-1"} {
+		it := raw.GetWorkflowHistory(context.Background(), id, "", false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		for it.HasNext() {
+			ev, err := it.Next()
+			must(t, err)
+			b, err := ev.Marshal()
+			must(t, err)
+			all = append(all, b...)
+		}
+	}
+	if len(all) == 0 {
+		t.Fatal("no history was read")
+	}
+	for _, leak := range []string{"Wake reason", "the secret summary", "schedule_next", "search_memory"} {
+		if bytes.Contains(all, []byte(leak)) {
+			t.Errorf("the history holds %q", leak)
+		}
+	}
+	if !bytes.Contains(all, []byte("binary/claim")) {
+		t.Error("the history holds no reference")
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) == 0 {
+		t.Error("nothing was kept in the payload directory")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -160,7 +161,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		eng, err := durable.Open(durable.Options{
 			Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, APIKeyFile: cfg.TemporalAPIKeyFile,
 			TLS: cfg.TemporalTLS, TLSCertFile: cfg.TemporalTLSCertFile, TLSKeyFile: cfg.TemporalTLSKeyFile,
-			PayloadKeyFile: cfg.TemporalPayloadKeyFile, TaskQueue: cfg.TemporalTaskQueue, Name: cfg.Name, Logger: log,
+			PayloadKeyFile: cfg.TemporalPayloadKeyFile, PayloadDir: payloadDir(cfg), TaskQueue: cfg.TemporalTaskQueue, Name: cfg.Name, Logger: log,
 		}, durable.Deps{
 			LLM: model, NewTools: newRegistry, Telemetry: tel, System: system, Model: cfg.Model, Effort: cfg.Effort,
 			Host: sup.Host(), Logger: log, LogContent: cfg.LogContent,
@@ -175,7 +176,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			return 1
 		}
 		log.Info("engine: temporal", "address", cfg.TemporalAddress, "namespace", cfg.TemporalNamespace, "workflow", eng.WorkflowID(),
-			"encrypted", cfg.TemporalPayloadKeyFile != "")
+			"encrypted", cfg.TemporalPayloadKeyFile != "" && !cfg.TemporalLocalPayloads, "payloadsKeptHere", cfg.TemporalLocalPayloads)
 		// The supervisor keeps serving the workflow's calls (the notes, the books)
 		// until the worker has drained its activities: a turn that ends during the
 		// shutdown is still booked. The turns it cannot finish are resumed by the
@@ -338,4 +339,13 @@ func loadInstruction(ctx context.Context, core *corecli.Client, id string, log *
 		case <-time.After(instructionRetry):
 		}
 	}
+}
+
+// payloadDir is where the temporal engine keeps the payloads it does not send,
+// or empty when it sends them (encrypted or not).
+func payloadDir(cfg config.Config) string {
+	if !cfg.TemporalLocalPayloads {
+		return ""
+	}
+	return filepath.Join(cfg.StateDir, "temporal-payloads")
 }
