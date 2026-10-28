@@ -67,6 +67,10 @@ type Wake struct {
 	Output     int64  `json:"output,omitempty"`
 	Next       int64  `json:"next,omitempty"`
 	NextSource string `json:"nextSource,omitempty"`
+	// Key names the wake the way a task list does, so a line of activity and a
+	// row of Stats.Tasks are the same wake; Title is a task's (80 bytes at most).
+	Key   string `json:"key,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 // Control is the core asking the spot to act on one of its wakes (a task):
@@ -98,11 +102,17 @@ type ControlResult struct {
 	Tasks []TaskLine `json:"tasks,omitempty"`
 }
 
+// The longest key and title a task line or an activity line carries.
+const (
+	MaxTaskKey = 128
+	MaxTitle   = 80
+)
+
 // Limits of a Control and of its answer.
 const (
-	maxTaskKey   = 128
+	maxTaskKey   = MaxTaskKey
 	maxTaskLines = 100
-	maxTitle     = 80
+	maxTitle     = MaxTitle
 	// ControlTimeout is how long a Control may take; the core gives up on its
 	// own after 10 s.
 	ControlTimeout = 8 * time.Second
@@ -135,6 +145,10 @@ type Stats struct {
 	Pause string `json:"pause,omitempty"`
 	// Config is how the spot is set up, so the core knows its limits.
 	Config *Config `json:"config,omitempty"`
+	// Tasks is every wake the spot has in hand, running or waiting for a place,
+	// at the time of the snapshot; empty when it has none. Each snapshot
+	// replaces the last.
+	Tasks []TaskLine `json:"tasks,omitempty"`
 }
 
 // Config is the spot's limits and choices: no credential, URL or path.

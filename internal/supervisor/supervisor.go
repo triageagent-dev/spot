@@ -111,8 +111,12 @@ type Supervisor struct {
 	bctx     context.Context
 	bseq     int64
 	inflight map[int64]*pending
-	recs     map[string]*wakeRec
-	open     int
+	// lastTasks is the work the stats last told the core of; ending is the wake
+	// whose end is being announced, which the work leaves out.
+	lastTasks []triggers.TaskLine
+	ending    string
+	recs      map[string]*wakeRec
+	open      int
 
 	// What the core is told about how the spot is doing (counted per UTC day).
 	statsDay string
@@ -590,14 +594,23 @@ func (s *Supervisor) idleWake(reason, why, source string) {
 const maxLabel = 24
 
 // clipLabel cuts a label to maxLabel bytes at a character boundary.
-func clipLabel(s string) string {
-	if len(s) <= maxLabel {
+func clipLabel(s string) string { return clipBytes(s, maxLabel) }
+
+// clipBytes cuts s to n bytes at a character boundary.
+func clipBytes(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	return strings.ToValidUTF8(s[:maxLabel], "")
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 func (s *Supervisor) reportWake(reason, lane, outcome string, res agent.Result, next time.Time, nextSource string) {
+	s.reportWakeAs("", "", reason, lane, outcome, res, next, nextSource)
+}
+
+// reportWakeAs is reportWake for a wake the workflow named: key is the one its
+// task list gives it, and title is a task's own.
+func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res agent.Result, next time.Time, nextSource string) {
 	if s.trig == nil {
 		return
 	}
@@ -605,6 +618,7 @@ func (s *Supervisor) reportWake(reason, lane, outcome string, res agent.Result, 
 		TS: s.now().UnixMilli(), Reason: clipLabel(reason), Lane: lane, Outcome: outcome,
 		DurationMs: res.Duration.Milliseconds(), Steps: int64(res.Steps), ToolCalls: int64(res.ToolCalls),
 		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
+		Key: clipBytes(key, triggers.MaxTaskKey), Title: clipBytes(title, triggers.MaxTitle),
 	}
 	if !next.IsZero() {
 		w.Next = next.UnixMilli()
@@ -1695,6 +1709,7 @@ func (s *Supervisor) reportStats(force bool) {
 		st.Wakes[k] = v
 	}
 	st.Config = s.reportedConfig()
+	st.Tasks = s.taskLines(force)
 	if s.status.State == "paused-ceiling" {
 		st.Pause = "workspace-cap"
 		if s.led.CeilingReached(s.cfg.DailyTokenCeil) {

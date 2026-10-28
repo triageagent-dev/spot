@@ -356,7 +356,11 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 		if long {
 			next = in.At
 		}
-		s.reportWake(label, in.Lane, turnOutcome(failed), res, next, in.Source)
+		title := ""
+		if task && rec != nil {
+			title = rec.title
+		}
+		s.reportWakeAs(in.Key, title, label, in.Lane, turnOutcome(failed), res, next, in.Source)
 	}
 	if long {
 		s.nextTick, s.scheduledWhy = in.At, in.Why
@@ -397,7 +401,58 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 	if s.open == 0 {
 		s.setState("idle")
 	}
+	// The workflow still lists this wake until the call returns: the core is told
+	// the work without it.
+	s.ending = in.Key
 	s.reportStats(true)
+	s.ending = ""
+}
+
+// workState is what the engine tells of the work the workflow has in hand.
+type workState interface {
+	State(context.Context) (durable.SpotState, error)
+}
+
+// taskQueryWait is how long a snapshot of the work waits for the workflow.
+const taskQueryWait = 2 * time.Second
+
+// TaskLines turns the workflow's work into the lines the core is told and the
+// control answers with. now dates their ages.
+func TaskLines(work []durable.TaskInfo, now time.Time) []triggers.TaskLine {
+	var out []triggers.TaskLine
+	for _, w := range work {
+		l := triggers.TaskLine{Key: w.Key, Title: w.Title, Lane: w.Lane, State: w.State}
+		if !w.Started.IsZero() {
+			l.StartedMs, l.AgeMs = w.Started.UnixMilli(), now.Sub(w.Started).Milliseconds()
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// taskLines is the work the spot has in hand, for the stats. The workflow is
+// asked when a wake has just ended (force) or when the last answer had work in
+// it, so a spot with nothing to do costs no query; an answer that does not come
+// leaves the last one standing.
+func (s *Supervisor) taskLines(force bool) []triggers.TaskLine {
+	q, ok := s.sink.(workState)
+	if !ok || s.bctx == nil || (!force && len(s.lastTasks) == 0) {
+		return s.lastTasks
+	}
+	ctx, cancel := context.WithTimeout(s.bctx, taskQueryWait)
+	defer cancel()
+	st, err := q.State(ctx)
+	if err != nil {
+		return s.lastTasks
+	}
+	work := make([]durable.TaskInfo, 0, len(st.Work))
+	for _, w := range st.Work {
+		if w.Key != s.ending {
+			work = append(work, w)
+		}
+	}
+	s.lastTasks = TaskLines(work, s.now())
+	return s.lastTasks
 }
 
 // book counts what a turn cost: in the ledger and, for the core, as the spot's

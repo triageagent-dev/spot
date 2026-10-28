@@ -424,6 +424,9 @@ func TestTheBridgeRunsATaskAndKeepsItsResultInTheDigest(t *testing.T) {
 	if line.Reason != "task: Check pods" || line.Outcome != "turn" || line.Steps == 0 || line.Next != 0 {
 		t.Fatalf("task line: %+v", line)
 	}
+	if line.Title != "Check pods" || line.Key == "" {
+		t.Fatalf("task line names no task: %+v", line)
+	}
 	r.waitFor("the digest", func() bool {
 		for _, d := range r.sup.led.LoadDigest() {
 			if d.Reason == "task Check pods" && d.Summary == "3 pods, all ready" {
@@ -434,5 +437,55 @@ func TestTheBridgeRunsATaskAndKeepsItsResultInTheDigest(t *testing.T) {
 	})
 	if n := len(r.model.turns()); n != 2 {
 		t.Fatalf("turns: %d", n)
+	}
+}
+
+// The core is told the work in hand with the stats: a task that runs is in the
+// snapshot under the key its activity line will carry, and the snapshot after
+// it ends does not list it.
+func TestTheBridgeTellsTheCoreItsTasksInTheStats(t *testing.T) {
+	trig := newFakeTrigger(true)
+	r := newBridgeRigOn(t, func(c *config.Config) { c.MaxTasks = 2 }, trig)
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	r.model.fn = func(first string, n int) (llm.Response, error) {
+		switch {
+		case strings.Contains(first, "Wake reason: task"):
+			<-release
+			return llm.ToolUse(llm.Usage{}, llm.Call{Name: "finish", Input: `{"summary":"done"}`}).Response, nil
+		case n == 0:
+			return llm.ToolUse(llm.Usage{},
+				llm.Call{Name: "start_task", Input: `{"title":"Check pods","goal":"list the pods"}`},
+				llm.Call{Name: "schedule_next", Input: `{"after":"2h","why":"look again"}`},
+				llm.Call{Name: "finish", Input: `{"summary":"started a task"}`},
+			).Response, nil
+		}
+		return bfinish("done", "2h"), nil
+	}
+	tasks := func() []triggers.TaskLine {
+		trig.mu.Lock()
+		defer trig.mu.Unlock()
+		if len(trig.stats) == 0 {
+			return nil
+		}
+		return trig.stats[len(trig.stats)-1].Tasks
+	}
+	var key string
+	r.waitFor("the running task in the stats", func() bool {
+		for _, l := range tasks() {
+			if l.Title == "Check pods" && l.Lane == "task" && l.State == "running" && l.StartedMs > 0 {
+				key = l.Key
+				return true
+			}
+		}
+		return false
+	})
+	once.Do(func() { close(release) })
+	r.waitFor("the stats without the task", func() bool { return len(tasks()) == 0 })
+	for _, w := range trig.wakeLines() {
+		if w.Lane == "task" && w.Key != key {
+			t.Fatalf("the activity line names %q, the task list %q", w.Key, key)
+		}
 	}
 }
