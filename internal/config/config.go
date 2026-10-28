@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +31,15 @@ type Config struct {
 	// supervisor polls every PollInterval.
 	CoreAPIURL    string
 	CoreTokenFile string
+	// CoreCAFingerprint turns on the certificate identity (the core's ADR-105):
+	// the spot joins the core with a key of its own, the core's approval and a
+	// certificate, and no bearer token is given to it. The value is the SHA-256
+	// fingerprint of the core's CA ("SHA256:<hex>"), the trust anchor. The files
+	// of the identity are in IdentityDir, and the short-lived token the core
+	// sends over the stream is written to IdentityDir/token, which becomes
+	// CoreTokenFile.
+	CoreCAFingerprint string
+	IdentityDir       string
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
@@ -180,7 +190,9 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.ChatName, "chat-name", "", "the name the messenger shows for the spot, when it differs from --name (the core names a spot after its workspace's label); the spot answers to both; default --name")
 	fs.StringVar(&c.CoreMCPURL, "core-mcp-url", "", "streamable-HTTP URL of the core's /mcp (required)")
 	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
-	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required)")
+	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required, unless --core-ca-fingerprint is set)")
+	fs.StringVar(&c.CoreCAFingerprint, "core-ca-fingerprint", "", "the SHA-256 fingerprint of the core's CA (SHA256:<hex>): the spot then joins the core by certificate, and needs --core-api-url; no --core-token-file")
+	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
 	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only) or vertex")
@@ -193,7 +205,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.AnthropicWorkspaceID, "anthropic-workspace-id", "", "federation: workspace id (wrkspc_...); optional when the rule spans one workspace")
 	fs.StringVar(&c.VertexProject, "vertex-project", "", "vertex: the Google Cloud project that serves the model (required with --llm-auth=vertex)")
 	fs.StringVar(&c.VertexRegion, "vertex-region", "global", "vertex: the region, or global (the Vertex AI location, for either provider)")
-	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "directory for the supervisor's own files: token usage, room cursors, status; losing it is harmless")
+	fs.StringVar(&c.StateDir, "state-dir", DefaultStateDir, "directory for the supervisor's own files: token usage, room cursors, status, and with --core-ca-fingerprint the identity (losing that means the core must approve the spot again)")
 	fs.StringVar(&c.Model, "model", "", "the model id (on Vertex AI too, with no prefix); default claude-opus-5-5 for anthropic, gemini-3-flash-preview for gemini")
 	fs.StringVar(&c.Effort, "effort", DefaultEffort, "how much effort the model puts into a step: low, medium, high, xhigh or max")
 	fs.DurationVar(&c.MinWake, "min-wake", 2*time.Minute, "floor for the agent's own wake-up schedule")
@@ -259,6 +271,33 @@ func Parse(args []string, out io.Writer) (Config, error) {
 
 // otelLabel is what ego accepts as a tenant label and what an attribute name
 // may be made of.
+var (
+	caFingerprint = regexp.MustCompile(`^SHA256:[0-9a-f]{64}$`)
+	// spotName is the name a certificate can carry: lowercase DNS characters.
+	spotName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+)
+
+// validateCertificateIdentity checks the settings of the certificate identity.
+func (c Config) validateCertificateIdentity() []error {
+	var errs []error
+	if !caFingerprint.MatchString(c.CoreCAFingerprint) {
+		errs = append(errs, errors.New("--core-ca-fingerprint must look like SHA256:<64 lowercase hex characters>"))
+	}
+	if c.CoreTokenFile != "" {
+		errs = append(errs, errors.New("--core-token-file cannot be set with --core-ca-fingerprint: the token file is the identity's own"))
+	}
+	if c.CoreAPIURL == "" {
+		errs = append(errs, errors.New("--core-api-url is required with --core-ca-fingerprint: the spot joins over the core's websocket"))
+	}
+	if !spotName.MatchString(c.Name) {
+		errs = append(errs, fmt.Errorf("the spot name %q cannot be in a certificate: lowercase letters, digits and dashes, at most 40", c.Name))
+	}
+	return errs
+}
+
+// CertificateIdentity reports whether the spot joins the core by certificate.
+func (c Config) CertificateIdentity() bool { return c.CoreCAFingerprint != "" }
+
 var otelLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func (c *Config) applyDefaults() {
@@ -312,7 +351,15 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))
 	}
 	req(c.CoreMCPURL, "core-mcp-url")
-	req(c.CoreTokenFile, "core-token-file")
+	if c.CoreCAFingerprint != "" {
+		errs = append(errs, c.validateCertificateIdentity()...)
+		if c.IdentityDir == "" {
+			c.IdentityDir = filepath.Join(c.StateDir, "identity")
+		}
+		c.CoreTokenFile = filepath.Join(c.IdentityDir, "token")
+	} else {
+		req(c.CoreTokenFile, "core-token-file")
+	}
 	federation := map[string]string{
 		"anthropic-identity-token-file": c.IdentityTokenFile, "anthropic-federation-rule-id": c.FederationRuleID,
 		"anthropic-org-id": c.AnthropicOrgID, "anthropic-service-account-id": c.AnthropicServiceAcctID,

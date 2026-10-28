@@ -10,6 +10,10 @@
 {{- $fed := $llm.federation }}
 {{- $identity := include "tria-spot.coreIdentity" . }}
 {{- if and (eq $identity "serviceAccount") (lt (int64 .Values.core.tokenExpirationSeconds) 600) }}{{ fail "core.tokenExpirationSeconds must be at least 600" }}{{ end }}
+{{- if eq $identity "certificate" }}
+{{- if not .Values.core.apiUrl }}{{ fail "core.apiUrl is required when core.identity is certificate: the spot joins over the core's websocket" }}{{ end }}
+{{- if not (regexMatch "^SHA256:[0-9a-f]{64}$" (default "" .Values.core.caFingerprint)) }}{{ fail "core.caFingerprint (SHA256:<64 lowercase hex>) is required when core.identity is certificate" }}{{ end }}
+{{- end }}
 {{- /* The engine's values are read with dig: a release upgraded with --reuse-values has none of the keys the chart added since. */}}
 {{- $engine := dig "engine" "type" "local" .Values.AsMap }}
 {{- if not (has $engine (list "local" "temporal")) }}{{ fail "engine.type must be local or temporal" }}{{ end }}
@@ -72,7 +76,11 @@ spec:
             {{- if .Values.core.apiUrl }}
             - --core-api-url={{ .Values.core.apiUrl }}
             {{- end }}
+            {{- if eq $identity "certificate" }}
+            - --core-ca-fingerprint={{ .Values.core.caFingerprint }}
+            {{- else }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
+            {{- end }}
             - --llm-provider={{ $provider }}
             - --llm-auth={{ $auth }}
             {{- if and (eq $auth "key") (eq $provider "gemini") }}
@@ -197,9 +205,11 @@ spec:
               mountPath: /state
             - name: tmp
               mountPath: /tmp
+            {{- if ne $identity "certificate" }}
             - name: core-token
               mountPath: /secrets/core
               readOnly: true
+            {{- end }}
             {{- if .Values.connectors }}
             - name: connectors
               mountPath: /etc/tria-spot/connectors
@@ -251,7 +261,9 @@ spec:
             secretName: {{ .Values.telemetry.tokenSecret.name }}
             defaultMode: 0440
         {{- end }}
-        {{- if eq $identity "secret" }}
+        {{- if eq $identity "certificate" }}
+        {{- /* No volume for the core: the spot's key, certificate and access token live in /state/identity. */}}
+        {{- else if eq $identity "secret" }}
         - name: core-token
           secret:
             secretName: {{ required "core.tokenSecret.name is required when core.identity is secret" .Values.core.tokenSecret.name }}

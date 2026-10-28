@@ -1,0 +1,23 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# The certificate identity: no core Secret, no projected token.
+spot:
+  enabled: true
+  tenant: example
+core:
+  identity: certificate
+  mcpUrl: https://core.example-core.svc/mcp
+  apiUrl: http://core.example-core.svc:8080
+  caFingerprint: "SHA256:0000000000000000000000000000000000000000000000000000000000000000"
+llm:
+  auth: key
+  keySecret:
+    name: example-spot-llm-key
+    key: api-key
+networkPolicy:
+  core:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: example-core
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: core

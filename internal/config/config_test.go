@@ -356,3 +356,35 @@ func TestTheTemporalEngineNeedsItsSettingsAndEncryptsOverTheNetwork(t *testing.T
 		}
 	}
 }
+
+var certArgs = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
+	"--core-api-url", "http://core.invalid:8080", "--anthropic-key-file", "/s/key",
+	"--core-ca-fingerprint", "SHA256:" + strings.Repeat("ab", 32)}
+
+func TestCertificateIdentityNeedsNoTokenFile(t *testing.T) {
+	c, err := Parse(certArgs, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.CertificateIdentity() || c.IdentityDir != "/state/identity" || c.CoreTokenFile != "/state/identity/token" {
+		t.Fatalf("identity: %+v", c)
+	}
+	c, err = Parse(with(certArgs, "--state-dir", "/data", "--identity-dir", "/id"), io.Discard)
+	if err != nil || c.IdentityDir != "/id" || c.CoreTokenFile != "/id/token" {
+		t.Fatalf("identity dir: %+v %v", c, err)
+	}
+}
+
+func TestCertificateIdentityRefusesWhatDoesNotFit(t *testing.T) {
+	for name, args := range map[string][]string{
+		"a bad fingerprint":    with(certArgs, "--core-ca-fingerprint", "SHA256:nothex"),
+		"a token file with it": with(certArgs, "--core-token-file", "/s/token"),
+		"no core API URL":      with(certArgs, "--core-api-url", ""),
+		"a name a cert can't":  with(certArgs, "--name", "Example_Spot"),
+		"a name over 40 chars": with(certArgs, "--name", strings.Repeat("a", 41)),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}

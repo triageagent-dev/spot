@@ -43,7 +43,14 @@ core:
   # secret: a static bearer token from a Secret (core.tokenSecret), a machine
   #   identity with r and w on one tenant and no x, i, v: the core's ADR-051. The spot can
   #   live in any namespace.
+  # certificate: the spot joins the core the way an agent does (the core's
+  #   ADR-105): it keeps a key of its own in /state/identity, asks the core for a
+  #   certificate, waits for a person to approve its fingerprint in the core,
+  #   and renews the certificate itself. No Secret and no token is given to it;
+  #   the core sends a short-lived access token over the stream. Needs apiUrl and
+  #   caFingerprint. The spot's name (spot.name) is its identity: keep it stable.
   identity: serviceAccount
+  caFingerprint: ""              # identity: certificate. SHA256:<64 lowercase hex> of the core's CA (required then)
   audience: triage-core          # identity: serviceAccount. The audience the core checks
   tokenExpirationSeconds: 3600   # identity: serviceAccount. The kubelet rotates the token at 80% of this; minimum 600
   rbac:

@@ -37,8 +37,8 @@ app.kubernetes.io/instance: {{ include "tria-spot.name" . }}
 {{- end -}}
 
 {{- define "tria-spot.coreIdentity" -}}
-{{- if not (has .Values.core.identity (list "serviceAccount" "secret")) -}}
-{{- fail "core.identity must be serviceAccount or secret" -}}
+{{- if not (has .Values.core.identity (list "serviceAccount" "secret" "certificate")) -}}
+{{- fail "core.identity must be serviceAccount, secret or certificate" -}}
 {{- end -}}
 {{- .Values.core.identity -}}
 {{- end -}}

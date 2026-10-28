@@ -217,6 +217,16 @@ type Client struct {
 
 	cmu     sync.Mutex
 	control ControlFunc
+
+	// cert is set when the spot joins by certificate (NewCert): the stream is
+	// opened with the join handshake and the token comes over it.
+	cert      *Cert
+	ready     chan struct{}
+	readyOnce sync.Once
+	pendingN  int
+	// noRenewUntil is set after a failed renewal, so the next connection opens
+	// the stream with the certificate it has.
+	noRenewUntil time.Time
 }
 
 // New builds a client for a core API base URL (http:// or https://) and a
@@ -400,6 +410,10 @@ type frame struct {
 	Budget *Budget  `json:"budget"`
 	// Control is the core asking for an operation on a task.
 	Control *Control `json:"control"`
+	// Token is the short-lived access token of a certificate identity (the
+	// core's ADR-105): bearer for the core's MCP, sent after the hello and again
+	// at half its life.
+	Token *tokenFrame `json:"token"`
 }
 
 const (
@@ -437,20 +451,38 @@ func (c *Client) Run(ctx context.Context) {
 // once opens the stream and reads it until it ends. up reports whether the
 // core accepted the connection.
 func (c *Client) once(ctx context.Context) (up bool, err error) {
+	if c.cert != nil {
+		return c.onceCert(ctx)
+	}
 	tok, err := os.ReadFile(c.tokenFile)
 	if err != nil {
 		return false, fmt.Errorf("reading the core token: %w", err)
 	}
+	conn, err := c.dial(ctx, http.Header{"Authorization": {"Bearer " + strings.TrimSpace(string(tok))}})
+	if err != nil {
+		return false, err
+	}
+	return c.serve(ctx, conn)
+}
+
+// dial opens the websocket. A refusal carries the core's short reason.
+func (c *Client) dial(ctx context.Context, hdr http.Header) (*websocket.Conn, error) {
 	d := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
-	conn, resp, err := d.DialContext(ctx, c.url, http.Header{"Authorization": {"Bearer " + strings.TrimSpace(string(tok))}})
+	conn, resp, err := d.DialContext(ctx, c.url, hdr)
 	if err != nil {
 		if resp != nil {
 			// The core says why in a short JSON error; it holds no content.
 			why, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-			return false, fmt.Errorf("the core refused the stream: %s %s", resp.Status, strings.TrimSpace(string(why)))
+			return nil, fmt.Errorf("the core refused the stream: %s %s", resp.Status, strings.TrimSpace(string(why)))
 		}
-		return false, err
+		return nil, err
 	}
+	return conn, nil
+}
+
+// serve reads the open stream until it ends, and closes conn. up is true: the
+// core accepted the connection.
+func (c *Client) serve(ctx context.Context, conn *websocket.Conn) (up bool, err error) {
 	defer func() { _ = conn.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
@@ -474,11 +506,16 @@ func (c *Client) once(ctx context.Context) (up bool, err error) {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return true, nil
 			}
+			c.afterClose(err)
 			return true, err
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readIdle))
 		if f.Control != nil {
 			go c.answer(*f.Control)
+			continue
+		}
+		if f.Token != nil {
+			c.takeToken(f.Token)
 			continue
 		}
 		if f.Hello {

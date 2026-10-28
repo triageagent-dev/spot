@@ -23,6 +23,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
 	"github.com/triageagent-dev/spot/internal/durable"
+	"github.com/triageagent-dev/spot/internal/identity"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
 	"github.com/triageagent-dev/spot/internal/prompt"
@@ -125,6 +126,27 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Info("core tools: all of them; the core's Role is the bound")
 	}
 
+	// The core's stream opens before anything is read from the core: with a
+	// certificate identity the access token comes over it, and the spot joins (and
+	// waits for a person to approve it) first.
+	var stream *triggers.Client
+	if cfg.CoreAPIURL != "" {
+		tc, err := newStream(cfg, log)
+		if err != nil {
+			log.Error("trigger stream", "err", err)
+			return 1
+		}
+		go tc.Run(ctx)
+		stream = tc
+		if cfg.CertificateIdentity() {
+			log.Info("identity: certificate; waiting for the core to accept the spot", "stateDir", cfg.IdentityDir)
+			if err := tc.WaitReady(ctx); err != nil {
+				return 0
+			}
+			log.Info("identity: the core accepted the spot")
+		}
+	}
+
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
 	defer core.Close()
 
@@ -139,18 +161,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	})}
 
 	// watch gives the supervisor the core's trigger stream, when it is configured.
-	var stream *triggers.Client
 	watch := func() error {
-		if cfg.CoreAPIURL == "" {
-			return nil
+		if stream != nil {
+			sup.SetTrigger(stream)
 		}
-		tc, err := triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
-		if err != nil {
-			return err
-		}
-		go tc.Run(ctx)
-		sup.SetTrigger(tc)
-		stream = tc
 		return nil
 	}
 
@@ -353,4 +367,19 @@ func payloadDir(cfg config.Config) string {
 		return ""
 	}
 	return filepath.Join(cfg.StateDir, "temporal-payloads")
+}
+
+// newStream builds the client of the core's trigger stream: with the bearer token
+// of --core-token-file, or, with --core-ca-fingerprint, by certificate.
+func newStream(cfg config.Config, log *slog.Logger) (*triggers.Client, error) {
+	if !cfg.CertificateIdentity() {
+		return triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
+	}
+	id, err := identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)
+	if err != nil {
+		return nil, err
+	}
+	return triggers.NewCert(cfg.CoreAPIURL, triggers.Cert{
+		ID: id, Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile,
+	}, log)
 }
