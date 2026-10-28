@@ -46,8 +46,9 @@ The schedule and the turns run in the pod by default. With
 a service of your own): the next wake and the wake a person asked for are
 durable timers, a turn that a crash cuts resumes at its step, and a person's
 message is answered beside a long turn. The pod still makes every model and
-tool call, and every payload that leaves it is encrypted with a key from a
-Secret. See the specification.
+tool call, and no payload leaves it readable: it is encrypted with a key from a
+Secret, or kept in the pod's state directory with only a reference sent to the
+service. See the specification.
 
 ## Read more
 

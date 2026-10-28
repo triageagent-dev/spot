@@ -41,8 +41,10 @@ the default.
 - A call that may have an effect runs once. If its pod dies in it, the model is
   told it may or may not have run. A read runs again.
 - Payloads are encrypted in the pod with a key from a file before they leave it,
-  and a spot that reaches a service over the network does not start without the
-  key unless it is told the clear text may go.
+  or kept in the pod's state directory so that only a reference (a hash) is sent
+  and the service holds no content at all, even encrypted. A spot that reaches a
+  service over the network does not start without one of the two unless it is
+  told the clear text may go.
 - The service is a setting: Temporal Cloud first, then a service of one's own in
   a cluster. Nothing else changes.
 
