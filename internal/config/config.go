@@ -40,6 +40,10 @@ type Config struct {
 	// CoreTokenFile.
 	CoreCAFingerprint string
 	IdentityDir       string
+	// EnrollKeyFile holds the one-time key the core minted for this spot (the
+	// core's ADR-090 keys): sent with the first join, which the core then
+	// approves at once. A spent key left in place is harmless.
+	EnrollKeyFile string
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
@@ -192,6 +196,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.CoreAPIURL, "core-api-url", "", "the core's HTTP API (for example http://<service>.<namespace>.svc:8080); with it the core tells the spot when something changed, over a websocket, and --poll-interval is only the fallback while that stream is down")
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required, unless --core-ca-fingerprint is set)")
 	fs.StringVar(&c.CoreCAFingerprint, "core-ca-fingerprint", "", "the SHA-256 fingerprint of the core's CA (SHA256:<hex>): the spot then joins the core by certificate, and needs --core-api-url; no --core-token-file")
+	fs.StringVar(&c.EnrollKeyFile, "enroll-key-file", "", "file holding the one-time enrollment key the core minted for this spot; with --core-ca-fingerprint")
 	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
@@ -351,6 +356,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))
 	}
 	req(c.CoreMCPURL, "core-mcp-url")
+	if c.EnrollKeyFile != "" && c.CoreCAFingerprint == "" {
+		errs = append(errs, errors.New("--enroll-key-file needs --core-ca-fingerprint"))
+	}
 	if c.CoreCAFingerprint != "" {
 		errs = append(errs, c.validateCertificateIdentity()...)
 		if c.IdentityDir == "" {

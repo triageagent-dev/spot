@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -37,6 +38,9 @@ type Cert struct {
 	Workspace string
 	Version   string
 	TokenFile string
+	// EnrollKeyFile holds the one-time key that makes the core approve the join
+	// at once; empty = none. It is sent only while the spot has no certificate.
+	EnrollKeyFile string
 }
 
 // joinWait is how long the core may take to answer a join or a renew, and the
@@ -198,12 +202,27 @@ func (c *Client) join(conn *websocket.Conn, nonce []byte) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := conn.WriteJSON(map[string]any{"kind": "join", "join": map[string]any{
-		"csr": csr, "proof": id.Sign(identity.ProofMessage("join", nonce, identity.CSRHash(csr))),
-	}}); err != nil {
+	body := map[string]any{"csr": csr, "proof": id.Sign(identity.ProofMessage("join", nonce, identity.CSRHash(csr)))}
+	if k := c.enrollKey(); k != "" {
+		body["enrollKey"] = k
+	}
+	if err := conn.WriteJSON(map[string]any{"kind": "join", "join": body}); err != nil {
 		return false, err
 	}
 	return c.result(conn)
+}
+
+// enrollKey is the one-time key in the spot's key file, or "".
+func (c *Client) enrollKey() string {
+	if c.cert.EnrollKeyFile == "" {
+		return ""
+	}
+	b, err := os.ReadFile(c.cert.EnrollKeyFile)
+	if err != nil {
+		c.log.Warn("the enrollment key cannot be read; joining without it", "err", err)
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // renew asks for a new certificate with a request signed by the current key.

@@ -78,6 +78,9 @@ spec:
             {{- end }}
             {{- if eq $identity "certificate" }}
             - --core-ca-fingerprint={{ .Values.core.caFingerprint }}
+            {{- if .Values.core.enrollKeySecret.name }}
+            - --enroll-key-file=/secrets/enroll/{{ .Values.core.enrollKeySecret.key }}
+            {{- end }}
             {{- else }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
             {{- end }}
@@ -209,6 +212,10 @@ spec:
             - name: core-token
               mountPath: /secrets/core
               readOnly: true
+            {{- else if .Values.core.enrollKeySecret.name }}
+            - name: enroll-key
+              mountPath: /secrets/enroll
+              readOnly: true
             {{- end }}
             {{- if .Values.connectors }}
             - name: connectors
@@ -262,7 +269,13 @@ spec:
             defaultMode: 0440
         {{- end }}
         {{- if eq $identity "certificate" }}
-        {{- /* No volume for the core: the spot's key, certificate and access token live in /state/identity. */}}
+        {{- /* No token for the core: the spot's key, certificate and access token live in /state/identity. */}}
+        {{- if .Values.core.enrollKeySecret.name }}
+        - name: enroll-key
+          secret:
+            secretName: {{ .Values.core.enrollKeySecret.name }}
+            defaultMode: 0440
+        {{- end }}
         {{- else if eq $identity "secret" }}
         - name: core-token
           secret:

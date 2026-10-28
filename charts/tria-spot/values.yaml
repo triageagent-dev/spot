@@ -50,6 +50,9 @@ core:
   #   the core sends a short-lived access token over the stream. Needs apiUrl and
   #   caFingerprint. The spot's name (spot.name) is its identity: keep it stable.
   identity: serviceAccount
+  enrollKeySecret:               # identity: certificate. The one-time key the core minted for this spot; a Secret name, mounted as a file. Used for the first join only, a spent key left here is harmless
+    name: ""
+    key: key
   caFingerprint: ""              # identity: certificate. SHA256:<64 lowercase hex> of the core's CA (required then)
   audience: triage-core          # identity: serviceAccount. The audience the core checks
   tokenExpirationSeconds: 3600   # identity: serviceAccount. The kubelet rotates the token at 80% of this; minimum 600

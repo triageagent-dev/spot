@@ -388,3 +388,12 @@ func TestCertificateIdentityRefusesWhatDoesNotFit(t *testing.T) {
 		}
 	}
 }
+
+func TestEnrollKeyFileNeedsTheCertificateIdentity(t *testing.T) {
+	if c, err := Parse(with(certArgs, "--enroll-key-file", "/s/enroll/key"), io.Discard); err != nil || c.EnrollKeyFile != "/s/enroll/key" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if _, err := Parse(with(required, "--enroll-key-file", "/s/enroll/key"), io.Discard); err == nil {
+		t.Fatal("an enrollment key was accepted without the certificate identity")
+	}
+}

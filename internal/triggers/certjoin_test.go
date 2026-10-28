@@ -39,8 +39,10 @@ type fakeCore struct {
 	mu      sync.Mutex
 	kinds   []string // the first frame of each connection
 	joins   int
-	pending int  // join requests answered pending before one is issued
-	revoked bool // hello is refused with 1008
+	pending int      // join requests answered pending before one is issued
+	revoked bool     // hello is refused with 1008
+	needKey string   // when set, a join must carry this key, and then needs no approval
+	keys    []string // the enroll key each join carried
 	hellos  []map[string]any
 }
 
@@ -89,6 +91,7 @@ func (f *fakeCore) handler(w http.ResponseWriter, r *http.Request) {
 		Kind string `json:"kind"`
 		Join struct {
 			CSR, Cert, Proof []byte
+			EnrollKey        string `json:"enrollKey"`
 		} `json:"join"`
 		Hello struct {
 			Spot, Workspace, Version string
@@ -117,6 +120,17 @@ func (f *fakeCore) handler(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.joins++
 		pend := in.Kind == "join" && f.joins <= f.pending
+		if in.Kind == "join" {
+			f.keys = append(f.keys, in.Join.EnrollKey)
+			if f.needKey != "" {
+				pend = false
+				if in.Join.EnrollKey != f.needKey {
+					f.mu.Unlock()
+					_ = conn.WriteJSON(map[string]any{"v": 1, "kind": "join_result", "joinResult": map[string]any{"status": "refused", "message": "an enrollment key is required"}})
+					return
+				}
+			}
+		}
 		f.mu.Unlock()
 		if pend {
 			_ = conn.WriteJSON(map[string]any{"v": 1, "kind": "join_result", "joinResult": map[string]any{"status": "pending"}})
@@ -324,5 +338,53 @@ func TestARevokedCertificateIsDroppedAndTheSpotJoinsAfresh(t *testing.T) {
 func TestCertIdentityNeedsItsParts(t *testing.T) {
 	if _, err := NewCert("http://core.example:8080", Cert{}, quiet()); err == nil {
 		t.Fatal("an empty identity was accepted")
+	}
+}
+
+func TestASpotWithAnEnrollmentKeyIsIssuedAtOnceAndSendsItOnlyWhileItHasNoCertificate(t *testing.T) {
+	f := newFakeCore(t)
+	f.needKey = "tak_abc_secret"
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "enroll")
+	if err := os.WriteFile(keyFile, []byte("tak_abc_secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	id, err := identity.Load(filepath.Join(dir, "id"), "example-spot", "ws-1", identity.Fingerprint(f.caPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCert(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: filepath.Join(dir, "token"), EnrollKeyFile: keyFile}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	if err := c.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.sentKinds(), ","); got != "join,hello" {
+		t.Fatalf("frames: %s", got)
+	}
+	f.mu.Lock()
+	keys := append([]string(nil), f.keys...)
+	f.mu.Unlock()
+	if len(keys) != 1 || keys[0] != "tak_abc_secret" {
+		t.Fatalf("the join carried %v", keys)
+	}
+}
+
+func TestASpotWithoutTheRightKeyIsRefusedAndKeepsNoCertificate(t *testing.T) {
+	f := newFakeCore(t)
+	f.needKey = "tak_abc_secret"
+	c, id, _ := certClient(t, f, t.TempDir())
+	up, err := c.once(context.Background())
+	if up || err == nil || !strings.Contains(err.Error(), "an enrollment key is required") {
+		t.Fatalf("up=%v err=%v", up, err)
+	}
+	if _, usable, _ := id.CertState(time.Now()); usable {
+		t.Fatal("a certificate was kept after a refusal")
 	}
 }

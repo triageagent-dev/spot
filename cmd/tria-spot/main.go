@@ -380,6 +380,6 @@ func newStream(cfg config.Config, log *slog.Logger) (*triggers.Client, error) {
 		return nil, err
 	}
 	return triggers.NewCert(cfg.CoreAPIURL, triggers.Cert{
-		ID: id, Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile,
+		ID: id, Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile,
 	}, log)
 }
