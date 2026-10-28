@@ -24,7 +24,7 @@ metadata:
   labels:
     {{- include "tria-spot.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.spot.replicas }}
   # One writer on /state at a time: the old pod stops before the new one starts.
   strategy:
     type: Recreate

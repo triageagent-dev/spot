@@ -1,0 +1,24 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# A parked spot: the Deployment renders with no replicas.
+spot:
+  enabled: true
+  tenant: example
+  replicas: 0
+core:
+  identity: secret
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+llm:
+  auth: key
+  keySecret:
+    name: example-spot-llm-key
+    key: api-key
+networkPolicy:
+  core:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: example-core
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: core
