@@ -81,6 +81,7 @@ const (
 const (
 	ScheduleNext = "schedule_next"
 	Finish       = "finish"
+	StartTask    = "start_task"
 )
 
 // upsertMemoryItem is the core tool that writes a memory item. SpotTagPrefix

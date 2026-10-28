@@ -97,6 +97,9 @@ type Config struct {
 	FastLane          bool
 	FastMaxToolCalls  int
 	FastMaxTurnTokens int64
+	// MaxTasks is how many tasks (start_task) the temporal engine runs at once,
+	// each a turn of its own beside the two lanes; 0 turns the tool off.
+	MaxTasks int
 
 	// Engine is what runs the schedule and the turns: "local" (the supervisor, in
 	// this process) or "temporal" (a Temporal workflow: durable timers, a turn
@@ -215,6 +218,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.BoolVar(&c.FastLane, "fast-lane", true, "while a long turn runs, a person's message and a wake the spot promised run in a second, short turn of their own; false = the message is handed to the running turn")
 	fs.IntVar(&c.FastMaxToolCalls, "fast-max-tool-calls", 8, "cap on tool calls in a fast-lane turn")
 	fs.Int64Var(&c.FastMaxTurnTokens, "fast-max-turn-tokens", 120000, "cap on billable tokens in a fast-lane turn")
+	fs.IntVar(&c.MaxTasks, "max-tasks", 3, "temporal: how many tasks the agent may run at once (start_task: each a turn of its own beside the others, with the usual caps); 0 takes the tool away. Up to 10 more wait for a place")
 	fs.StringVar(&c.Engine, "engine", EngineLocal, "what runs the schedule and the turns: local (this process) or temporal (a Temporal workflow: durable timers, turns that resume at their step, two lanes); temporal needs --temporal-address and --temporal-namespace")
 	fs.StringVar(&c.TemporalAddress, "temporal-address", "", "temporal: the service's frontend host:port")
 	fs.StringVar(&c.TemporalNamespace, "temporal-namespace", "", "temporal: the namespace")
@@ -495,6 +499,9 @@ func (c Config) validateEngine() []error {
 		network := c.TemporalAPIKeyFile != "" || c.TemporalTLS || c.TemporalTLSCertFile != ""
 		if network && c.TemporalPayloadKeyFile == "" && !c.TemporalPlainPayloads && !c.TemporalLocalPayloads {
 			errs = append(errs, errors.New("--engine=temporal over TLS or with an API key needs --temporal-payload-key-file or --temporal-local-payloads: without them the wake prompts, the model's words and the tool results reach the service in the clear (--temporal-plain-payloads accepts that)"))
+		}
+		if c.MaxTasks < 0 || c.MaxTasks > 10 {
+			errs = append(errs, errors.New("--max-tasks is between 0 and 10"))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("--engine %q is not one of local, temporal", c.Engine))

@@ -107,6 +107,7 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, A
 	helm template t $(CHART) -f $(CHART)/ci/temporal-cloud-values.yaml | grep -q -e --temporal-payload-key-file || { echo "the temporal chart must pass the payload key file"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/temporal-local-payloads-values.yaml > $(CHART_TMP)/tria-spot-temporal-local.yaml
 	grep -q -e --temporal-local-payloads $(CHART_TMP)/tria-spot-temporal-local.yaml || { echo "localPayloads must pass --temporal-local-payloads"; exit 1; }
+	grep -q -e --max-tasks=5 $(CHART_TMP)/tria-spot-temporal-local.yaml || { echo "maxTasks must pass --max-tasks"; exit 1; }
 	! grep -q -e --temporal-payload-key-file $(CHART_TMP)/tria-spot-temporal-local.yaml || { echo "localPayloads must not also pass the key file"; exit 1; }
 	@for f in key keyset fed vertex gmkey gmvertex tel sa conn; do \
 	  ! grep -qiE 'sandbox|hostUsers|Unconfined|procMount|--run-dir|permission-mode|--persistent|--allowed-tools|claude-bin|medium: Memory' $(CHART_TMP)/tria-spot-$$f.yaml || { echo "the pod carries nothing for a shell, a sandbox or a rendered config ($$f)"; exit 1; }; \

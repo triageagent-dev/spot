@@ -310,7 +310,7 @@ func TestScheduleNextAndFinish(t *testing.T) {
 }
 
 func TestBuiltinsAreAlwaysListed(t *testing.T) {
-	defs := builtinDefs()
+	defs := builtinDefs(false)
 	if len(defs) != 2 {
 		t.Fatalf("%v", names(defs))
 	}
@@ -825,5 +825,83 @@ func TestBareToolNameIsTheOneServerOffering(t *testing.T) {
 	// A tool the lists leave out is not offered, bare or prefixed.
 	if c, isErr := r.Call(context.Background(), "resolve_issue", json.RawMessage(`{}`)); !isErr || !strings.Contains(c, "not in your tool list") {
 		t.Errorf("a denied tool stays out by its bare name: %q %v", c, isErr)
+	}
+}
+
+func TestStartTaskIsOfferedOnlyToATurnThatMayStartOne(t *testing.T) {
+	url, _ := fakeServer(t)
+	offered := func(mut func(*Options), limit bool) bool {
+		r := newRegistry(t, url, mut)
+		r.Limit(limit)
+		defs, err := r.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range defs {
+			if d.Name == StartTask {
+				return true
+			}
+		}
+		return false
+	}
+	if offered(nil, false) {
+		t.Error("start_task offered without Options.Tasks")
+	}
+	if !offered(func(o *Options) { o.Tasks = true }, false) {
+		t.Error("start_task not offered with Options.Tasks")
+	}
+	if offered(func(o *Options) { o.Tasks = true }, true) {
+		t.Error("start_task offered under a hold rule")
+	}
+	if offered(func(o *Options) { o.Tasks = true; o.NotesOnly = true }, false) {
+		t.Error("start_task offered in notes-only mode")
+	}
+}
+
+func TestStartTaskRecordsTheTaskAndKeepsAtMostThreePerTurn(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) { o.Tasks = true })
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	call := func(name, in string) (string, bool) { return r.Call(context.Background(), name, json.RawMessage(in)) }
+	if got, isErr := call("start_task", `{"title":"","goal":"x"}`); !isErr {
+		t.Errorf("an empty title was taken: %s", got)
+	}
+	if got, isErr := call("start_task", `not json`); !isErr {
+		t.Errorf("bad input was taken: %s", got)
+	}
+	for i, title := range []string{"a", "b", "c"} {
+		if got, isErr := call("core__start_task", `{"title":"`+title+`","goal":"do `+title+`"}`); isErr {
+			t.Fatalf("task %d: %s", i, got)
+		}
+	}
+	if got, isErr := call("functions.start_task", `{"title":"d","goal":"do d"}`); !isErr || !strings.Contains(got, "3 tasks") {
+		t.Errorf("a fourth task: %q %v", got, isErr)
+	}
+	st := r.State()
+	if len(st.Tasks) != 3 || st.Tasks[0] != (TaskRequest{Title: "a", Goal: "do a"}) {
+		t.Fatalf("tasks: %+v", st.Tasks)
+	}
+	// The state travels with the turn.
+	r2 := newRegistry(t, url, func(o *Options) { o.Tasks = true })
+	r2.SetState(st)
+	if got := r2.State().Tasks; len(got) != 3 {
+		t.Fatalf("restored: %+v", got)
+	}
+	r.Begin()
+	if len(r.State().Tasks) != 0 {
+		t.Error("Begin forgets the tasks")
+	}
+}
+
+func TestStartTaskIsUnknownWithoutTasks(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, nil)
+	if _, err := r.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := r.Call(context.Background(), "start_task", json.RawMessage(`{"title":"a","goal":"b"}`)); !isErr || !strings.Contains(got, "unknown tool") {
+		t.Errorf("%q %v", got, isErr)
 	}
 }

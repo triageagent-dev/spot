@@ -25,10 +25,12 @@ const (
 
 // Lanes: the long one runs the scheduled, startup and edge wakes, one at a time;
 // the short one a person's message and a wake a person asked for, one at a time
-// and beside the long one.
+// and beside the long one. The task lane runs the tasks a turn started, up to
+// the spot's limit at once, beside both.
 const (
 	LaneLong  = "long"
 	LaneShort = "short"
+	LaneTask  = "task"
 )
 
 // Wake reasons, as the prompt names them.
@@ -37,7 +39,12 @@ const (
 	ReasonTick    = "tick"
 	ReasonEdge    = "edge"
 	ReasonHuman   = "human"
+	ReasonTask    = "task"
 )
+
+// MaxQueuedTasks is how many tasks wait for a free place; a task past it is
+// dropped and the spot's log says so.
+const MaxQueuedTasks = 10
 
 // WakeSignal is what the intake tells the spot workflow: something wants the
 // agent. Seq names the wake in the intake, which keeps the edges it was made
@@ -60,6 +67,8 @@ type PrepareIn struct {
 	Room    string
 	Why     string // what the agent left for itself, for a tick
 	Promise bool   // this is the wake a person asked for
+	// Title and Goal are the task a task wake runs.
+	Title, Goal string
 	// PromisePending is set while a wake a person asked for has not fired.
 	PromisePending bool
 }
@@ -86,6 +95,8 @@ type PrepareOut struct {
 	Turn, Tool time.Duration
 	Typing     bool
 	Model      string
+	// MaxTasks is how many tasks may run at once; 0 = none.
+	MaxTasks int
 }
 
 // WakeIn starts a turn.
@@ -103,6 +114,8 @@ type WakeIn struct {
 	Turn            time.Duration
 	Typing          bool
 	Model           string
+	// Task is set for a task: it may not schedule or start tasks.
+	Task bool
 }
 
 // WakeOut is what a turn did: the counts and flags of agent.Result, the
@@ -111,6 +124,8 @@ type WakeOut struct {
 	Text    string
 	Summary string
 	Next    *tools.ScheduleRequest
+	// Tasks are the tasks the turn started.
+	Tasks []tools.TaskRequest
 
 	Steps, ToolCalls int
 	Input, Output    int64
@@ -174,6 +189,8 @@ type SpotState struct {
 	Open    int
 	Long    bool // a long wake is running
 	Short   bool
+	Tasks   int // tasks running
+	TaskQ   int // tasks waiting for a place
 	Queued  int
 	Next    time.Time
 	NextWhy string

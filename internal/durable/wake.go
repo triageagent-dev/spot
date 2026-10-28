@@ -123,7 +123,7 @@ func WakeWorkflow(ctx workflow.Context, in WakeIn) (WakeOut, error) {
 	}
 
 	var state tools.State
-	builtins := tools.New(tools.Options{}) // schedule_next and finish touch nothing outside the turn
+	builtins := tools.New(tools.Options{Tasks: true}) // schedule_next, finish and start_task touch nothing outside the turn
 	steps := agent.Steps{
 		Complete: func(req llm.Request) (llm.Response, error) {
 			var mo ModelOut
@@ -137,6 +137,12 @@ func WakeWorkflow(ctx workflow.Context, in WakeIn) (WakeOut, error) {
 		},
 		Call: func(c llm.Block) (string, bool) {
 			if tools.IsBuiltin(c.Name) {
+				switch {
+				case in.Task && !tools.IsFinish(c.Name):
+					return "a task cannot schedule wakes or start tasks: do the goal, post what it asks for, and finish with a one-line result.", true
+				case in.Limited && tools.IsStartTask(c.Name):
+					return "unknown tool \"start_task\": it was not in your tool list", true
+				}
 				builtins.SetState(state)
 				content, isErr := builtins.Call(context.Background(), c.Name, c.Input)
 				state = builtins.State()
@@ -164,7 +170,7 @@ func WakeWorkflow(ctx workflow.Context, in WakeIn) (WakeOut, error) {
 	endTyping()
 
 	out = WakeOut{
-		Text: res.Text, Summary: state.Summary, Next: state.Next,
+		Text: res.Text, Summary: state.Summary, Next: state.Next, Tasks: state.Tasks,
 		Steps: res.Steps, ToolCalls: res.ToolCalls,
 		Input: res.Usage.Input, Output: res.Usage.Output, CacheRead: res.Usage.CacheRead, CacheWrite: res.Usage.CacheWrite,
 		ContextTokens: res.ContextTokens, Model: res.Model, Seconds: workflow.Now(ctx).Sub(start).Seconds(),

@@ -46,6 +46,8 @@ const (
 	Tick    Reason = "tick"
 	Edge    Reason = "edge"
 	Human   Reason = "human"
+	// Task is a turn that another turn of the spot started for one piece of work.
+	Task Reason = "task"
 )
 
 // Wake describes one turn.
@@ -58,6 +60,7 @@ type Wake struct {
 	Interrupted bool     // the previous turn was cut off (restart or kill)
 	Note        string   // supervisor note, e.g. the schedule was defaulted
 	Side        bool     // a long turn of the spot is still working; this one is the short lane
+	Title, Goal string   // the task of a task turn
 	Limited     bool     // a hold rule is active and a person wrote: notes, room and post tools only
 	NotesOnly   bool     // the model has one tool, search_memory: no schedule_next, no finish
 	TokensUsed  int64
@@ -106,6 +109,8 @@ func Turn(w Wake) string {
 		b.WriteString("The core changed while you slept:\n")
 	case Human:
 		b.WriteString("Someone wrote to you:\n")
+	case Task:
+		fmt.Fprintf(&b, "Another turn of yours started this task and carries on without you. Task: %s\nGoal:\n%s\n", w.Title, w.Goal)
 	}
 	for _, f := range w.Facts {
 		fmt.Fprintf(&b, "- %s\n", f)
@@ -128,11 +133,15 @@ func Turn(w Wake) string {
 	if w.Reason == Edge || w.Reason == Tick {
 		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
 	}
-	if w.Side {
+	if w.Side && w.Reason != Task {
 		b.WriteString("Another turn of yours is busy with a longer task right now, and it carries on after this one. You are the short lane: answer the person, or do exactly what you promised, in a few calls (about eight), post it, call schedule_next only if you promised something later, and finish. Do not start an investigation; if one is needed, say so and schedule it.\n")
 	}
 	if w.Limited {
 		b.WriteString("A standing rule says to check nothing until asked, so for this message you have only your notes, the room, posting and scheduling: no situation, issue, service or cluster tools. If the person wants a check or a report, now or later, write a one-line note of what they asked, say in one short message when you will do it, and call schedule_next for that time (a minute is allowed). The wake you schedule has every tool; do the check there, once.\n")
+	}
+	if w.Reason == Task {
+		b.WriteString("You are a task: do exactly the goal, read the least you need, and do not widen it. You cannot schedule wakes or start tasks. If the goal asks you to tell or answer someone, post it in the room (read your notes and write one first, as the post gate wants). End by calling finish with one line: what you found or did, which the turn that started you reads in its digest.\n")
+		return b.String()
 	}
 	if w.NotesOnly {
 		b.WriteString("You have one tool: search_memory over your own notes. Say in plain text what you read, what you conclude and what you decide; people read that text. You cannot act, post or schedule anything; the supervisor does the scheduling.\n")

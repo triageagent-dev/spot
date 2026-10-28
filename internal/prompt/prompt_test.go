@@ -131,3 +131,17 @@ func TestInstructionIsTheSameForEveryWake(t *testing.T) {
 		t.Error("the instruction must be deterministic")
 	}
 }
+
+func TestTaskPromptCarriesTheGoalAndEndsWithFinish(t *testing.T) {
+	p := Turn(Wake{Reason: Task, Now: time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC), Title: "Check pods", Goal: "list the pods\nand report", Side: true, Facts: nil})
+	for _, want := range []string{"Wake reason: task", "new, empty conversation", "Task: Check pods", "Goal:\nlist the pods\nand report", "calling finish"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("task prompt lacks %q:\n%s", want, p)
+		}
+	}
+	for _, not := range []string{"End this turn by calling schedule_next", "short lane"} {
+		if strings.Contains(p, not) {
+			t.Errorf("task prompt says %q:\n%s", not, p)
+		}
+	}
+}

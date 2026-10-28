@@ -33,6 +33,8 @@ type wakeRec struct {
 	p    *pending
 	pre  edges.Snapshot
 	lane string
+	// title is the task's, for the activity line.
+	title string
 	// res is what the turn did, set when it is accounted, for the activity line
 	// the announce sends.
 	res    agent.Result
@@ -166,7 +168,7 @@ func (s *Supervisor) prepare(in durable.PrepareIn) (out durable.PrepareOut) {
 	ctx := s.bctx
 	out = durable.PrepareOut{
 		Min: s.cfg.MinWake, Max: s.cfg.MaxWake, Turn: s.cfg.TurnTimeout, Tool: s.cfg.ToolTimeout,
-		Model: s.cfg.Model, Typing: true, Caps: s.caps(in.Lane),
+		Model: s.cfg.Model, Typing: true, Caps: s.caps(in.Lane), MaxTasks: s.cfg.MaxTasks,
 	}
 	reason := prompt.Reason(in.Reason)
 
@@ -204,13 +206,16 @@ func (s *Supervisor) prepare(in durable.PrepareIn) (out durable.PrepareOut) {
 	// The wake a person asked for runs under a rule, and so does the scheduled one
 	// while such a wake is waiting (it is that one, kept).
 	exempt := in.Promise || in.PromisePending
+	task := in.Lane == durable.LaneTask
 	if hold && reason != prompt.Human && (reason != prompt.Tick || !exempt) {
 		s.log.Info("a hold rule is active: no model call", "reason", reason, "dropped", len(p.facts))
 		out.Hold = true
 		return out
 	}
-	p.facts = s.currentFacts(ctx, p)
-	if s.quiet(ctx, reason, p, in.Why != "" || in.Promise || in.PromisePending) {
+	if !task {
+		p.facts = s.currentFacts(ctx, p)
+	}
+	if !task && s.quiet(ctx, reason, p, in.Why != "" || in.Promise || in.PromisePending) {
 		s.log.Info("nothing to act on: no facts, no open issue; no model call", "reason", reason)
 		out.Quiet = true
 		return out
@@ -218,17 +223,20 @@ func (s *Supervisor) prepare(in durable.PrepareIn) (out durable.PrepareOut) {
 	out.Limited = hold && reason == prompt.Human
 	out.Prompt = prompt.Turn(prompt.Wake{
 		Limited: out.Limited, Reason: reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: in.Why,
-		Digest: s.digestLines(), Rules: rules, Side: in.Lane == durable.LaneShort,
+		Digest: s.digestLines(), Rules: rules, Side: in.Lane == durable.LaneShort, Title: in.Title, Goal: in.Goal,
 		TokensUsed: s.led.Usage().Tokens, TokensCeil: s.cfg.DailyTokenCeil,
 	})
 
-	s.recs[in.Key] = &wakeRec{p: p, pre: s.tracker.Snapshot(), lane: in.Lane}
+	s.recs[in.Key] = &wakeRec{p: p, pre: s.tracker.Snapshot(), lane: in.Lane, title: in.Title}
 	s.open++
 	s.setState("running")
 	s.rollDay()
-	if in.Lane == durable.LaneShort {
+	switch in.Lane {
+	case durable.LaneShort:
 		s.wakes["side-"+string(reason)]++
-	} else {
+	case durable.LaneTask:
+		s.wakes["task"]++
+	default:
 		s.wakes[string(reason)]++
 	}
 	s.log.Info("turn start", "lane", in.Lane, "reason", reason, "facts", len(p.facts), "wake", in.Key)
@@ -315,14 +323,19 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 		s.open--
 	}
 	long := in.Lane == durable.LaneLong
+	task := in.Lane == durable.LaneTask
 	reason := prompt.Reason(in.Reason)
+	label := in.Reason
+	if task && rec != nil && rec.title != "" {
+		label = "task: " + rec.title
+	}
 	if in.Held {
 		// No turn ran (a rule, or the ceiling): only the schedule is told.
 		var next time.Time
 		if long {
 			next = in.At
 		}
-		s.reportWake(in.Reason, in.Lane, in.Source, agent.Result{}, next, in.Source)
+		s.reportWake(label, in.Lane, in.Source, agent.Result{}, next, in.Source)
 		if long {
 			s.lastTurnEnd = s.now()
 			s.nextTick, s.scheduledWhy = in.At, in.Why
@@ -343,7 +356,7 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 		if long {
 			next = in.At
 		}
-		s.reportWake(in.Reason, in.Lane, turnOutcome(failed), res, next, in.Source)
+		s.reportWake(label, in.Lane, turnOutcome(failed), res, next, in.Source)
 	}
 	if long {
 		s.nextTick, s.scheduledWhy = in.At, in.Why
@@ -352,7 +365,16 @@ func (s *Supervisor) announce(in durable.AnnounceIn) {
 			s.log.Warn("schedule not taken as written", "source", in.Source, "note", in.Note, "after", in.After)
 		}
 	}
-	if !in.Failed {
+	switch {
+	case task:
+		// The task's result is for the turn that started it: its digest. A task read
+		// the room on its own account and moves no watermark.
+		title := "task"
+		if rec != nil && rec.title != "" {
+			title = "task " + rec.title
+		}
+		s.addDigest(prompt.Reason(title), agent.Result{Summary: in.Summary})
+	case !in.Failed:
 		s.addDigest(reason, agent.Result{Summary: in.Summary})
 		s.markRoomsRead()
 	}

@@ -45,6 +45,10 @@ the default.
   and the service holds no content at all, even encrypted. A spot that reaches a
   service over the network does not start without one of the two unless it is
   told the clear text may go.
+- The agent can start tasks (`start_task`): each is a child workflow of its own
+  with a new conversation and only its goal, run beside the two lanes up to a
+  limit, with the usual caps and no power over the schedule. What the old loop
+  would have needed another special case for is one more workflow.
 - The service is a setting: Temporal Cloud first, then a service of one's own in
   a cluster. Nothing else changes.
 

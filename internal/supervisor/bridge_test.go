@@ -139,7 +139,7 @@ func newBridgeRigIn(t *testing.T, mut func(*config.Config), trig Trigger, payloa
 	newTools := func() *tools.Registry {
 		return tools.New(tools.Options{
 			Core:        tools.Server{Name: tools.CoreServer, URL: ts.URL, TokenFile: h.cfg.CoreTokenFile, Allow: []string{"search_memory", "say_in_workspace"}},
-			CallTimeout: 10 * time.Second,
+			CallTimeout: 10 * time.Second, Tasks: true,
 		})
 	}
 	r.name = name
@@ -380,5 +380,59 @@ func TestTheHistoryHoldsNoContentWhenPayloadsAreKept(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(dir); len(ents) == 0 {
 		t.Error("nothing was kept in the payload directory")
+	}
+}
+
+// A turn starts tasks; each runs in a turn of its own with only its goal, and its
+// result reaches the digest the main agent reads. The core sees one line for it.
+func TestTheBridgeRunsATaskAndKeepsItsResultInTheDigest(t *testing.T) {
+	trig := newFakeTrigger(true)
+	r := newBridgeRigOn(t, func(c *config.Config) { c.MaxTasks = 2 }, trig)
+	r.model.fn = func(first string, n int) (llm.Response, error) {
+		switch {
+		case strings.Contains(first, "Wake reason: task"):
+			if !strings.Contains(first, "Task: Check pods") || !strings.Contains(first, "Goal:\nlist the pods in the namespace") {
+				t.Errorf("task prompt: %s", first)
+			}
+			if strings.Contains(first, "End this turn by calling schedule_next") {
+				t.Error("a task is told to schedule")
+			}
+			return llm.ToolUse(llm.Usage{}, llm.Call{Name: "finish", Input: `{"summary":"3 pods, all ready"}`}).Response, nil
+		case n == 0:
+			return llm.ToolUse(llm.Usage{},
+				llm.Call{Name: "start_task", Input: `{"title":"Check pods","goal":"list the pods in the namespace"}`},
+				llm.Call{Name: "schedule_next", Input: `{"after":"2h","why":"look again"}`},
+				llm.Call{Name: "finish", Input: `{"summary":"started a task"}`},
+			).Response, nil
+		}
+		return bfinish("done", "2h"), nil
+	}
+	r.waitFor("the task's line", func() bool {
+		for _, w := range trig.wakeLines() {
+			if w.Lane == "task" {
+				return true
+			}
+		}
+		return false
+	})
+	var line triggers.Wake
+	for _, w := range trig.wakeLines() {
+		if w.Lane == "task" {
+			line = w
+		}
+	}
+	if line.Reason != "task: Check pods" || line.Outcome != "turn" || line.Steps == 0 || line.Next != 0 {
+		t.Fatalf("task line: %+v", line)
+	}
+	r.waitFor("the digest", func() bool {
+		for _, d := range r.sup.led.LoadDigest() {
+			if d.Reason == "task Check pods" && d.Summary == "3 pods, all ready" {
+				return true
+			}
+		}
+		return false
+	})
+	if n := len(r.model.turns()); n != 2 {
+		t.Fatalf("turns: %d", n)
 	}
 }

@@ -186,6 +186,10 @@ func askLater(after, why string) llm.Call {
 	b, _ := json.Marshal(map[string]string{"after": after, "why": why})
 	return llm.Call{Name: "schedule_next", Input: string(b)}
 }
+func startTask(title, goal string) llm.Call {
+	b, _ := json.Marshal(map[string]string{"title": title, "goal": goal})
+	return llm.Call{Name: "start_task", Input: string(b)}
+}
 func finish(sum string) llm.Call {
 	b, _ := json.Marshal(map[string]string{"summary": sum})
 	return llm.Call{Name: "finish", Input: string(b)}
@@ -198,6 +202,7 @@ type host struct {
 	hold       bool
 	paused     time.Time
 	min, max   time.Duration
+	maxTasks   int
 	prepared   []PrepareIn
 	accounts   []AccountIn
 	announces  []AnnounceIn
@@ -211,7 +216,7 @@ func (h *host) Prepare(in PrepareIn) (PrepareOut, error) {
 	h.prepared = append(h.prepared, in)
 	out := PrepareOut{
 		Min: h.min, Max: h.max, Turn: 30 * time.Second, Tool: 10 * time.Second, Model: "fake-model", Typing: true,
-		Caps: agent.Caps{MaxSteps: 12, MaxToolCalls: 10, MaxTurnTokens: 0},
+		Caps: agent.Caps{MaxSteps: 12, MaxToolCalls: 10, MaxTurnTokens: 0}, MaxTasks: h.maxTasks,
 	}
 	if !h.paused.IsZero() {
 		out.Paused, out.Until = true, h.paused
@@ -223,6 +228,9 @@ func (h *host) Prepare(in PrepareIn) (PrepareOut, error) {
 	out.Prompt = "Wake reason: " + in.Reason + "\n" + strings.Join(in.Facts, "\n")
 	if in.Why != "" {
 		out.Prompt += "\nYour reason: " + in.Why
+	}
+	if in.Lane == LaneTask {
+		out.Prompt += "\nTask: " + in.Title + "\nGoal: " + in.Goal
 	}
 	return out, nil
 }
@@ -320,7 +328,7 @@ func (r *rig) startWorker() {
 		return tools.New(tools.Options{
 			Core: tools.Server{Name: tools.CoreServer, URL: r.url, TokenFile: tok,
 				Allow: []string{"search_memory", "get_memory_context", "get_tenant_situation", "upsert_memory_item", "say_in_workspace", "slow_read"}},
-			CallTimeout: 10 * time.Second,
+			CallTimeout: 10 * time.Second, Tasks: true,
 		})
 	}
 	r.eng = New(r.c, r.opts, Deps{LLM: r.model, NewTools: newTools, System: []string{"system"}, Model: "fake-model", Host: r.host})
@@ -737,5 +745,122 @@ func TestTheIndicatorIsShownAndClearedWhenTheTurnEnds(t *testing.T) {
 	r.host.mu.Unlock()
 	if got != "[true false]" {
 		t.Fatalf("indicator calls: %s", got)
+	}
+}
+
+// A turn that starts tasks ends at once; the tasks run beside each other, each
+// in a turn of its own, and a task that is quick does not wait for a slow one.
+func TestATurnStartsTasksThatRunAtOnce(t *testing.T) {
+	r := newRig(t, nil)
+	r.host.maxTasks = 3
+	r.model.fn = func(first string, n int, _ string) llm.Response {
+		switch {
+		case strings.Contains(first, "Wake reason: task") && strings.Contains(first, "Task: slow"):
+			if n < 3 {
+				return use(llm.Call{Name: "core__slow_read"})
+			}
+			return use(say("slow done"), finish("slow: done"))
+		case strings.Contains(first, "Wake reason: task"):
+			return use(say("quick done"), finish("quick: done"))
+		case strings.Contains(first, "Wake reason: edge") && n == 0:
+			return use(startTask("slow", "read for a while"), startTask("quick", "say it"), finish("started two tasks"))
+		}
+		return use(finish("done"))
+	}
+	r.wake(ReasonEdge, "start the work")
+	r.waitPost("quick done", 10*time.Second)
+	if r.room.count("slow done") != 0 {
+		t.Fatal("the quick task waited for the slow one, or the slow one was already done")
+	}
+	r.waitFor("a task running", 5*time.Second, func() bool { return r.stateOrZero().Tasks > 0 })
+	r.waitPost("slow done", 20*time.Second)
+	r.waitFor("the tasks to be announced", 5*time.Second, func() bool {
+		r.host.mu.Lock()
+		defer r.host.mu.Unlock()
+		n := 0
+		for _, a := range r.host.announces {
+			if a.Lane == LaneTask {
+				n++
+			}
+		}
+		return n == 2
+	})
+	if got := r.host.reasons(); got[0] != "long:edge" {
+		t.Fatalf("the turn that started the tasks was booked first: %v", got)
+	}
+	r.host.mu.Lock()
+	defer r.host.mu.Unlock()
+	got := map[string]bool{}
+	for _, a := range r.host.announces {
+		if a.Lane == LaneTask {
+			got[a.Summary] = true
+			if a.Source != "task" {
+				t.Errorf("task announce: %+v", a)
+			}
+		}
+	}
+	if !got["slow: done"] || !got["quick: done"] {
+		t.Fatalf("task results: %v", got)
+	}
+}
+
+// At the limit a task waits for a place; none runs past it.
+func TestTasksPastTheLimitWaitForAPlace(t *testing.T) {
+	r := newRig(t, nil)
+	r.host.maxTasks = 1
+	r.model.fn = func(first string, n int, _ string) llm.Response {
+		switch {
+		case strings.Contains(first, "Task: first"):
+			if n < 2 {
+				return use(llm.Call{Name: "core__slow_read"})
+			}
+			return use(say("first done"), finish("first"))
+		case strings.Contains(first, "Wake reason: task"):
+			return use(say("second done"), finish("second"))
+		case strings.Contains(first, "Wake reason: edge") && n == 0:
+			return use(startTask("first", "slowly"), startTask("second", "after"), finish("two tasks"))
+		}
+		return use(finish("done"))
+	}
+	r.wake(ReasonEdge, "go")
+	r.waitFor("one task running and one waiting", 10*time.Second, func() bool {
+		st := r.stateOrZero()
+		return st.Tasks == 1 && st.TaskQ == 1
+	})
+	r.waitPost("second done", 20*time.Second)
+	if p := r.room.all(); len(p) != 2 || p[0] != "first done" {
+		t.Fatalf("the second task did not wait for the first: %v", p)
+	}
+}
+
+// A task cannot schedule a wake or start a task of its own.
+func TestATaskCannotScheduleOrStartTasks(t *testing.T) {
+	r := newRig(t, nil)
+	r.host.maxTasks = 2
+	r.model.fn = func(first string, n int, last string) llm.Response {
+		switch {
+		case strings.Contains(first, "Wake reason: task"):
+			switch n {
+			case 0:
+				return use(askLater("5m", "later"), startTask("more", "again"))
+			default:
+				if strings.Count(last, "a task cannot schedule wakes or start tasks") == 2 {
+					return use(say("refused"), finish("refused"))
+				}
+				return use(say("allowed"), finish("allowed"))
+			}
+		case strings.Contains(first, "Wake reason: edge") && n == 0:
+			return use(startTask("one", "try"), finish("started"))
+		}
+		return use(finish("done"))
+	}
+	r.wake(ReasonEdge, "go")
+	r.waitPost("refused", 10*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	if n := r.model.count("Wake reason: task#0"); n != 1 {
+		t.Fatalf("a task started a task: %d task turns", n)
+	}
+	if st := r.state(); st.NextWhy == "later" {
+		t.Fatalf("a task changed the schedule: %+v", st)
 	}
 }

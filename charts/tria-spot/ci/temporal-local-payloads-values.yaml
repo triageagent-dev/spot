@@ -23,6 +23,7 @@ engine:
     apiKeySecret:
       name: example-spot-temporal-api-key
     localPayloads: true
+    maxTasks: 5
 networkPolicy:
   core:
     podSelector:

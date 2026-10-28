@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/triageagent-dev/spot/internal/schedule"
+	"github.com/triageagent-dev/spot/internal/tools"
 )
 
 // Carry is what a spot workflow hands to the next run of itself (continue as
@@ -35,6 +36,8 @@ type queued struct {
 	seqs   []int64
 	facts  []string
 	room   string
+	// title and goal are the task of a task wake.
+	title, goal string
 }
 
 type spot struct {
@@ -45,6 +48,10 @@ type spot struct {
 	busy    map[string]bool
 	waiting map[string]*queued
 	changed workflow.Channel
+
+	// Tasks: how many run, how many may, and those waiting for a place.
+	tasks, maxTasks int
+	taskQ           []tools.TaskRequest
 }
 
 // SpotWorkflow is the spot: it waits for the intake's signals and for its own
@@ -60,6 +67,7 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 	if err := workflow.SetQueryHandler(ctx, QueryState, func() (SpotState, error) {
 		s.st.Long, s.st.Short = s.busy[LaneLong], s.busy[LaneShort]
 		s.st.Queued = len(s.waiting)
+		s.st.Tasks, s.st.TaskQ = s.tasks, len(s.taskQ)
 		s.st.Promise = s.c.Promise.At
 		s.st.Next, s.st.NextWhy = s.c.Next, s.c.NextWhy
 		return s.st, nil
@@ -205,6 +213,34 @@ func (s *spot) start(ctx workflow.Context, lane string, q *queued, why string, p
 	})
 }
 
+// startTask runs a task the agent asked for in a turn of its own, beside the
+// lanes. Past the limit it waits for a place; past the queue it is dropped.
+func (s *spot) startTask(ctx workflow.Context, t tools.TaskRequest) {
+	if s.tasks >= s.maxTasks {
+		if len(s.taskQ) >= MaxQueuedTasks {
+			s.log(ctx, "task %q dropped: %d are waiting", t.Title, len(s.taskQ))
+			return
+		}
+		s.taskQ = append(s.taskQ, t)
+		return
+	}
+	s.tasks++
+	s.st.Open++
+	s.st.Wakes++
+	key := fmt.Sprintf("%s-wake-%d", s.name, s.st.Wakes)
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		s.runWake(ctx, key, LaneTask, &queued{reason: ReasonTask, title: t.Title, goal: t.Goal}, "", false)
+		s.st.Open--
+		s.tasks--
+		if len(s.taskQ) > 0 && s.tasks < s.maxTasks {
+			next := s.taskQ[0]
+			s.taskQ = s.taskQ[1:]
+			s.startTask(ctx, next)
+		}
+		s.poke()
+	})
+}
+
 // activity options of the process-side steps. The books run once: a retry would
 // count a turn twice.
 func (s *spot) opts(ctx workflow.Context, attempts int32, timeout time.Duration) workflow.Context {
@@ -219,7 +255,7 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	var po PrepareOut
 	err := workflow.ExecuteActivity(s.opts(ctx, 2, 90*time.Second), (*Acts).Prepare, PrepareIn{
 		Key: key, Lane: lane, Reason: q.reason, Seqs: q.seqs, Facts: q.facts, Room: q.room, Why: why,
-		Promise: promise, PromisePending: s.c.Promise.Human && !s.c.Promise.None(),
+		Promise: promise, PromisePending: s.c.Promise.Human && !s.c.Promise.None(), Title: q.title, Goal: q.goal,
 	}).Get(ctx, &po)
 	if err != nil {
 		s.log(ctx, "%s: not prepared: %s", key, errText(err))
@@ -228,6 +264,7 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	if po.Min > 0 {
 		s.c.Min, s.c.Max = po.Min, po.Max
 	}
+	s.maxTasks = po.MaxTasks
 	now := workflow.Now(ctx)
 
 	announce := func(in AnnounceIn) {
@@ -240,6 +277,11 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	switch {
 	case po.Paused:
 		// The ceiling holds the agent back until it lifts.
+		if lane == LaneTask {
+			s.log(ctx, "%s: task %q not run: the ceiling is reached", key, q.title)
+			announce(AnnounceIn{Held: true, Source: "ceiling"})
+			return
+		}
 		if lane == LaneLong {
 			s.c.Next, s.c.NextWhy = po.Until, "the daily ceiling was reached; resumed after UTC midnight"
 		}
@@ -281,7 +323,7 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	err = workflow.ExecuteChildWorkflow(cctx, WakeWorkflow, WakeIn{
 		SpotID: workflow.GetInfo(ctx).WorkflowExecution.ID, SpotRun: workflow.GetInfo(ctx).WorkflowExecution.RunID,
 		Key: key, Reason: q.reason, Lane: lane, Prompt: po.Prompt, Room: q.room, Limited: po.Limited,
-		Caps: po.Caps, Tool: po.Tool, Turn: po.Turn, Typing: po.Typing, Model: po.Model,
+		Caps: po.Caps, Tool: po.Tool, Turn: po.Turn, Typing: po.Typing, Model: po.Model, Task: lane == LaneTask,
 	}).Get(ctx, &out)
 	if err != nil {
 		out = WakeOut{Failed: true, Err: "the turn did not end well: " + errText(err)}
@@ -298,6 +340,19 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	now = workflow.Now(ctx)
 
 	in := AnnounceIn{Failed: ao.Failed, Summary: out.Summary}
+	if lane == LaneTask {
+		// A task changes no schedule and starts no task: it ends with its result.
+		in.Source = "task"
+		if ao.Failed {
+			in.Summary = "failed: " + out.Err
+		}
+		s.log(ctx, "%s: task %q steps=%d tools=%d failed=%v", key, q.title, out.Steps, out.ToolCalls, ao.Failed)
+		announce(in)
+		return
+	}
+	for _, t := range out.Tasks {
+		s.startTask(ctx, t)
+	}
 	asked, after, nwhy := out.Next != nil, "", ""
 	if asked {
 		after, nwhy = out.Next.After, out.Next.Why

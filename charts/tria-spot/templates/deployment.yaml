@@ -181,6 +181,9 @@ spec:
             {{- if dig "localPayloads" false $tmp }}
             - --temporal-local-payloads
             {{- end }}
+            {{- if hasKey $tmp "maxTasks" }}
+            - --max-tasks={{ get $tmp "maxTasks" | int }}
+            {{- end }}
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false

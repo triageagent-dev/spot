@@ -115,7 +115,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.Engine == config.EngineTemporal && cfg.MaxTasks > 0, Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {

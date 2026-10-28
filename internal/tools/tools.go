@@ -1,8 +1,9 @@
 // Package tools is the spot's tool surface. The model gets the tools of the
 // core's MCP server, of ego when it is configured and of each connector, named
-// <server>__<tool>, plus two the spot provides itself (schedule_next and
-// finish). The spot has no shell, no filesystem tools and no cluster access of
-// its own: a cluster is reached only through a connector.
+// <server>__<tool>, plus the ones the spot provides itself (schedule_next,
+// finish and, on the durable engine, start_task). The spot has no shell, no
+// filesystem tools and no cluster access of its own: a cluster is reached only
+// through a connector.
 package tools
 
 import (
@@ -80,7 +81,10 @@ type Options struct {
 	// chat message) is marked as data and cannot close the tag to pass for the
 	// supervisor's own words. The ego tools and the built-ins are not wrapped.
 	FenceResults bool
-	Logger       *slog.Logger
+	// Tasks offers start_task: work that runs on its own beside the turn. Only the
+	// durable engine can run one.
+	Tasks  bool
+	Logger *slog.Logger
 }
 
 // Defaults.
@@ -100,6 +104,16 @@ type ScheduleRequest struct {
 	After string
 	Why   string
 }
+
+// TaskRequest is a task the model asked start_task for: work for a turn of its
+// own, which starts with an empty conversation and only the goal.
+type TaskRequest struct {
+	Title string
+	Goal  string
+}
+
+// MaxTasksPerTurn is how many tasks one turn may start.
+const MaxTasksPerTurn = 3
 
 type route struct {
 	server string
@@ -122,6 +136,7 @@ type Registry struct {
 	routes   map[string]route
 	down     []string
 	next     *ScheduleRequest
+	tasks    []TaskRequest
 	summary  string
 	finished bool
 	recalled bool // a search_memory succeeded in this turn
@@ -157,6 +172,7 @@ func (r *Registry) Limit(on bool) {
 // durable engine carries it between calls, which may run in different processes.
 type State struct {
 	Next     *ScheduleRequest
+	Tasks    []TaskRequest
 	Summary  string
 	Finished bool
 	Recalled bool // a search_memory succeeded
@@ -173,6 +189,7 @@ func (r *Registry) State() State {
 		n := *r.next
 		st.Next = &n
 	}
+	st.Tasks = append([]TaskRequest(nil), r.tasks...)
 	return st
 }
 
@@ -182,6 +199,7 @@ func (r *Registry) SetState(st State) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.summary, r.finished, r.recalled, r.read, r.noted = st.Summary, st.Finished, st.Recalled, st.Read, st.Noted
+	r.tasks = append([]TaskRequest(nil), st.Tasks...)
 	r.next = nil
 	if st.Next != nil {
 		n := *st.Next
@@ -194,7 +212,7 @@ func (r *Registry) SetState(st State) {
 func (r *Registry) Begin() {
 	r.End()
 	r.mu.Lock()
-	r.next, r.summary, r.finished, r.recalled, r.read, r.noted = nil, "", false, false, false, false
+	r.next, r.tasks, r.summary, r.finished, r.recalled, r.read, r.noted = nil, nil, "", false, false, false, false
 	r.mu.Unlock()
 }
 
@@ -319,7 +337,7 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 		}
 	}
 	if !r.o.NotesOnly {
-		defs = append(defs, builtinDefs()...)
+		defs = append(defs, builtinDefs(r.o.Tasks && !limited)...)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(down)
@@ -361,6 +379,11 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 		return r.scheduleNext(input)
 	case Finish:
 		return r.finish(input)
+	case StartTask:
+		if !r.o.Tasks {
+			return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
+		}
+		return r.startTask(input)
 	}
 	r.mu.Lock()
 	rt, ok := r.routes[name]
@@ -524,13 +547,26 @@ func IsFinish(name string) bool {
 	return name == Finish
 }
 
-// IsBuiltin reports whether name is one of the spot's own tools, schedule_next
-// or finish, written with or without a prefix the model added.
+// IsBuiltin reports whether name is one of the spot's own tools, schedule_next,
+// finish or start_task, written with or without a prefix the model added.
 func IsBuiltin(name string) bool {
 	if i := strings.LastIndexAny(name, ":."); i >= 0 && i < len(name)-1 {
 		name = name[i+1:]
 	}
-	return name == ScheduleNext || name == Finish
+	return isBuiltinName(name)
+}
+
+// IsStartTask reports whether name is the start_task tool, with or without a
+// prefix the model added.
+func IsStartTask(name string) bool {
+	if i := strings.LastIndexAny(name, ":."); i >= 0 && i < len(name)-1 {
+		name = name[i+1:]
+	}
+	return name == StartTask
+}
+
+func isBuiltinName(name string) bool {
+	return name == ScheduleNext || name == Finish || name == StartTask
 }
 
 // canonicalName maps a tool name the model wrote to the one it was offered.
@@ -541,7 +577,7 @@ func IsBuiltin(name string) bool {
 // (the instruction names tools without the server prefix) is that tool. Nothing
 // else is guessed: a name that is not offered after this stays unknown.
 func (r *Registry) canonicalName(name string) string {
-	if name == ScheduleNext || name == Finish {
+	if isBuiltinName(name) {
 		return name
 	}
 	r.mu.Lock()
@@ -554,7 +590,7 @@ func (r *Registry) canonicalName(name string) string {
 	// built-in for a server's tool. There is no such tool, and the turn must not
 	// end without the schedule it asked for.
 	if j := strings.Index(name, "__"); j > 0 {
-		if bare := name[j+2:]; bare == ScheduleNext || bare == Finish {
+		if bare := name[j+2:]; isBuiltinName(bare) {
 			return bare
 		}
 	}
@@ -563,7 +599,7 @@ func (r *Registry) canonicalName(name string) string {
 		return r.onlyOffered(name)
 	}
 	bare := name[i+1:]
-	if bare == ScheduleNext || bare == Finish {
+	if isBuiltinName(bare) {
 		return bare
 	}
 	r.mu.Lock()
@@ -683,8 +719,8 @@ func (r *Registry) cut(s string) string {
 	return fmt.Sprintf("%s\n[result truncated: %d bytes dropped; ask for less next time: a name, a namespace, a limit]", s[:n], len(s)-n)
 }
 
-func builtinDefs() []llm.ToolDef {
-	return []llm.ToolDef{
+func builtinDefs(tasks bool) []llm.ToolDef {
+	defs := []llm.ToolDef{
 		{
 			Name: ScheduleNext,
 			Description: "Say when you want to be woken next. Call it once, as the last thing you do in a turn. " +
@@ -703,10 +739,32 @@ func builtinDefs() []llm.ToolDef {
 				`"required":["summary"],"additionalProperties":false}`),
 		},
 	}
+	if tasks {
+		defs = append(defs, llm.ToolDef{
+			Name: StartTask,
+			Description: "Start a task: a turn of its own that runs now, beside you and beside other tasks, and carries on after you finish. " +
+				"Use it for work that takes long or must not hold up answering a person, and to do several things at once. " +
+				"The task starts with an empty conversation and knows nothing of this one, so the goal must say what to check or do, where, and what to report. " +
+				"It has your tools and limits, cannot schedule wakes or start tasks, and posts to the room itself when the goal asks it to. " +
+				"Its one-line result comes back to you in your digest. At most 3 per turn; do not start one for what you can do in a few calls.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{` +
+				`"title":{"type":"string","description":"A few words that name the task."},` +
+				`"goal":{"type":"string","description":"The complete instruction for the task, with everything it needs to know."}},` +
+				`"required":["title","goal"],"additionalProperties":false}`),
+		})
+	}
+	return defs
 }
 
 // maxText bounds the free text a built-in keeps.
 const maxText = 400
+
+// maxTitle and maxGoal bound a task's words; the goal is the whole instruction
+// of a turn, so it may be long.
+const (
+	maxTitle = 80
+	maxGoal  = 4000
+)
 
 func (r *Registry) scheduleNext(input json.RawMessage) (string, bool) {
 	var in struct {
@@ -725,6 +783,27 @@ func (r *Registry) scheduleNext(input json.RawMessage) (string, bool) {
 	r.next = &n
 	r.mu.Unlock()
 	return "recorded: you will be woken in about " + d.String() + " (the supervisor keeps it within its limits)", false
+}
+
+func (r *Registry) startTask(input json.RawMessage) (string, bool) {
+	var in struct {
+		Title string `json:"title"`
+		Goal  string `json:"goal"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return "start_task needs a JSON object with title and goal: " + err.Error(), true
+	}
+	t := TaskRequest{Title: clip(in.Title, maxTitle), Goal: clip(in.Goal, maxGoal)}
+	if t.Title == "" || t.Goal == "" {
+		return "start_task needs a title and a goal; call it again with both", true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.tasks) >= MaxTasksPerTurn {
+		return fmt.Sprintf("not started: a turn may start %d tasks. Do the rest yourself or leave it for a later wake.", MaxTasksPerTurn), true
+	}
+	r.tasks = append(r.tasks, t)
+	return fmt.Sprintf("task %q accepted: it starts when you finish this turn, runs on its own and tells you its result in your digest. Do not wait for it.", t.Title), false
 }
 
 func (r *Registry) finish(input json.RawMessage) (string, bool) {

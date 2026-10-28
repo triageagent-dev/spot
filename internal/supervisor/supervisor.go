@@ -586,12 +586,23 @@ func (s *Supervisor) idleWake(reason, why, source string) {
 // reportWake tells the core one line of the spot's activity, when a wake ends:
 // the turn's counts, or zeros for a wake that made no model call. Labels and
 // counts only, never what was said.
+// maxLabel is the longest reason the core keeps on a line of activity.
+const maxLabel = 24
+
+// clipLabel cuts a label to maxLabel bytes at a character boundary.
+func clipLabel(s string) string {
+	if len(s) <= maxLabel {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxLabel], "")
+}
+
 func (s *Supervisor) reportWake(reason, lane, outcome string, res agent.Result, next time.Time, nextSource string) {
 	if s.trig == nil {
 		return
 	}
 	w := triggers.Wake{
-		TS: s.now().UnixMilli(), Reason: reason, Lane: lane, Outcome: outcome,
+		TS: s.now().UnixMilli(), Reason: clipLabel(reason), Lane: lane, Outcome: outcome,
 		DurationMs: res.Duration.Milliseconds(), Steps: int64(res.Steps), ToolCalls: int64(res.ToolCalls),
 		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
 	}
