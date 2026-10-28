@@ -19,9 +19,42 @@ import (
 
 // Names of the signals and the query of the spot workflow.
 const (
-	SignalWake = "wake"
-	QueryState = "state"
+	SignalWake    = "wake"
+	SignalControl = "control"
+	QueryState    = "state"
 )
+
+// Operations on the work the spot has in hand.
+const (
+	OpList    = "list"
+	OpStop    = "stop"    // cancel: the turn ends at its next step and closes its tools
+	OpKill    = "kill"    // terminate: the turn is cut at once
+	OpRestart = "restart" // stop a task and start the same one again
+	OpDrop    = "drop"    // remove a task that has not started
+)
+
+// ControlSignal asks the spot workflow to act on one wake (Key).
+type ControlSignal struct {
+	Op  string
+	Key string
+}
+
+// TaskInfo is one wake the spot has in hand: running, or (a task only) waiting
+// for a place. Key names it in the operations.
+type TaskInfo struct {
+	Key     string
+	Title   string // a task's title; the reason of any other wake
+	Lane    string
+	State   string // running | queued
+	Started time.Time
+}
+
+// ControlResult is what an operation did and what the spot has in hand after it.
+type ControlResult struct {
+	OK   bool
+	Msg  string
+	Work []TaskInfo
+}
 
 // Lanes: the long one runs the scheduled, startup and edge wakes, one at a time;
 // the short one a person's message and a wake a person asked for, one at a time
@@ -196,6 +229,8 @@ type SpotState struct {
 	NextWhy string
 	Promise time.Time
 	Held    int // wakes that ended at a hold rule
-	Tokens  int64
-	Log     []string
+	// Work is every wake running and every task waiting.
+	Work   []TaskInfo
+	Tokens int64
+	Log    []string
 }

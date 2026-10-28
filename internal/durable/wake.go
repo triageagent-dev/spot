@@ -94,6 +94,9 @@ func WakeWorkflow(ctx workflow.Context, in WakeIn) (WakeOut, error) {
 	switch {
 	case err != nil:
 		out.Failed, out.Err = true, "the tools could not be listed: "+errText(err)
+		if turnCtx.Err() != nil && !timedOut {
+			out.Failed, out.Err = false, "the turn was cancelled" // stopped by an operator, not a failure
+		}
 		endTyping()
 		finish("", out.Err)
 		return out, nil

@@ -139,6 +139,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	})}
 
 	// watch gives the supervisor the core's trigger stream, when it is configured.
+	var stream *triggers.Client
 	watch := func() error {
 		if cfg.CoreAPIURL == "" {
 			return nil
@@ -149,6 +150,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		}
 		go tc.Run(ctx)
 		sup.SetTrigger(tc)
+		stream = tc
 		return nil
 	}
 
@@ -174,6 +176,9 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			eng.Close()
 			log.Error("temporal worker", "err", err)
 			return 1
+		}
+		if stream != nil {
+			stream.SetControl(controlOf(eng))
 		}
 		log.Info("engine: temporal", "address", cfg.TemporalAddress, "namespace", cfg.TemporalNamespace, "workflow", eng.WorkflowID(),
 			"encrypted", cfg.TemporalPayloadKeyFile != "" && !cfg.TemporalLocalPayloads, "payloadsKeptHere", cfg.TemporalLocalPayloads)

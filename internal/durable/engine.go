@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
@@ -205,4 +206,75 @@ func (e *Engine) State(ctx context.Context) (SpotState, error) {
 		return st, err
 	}
 	return st, v.Get(&st)
+}
+
+// controlWait is how long an operation waits to see its effect before it answers
+// with what the spot has in hand.
+const controlWait = 3 * time.Second
+
+// Control acts on one wake of the spot (key) and answers with what the spot has
+// in hand after it. A key the spot does not have is refused, so no other
+// workflow can be named through it.
+func (e *Engine) Control(ctx context.Context, op, key string) ControlResult {
+	st, err := e.State(ctx)
+	if err != nil {
+		return ControlResult{Msg: "the spot's workflow does not answer: " + errText(err)}
+	}
+	if op == OpList {
+		return ControlResult{OK: true, Work: st.Work}
+	}
+	var w *TaskInfo
+	for i := range st.Work {
+		if st.Work[i].Key == key {
+			w = &st.Work[i]
+		}
+	}
+	refuse := func(msg string) ControlResult { return ControlResult{Msg: msg, Work: st.Work} }
+	switch {
+	case w == nil:
+		return refuse(fmt.Sprintf("%q is not running or waiting", key))
+	case op == OpDrop && w.State != "queued":
+		return refuse("only a task that has not started can be dropped; stop or kill it")
+	case op != OpDrop && w.State != "running":
+		return refuse("it has not started: drop it")
+	case op == OpRestart && w.Lane != LaneTask:
+		return refuse("only a task can be restarted")
+	}
+	switch op {
+	case OpKill:
+		err := e.c.TerminateWorkflow(ctx, key, "", "ended by an operator")
+		var nf *serviceerror.NotFound
+		if errors.As(err, &nf) {
+			// Its turn has not begun (the wake is being prepared): the stop is kept
+			// and cancels the turn before it starts.
+			err = e.c.SignalWorkflow(ctx, e.o.WorkflowID, "", SignalControl, ControlSignal{Op: OpStop, Key: key})
+		}
+		if err != nil {
+			return refuse("could not end it: " + errText(err))
+		}
+	case OpStop, OpRestart, OpDrop:
+		if err := e.c.SignalWorkflow(ctx, e.o.WorkflowID, "", SignalControl, ControlSignal{Op: op, Key: key}); err != nil {
+			return refuse("could not tell the workflow: " + errText(err))
+		}
+	default:
+		return refuse(fmt.Sprintf("%q is not one of list, stop, kill, restart, drop", op))
+	}
+	// Wait for the effect: gone from the list, or (a restart) a different task.
+	deadline := time.Now().Add(controlWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(150 * time.Millisecond)
+		now, err := e.State(ctx)
+		if err != nil {
+			break
+		}
+		st = now
+		still := false
+		for _, x := range st.Work {
+			still = still || x.Key == key
+		}
+		if !still {
+			return ControlResult{OK: true, Msg: op + " done", Work: st.Work}
+		}
+	}
+	return ControlResult{OK: true, Msg: op + " asked: the turn ends at its next step", Work: st.Work}
 }

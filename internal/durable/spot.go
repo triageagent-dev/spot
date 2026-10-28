@@ -3,6 +3,7 @@ package durable
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -51,7 +52,26 @@ type spot struct {
 
 	// Tasks: how many run, how many may, and those waiting for a place.
 	tasks, maxTasks int
-	taskQ           []tools.TaskRequest
+	taskQ           []queuedTask
+	qseq            int
+
+	// running is every wake in hand, by key, for the operations on it.
+	running map[string]*work
+}
+
+// queuedTask is a task waiting for a place, with a key to drop it by.
+type queuedTask struct {
+	key string
+	req tools.TaskRequest
+}
+
+// work is a wake in hand: what the operations act on.
+type work struct {
+	info    TaskInfo
+	req     tools.TaskRequest // a task's own words, to start it again
+	cancel  workflow.CancelFunc
+	stopped bool // stop was asked; the turn is not a failure
+	restart bool // start the same task again when it ends
 }
 
 // SpotWorkflow is the spot: it waits for the intake's signals and for its own
@@ -60,7 +80,7 @@ type spot struct {
 // backoff are its state. The intake, the notes, the prompt and the books are the
 // process's, reached through activities.
 func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
-	s := &spot{name: name, c: carry, busy: map[string]bool{}, waiting: map[string]*queued{}}
+	s := &spot{name: name, c: carry, busy: map[string]bool{}, waiting: map[string]*queued{}, running: map[string]*work{}}
 	s.st.Wakes = carry.Wakes
 	s.st.Next, s.st.NextWhy, s.st.Promise = carry.Next, carry.NextWhy, carry.Promise.At
 	s.changed = workflow.NewBufferedChannel(ctx, 64)
@@ -68,6 +88,7 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 		s.st.Long, s.st.Short = s.busy[LaneLong], s.busy[LaneShort]
 		s.st.Queued = len(s.waiting)
 		s.st.Tasks, s.st.TaskQ = s.tasks, len(s.taskQ)
+		s.st.Work = s.work()
 		s.st.Promise = s.c.Promise.At
 		s.st.Next, s.st.NextWhy = s.c.Next, s.c.NextWhy
 		return s.st, nil
@@ -75,6 +96,7 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 		return err
 	}
 	wakes := workflow.GetSignalChannel(ctx, SignalWake)
+	controls := workflow.GetSignalChannel(ctx, SignalControl)
 
 	for {
 		for {
@@ -83,6 +105,13 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 				break
 			}
 			s.onSignal(ctx, w)
+		}
+		for {
+			var c ControlSignal
+			if !controls.ReceiveAsync(&c) {
+				break
+			}
+			s.onControl(ctx, c)
 		}
 		if (workflow.GetInfo(ctx).GetContinueAsNewSuggested() || workflow.Now(ctx).Sub(workflow.GetInfo(ctx).WorkflowStartTime) > maxRunAge) && s.st.Open == 0 && len(s.waiting) == 0 {
 			c := s.c
@@ -95,6 +124,11 @@ func SpotWorkflow(ctx workflow.Context, name string, carry Carry) error {
 			var w WakeSignal
 			c.Receive(ctx, &w)
 			s.onSignal(ctx, w)
+		})
+		sel.AddReceive(controls, func(c workflow.ReceiveChannel, _ bool) {
+			var cs ControlSignal
+			c.Receive(ctx, &cs)
+			s.onControl(ctx, cs)
 		})
 		sel.AddReceive(s.changed, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, nil) })
 		if at, kind := s.due(); kind != "" {
@@ -201,8 +235,11 @@ func (s *spot) start(ctx workflow.Context, lane string, q *queued, why string, p
 	s.st.Open++
 	s.st.Wakes++
 	key := fmt.Sprintf("%s-wake-%d", s.name, s.st.Wakes)
+	wk := &work{info: TaskInfo{Key: key, Title: q.reason, Lane: lane, State: "running", Started: workflow.Now(ctx)}}
+	s.running[key] = wk
 	workflow.Go(ctx, func(ctx workflow.Context) {
 		s.runWake(ctx, key, lane, q, why, promise)
+		delete(s.running, key)
 		s.st.Open--
 		s.busy[lane] = false
 		if next := s.waiting[lane]; next != nil {
@@ -221,24 +258,72 @@ func (s *spot) startTask(ctx workflow.Context, t tools.TaskRequest) {
 			s.log(ctx, "task %q dropped: %d are waiting", t.Title, len(s.taskQ))
 			return
 		}
-		s.taskQ = append(s.taskQ, t)
+		s.qseq++
+		s.taskQ = append(s.taskQ, queuedTask{key: fmt.Sprintf("queued-%d", s.qseq), req: t})
 		return
 	}
 	s.tasks++
 	s.st.Open++
 	s.st.Wakes++
 	key := fmt.Sprintf("%s-wake-%d", s.name, s.st.Wakes)
+	wk := &work{req: t, info: TaskInfo{Key: key, Title: t.Title, Lane: LaneTask, State: "running", Started: workflow.Now(ctx)}}
+	s.running[key] = wk
 	workflow.Go(ctx, func(ctx workflow.Context) {
 		s.runWake(ctx, key, LaneTask, &queued{reason: ReasonTask, title: t.Title, goal: t.Goal}, "", false)
+		delete(s.running, key)
 		s.st.Open--
 		s.tasks--
+		if wk.restart {
+			s.startTask(ctx, t) // a restart keeps its place: it is not behind what waited
+		}
 		if len(s.taskQ) > 0 && s.tasks < s.maxTasks {
 			next := s.taskQ[0]
 			s.taskQ = s.taskQ[1:]
-			s.startTask(ctx, next)
+			s.startTask(ctx, next.req)
 		}
 		s.poke()
 	})
+}
+
+// work lists what the spot has in hand: its wakes and tasks, then the tasks
+// waiting for a place.
+func (s *spot) work() []TaskInfo {
+	out := make([]TaskInfo, 0, len(s.running)+len(s.taskQ))
+	for _, w := range s.running {
+		out = append(out, w.info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Started.Before(out[j].Started) })
+	for _, q := range s.taskQ {
+		out = append(out, TaskInfo{Key: q.key, Title: q.req.Title, Lane: LaneTask, State: "queued"})
+	}
+	return out
+}
+
+// onControl acts on a wake an operator named. The engine checked the key; one
+// that has ended meanwhile is only logged.
+func (s *spot) onControl(ctx workflow.Context, c ControlSignal) {
+	switch c.Op {
+	case OpDrop:
+		for i, q := range s.taskQ {
+			if q.key == c.Key {
+				s.taskQ = append(s.taskQ[:i], s.taskQ[i+1:]...)
+				s.log(ctx, "task %q dropped by an operator", q.req.Title)
+				return
+			}
+		}
+	case OpStop, OpRestart:
+		w := s.running[c.Key]
+		if w == nil {
+			s.log(ctx, "%s %s: not running any more", c.Op, c.Key)
+			return
+		}
+		w.stopped = true
+		w.restart = c.Op == OpRestart && w.info.Lane == LaneTask
+		if w.cancel != nil {
+			w.cancel()
+		}
+		s.log(ctx, "%s: %s asked by an operator", c.Key, c.Op)
+	}
 }
 
 // activity options of the process-side steps. The books run once: a retry would
@@ -319,6 +404,15 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	cctx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 		WorkflowID: key, WorkflowExecutionTimeout: po.Turn + 5*time.Minute,
 	})
+	cctx, cancelChild := workflow.WithCancel(cctx)
+	defer cancelChild()
+	wk := s.running[key]
+	if wk != nil {
+		wk.cancel = cancelChild
+		if wk.stopped {
+			cancelChild() // stop was asked while the wake was being prepared
+		}
+	}
 	var out WakeOut
 	err = workflow.ExecuteChildWorkflow(cctx, WakeWorkflow, WakeIn{
 		SpotID: workflow.GetInfo(ctx).WorkflowExecution.ID, SpotRun: workflow.GetInfo(ctx).WorkflowExecution.RunID,
@@ -343,8 +437,11 @@ func (s *spot) runWake(ctx workflow.Context, key, lane string, q *queued, why st
 	if lane == LaneTask {
 		// A task changes no schedule and starts no task: it ends with its result.
 		in.Source = "task"
-		if ao.Failed {
+		switch {
+		case ao.Failed:
 			in.Summary = "failed: " + out.Err
+		case wk != nil && wk.stopped && in.Summary == "":
+			in.Summary = "stopped by an operator before it finished"
 		}
 		s.log(ctx, "%s: task %q steps=%d tools=%d failed=%v", key, q.title, out.Steps, out.ToolCalls, ao.Failed)
 		announce(in)

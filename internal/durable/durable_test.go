@@ -864,3 +864,102 @@ func TestATaskCannotScheduleOrStartTasks(t *testing.T) {
 		t.Fatalf("a task changed the schedule: %+v", st)
 	}
 }
+
+// An operator lists the work, drops a task that waits, stops, restarts and kills
+// the ones that run; a key the spot does not have is refused.
+func TestAnOperatorCanListStopRestartKillAndDropTasks(t *testing.T) {
+	r := newRig(t, nil)
+	r.host.maxTasks = 1
+	r.model.fn = func(first string, n int, _ string) llm.Response {
+		switch {
+		case strings.Contains(first, "Wake reason: task"):
+			return use(llm.Call{Name: "core__slow_read"}) // reads until it is cut
+		case strings.Contains(first, "Wake reason: edge") && n == 0:
+			return use(startTask("a", "loop"), startTask("b", "loop"), startTask("c", "loop"), finish("three tasks"))
+		}
+		return use(finish("done"))
+	}
+	ctx := context.Background()
+	eng := r.engine()
+	titles := func(ws []TaskInfo, lane, state string) (out []string) {
+		for _, w := range ws {
+			if w.Lane == lane && w.State == state {
+				out = append(out, w.Title)
+			}
+		}
+		return out
+	}
+	find := func(ws []TaskInfo, title string) string {
+		for _, w := range ws {
+			if w.Title == title && w.Lane == LaneTask {
+				return w.Key
+			}
+		}
+		return ""
+	}
+	r.wake(ReasonEdge, "go")
+	r.waitFor("a running and two waiting", 10*time.Second, func() bool {
+		ws := r.stateOrZero().Work
+		return len(titles(ws, LaneTask, "running")) == 1 && len(titles(ws, LaneTask, "queued")) == 2
+	})
+	ws := eng.Control(ctx, OpList, "").Work
+	if got := titles(ws, LaneTask, "running"); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("list: %+v", ws)
+	}
+	// Drop what waits; a task that waits cannot be killed.
+	if res := eng.Control(ctx, OpKill, find(ws, "b")); res.OK {
+		t.Errorf("a task that has not started was killed: %+v", res)
+	}
+	if res := eng.Control(ctx, OpDrop, find(ws, "c")); !res.OK || find(res.Work, "c") != "" {
+		t.Fatalf("drop: %+v", res)
+	}
+	if res := eng.Control(ctx, OpStop, "no-such-wake"); res.OK || !strings.Contains(res.Msg, "not running") {
+		t.Errorf("a key the spot does not have: %+v", res)
+	}
+	if res := eng.Control(ctx, OpDrop, find(ws, "a")); res.OK {
+		t.Errorf("a running task was dropped: %+v", res)
+	}
+	// Restart a: it runs again under a new key and b still waits behind it.
+	oldA := find(ws, "a")
+	if res := eng.Control(ctx, OpRestart, oldA); !res.OK {
+		t.Fatalf("restart: %+v", res)
+	}
+	r.waitFor("a to run again", 10*time.Second, func() bool {
+		ws := r.stateOrZero().Work
+		k := find(ws, "a")
+		return k != "" && k != oldA && len(titles(ws, LaneTask, "queued")) == 1
+	})
+	// Kill it: b takes its place.
+	newA := find(r.stateOrZero().Work, "a")
+	if res := eng.Control(ctx, OpKill, newA); !res.OK || find(res.Work, "a") != "" {
+		t.Fatalf("kill: %+v", res)
+	}
+	r.waitFor("b to run", 10*time.Second, func() bool {
+		return find(r.stateOrZero().Work, "b") != "" && len(titles(r.stateOrZero().Work, LaneTask, "queued")) == 0
+	})
+	// Stop b: nothing is left of the tasks.
+	if res := eng.Control(ctx, OpStop, find(r.stateOrZero().Work, "b")); !res.OK {
+		t.Fatalf("stop: %+v", res)
+	}
+	r.waitFor("no task", 10*time.Second, func() bool { return len(titles(r.stateOrZero().Work, LaneTask, "running")) == 0 })
+	r.host.mu.Lock()
+	defer r.host.mu.Unlock()
+	var stopped, failed int
+	for _, a := range r.host.announces {
+		if a.Lane != LaneTask {
+			continue
+		}
+		if strings.HasPrefix(a.Summary, "stopped by an operator") {
+			stopped++
+		}
+		if a.Failed {
+			failed++
+		}
+	}
+	// The kill of the restarted task lands on a turn that has begun (a failure
+	// with a reason) or on one still being prepared (a stop): either way three
+	// tasks ended, and an operator's stop is never a failure.
+	if stopped < 2 || stopped+failed != 3 {
+		t.Fatalf("the books: %d stopped, %d failed: %+v", stopped, failed, r.host.announces)
+	}
+}

@@ -69,6 +69,49 @@ type Wake struct {
 	NextSource string `json:"nextSource,omitempty"`
 }
 
+// Control is the core asking the spot to act on one of its wakes (a task):
+// list, stop, kill, restart or drop. Task is the key a list gave, empty for
+// list. The spot answers every Control exactly once, with the same ID.
+type Control struct {
+	ID   string `json:"id"`
+	Op   string `json:"op"`
+	Task string `json:"task,omitempty"`
+}
+
+// TaskLine is one wake the spot has in hand: running, or a task waiting for a
+// place. Title is a task's title (80 bytes at most), never its goal.
+type TaskLine struct {
+	Key       string `json:"key"`
+	Title     string `json:"title,omitempty"`
+	Lane      string `json:"lane,omitempty"`
+	State     string `json:"state"`
+	StartedMs int64  `json:"startedMs,omitempty"`
+	AgeMs     int64  `json:"ageMs,omitempty"`
+}
+
+// ControlResult answers a Control: whether it was done, a short message for the
+// person who asked, and what the spot has in hand afterwards.
+type ControlResult struct {
+	ID    string     `json:"id"`
+	OK    bool       `json:"ok"`
+	Msg   string     `json:"msg,omitempty"`
+	Tasks []TaskLine `json:"tasks,omitempty"`
+}
+
+// Limits of a Control and of its answer.
+const (
+	maxTaskKey   = 128
+	maxTaskLines = 100
+	maxTitle     = 80
+	// ControlTimeout is how long a Control may take; the core gives up on its
+	// own after 10 s.
+	ControlTimeout = 8 * time.Second
+)
+
+// ControlFunc acts on a Control. It is given a context that ends at
+// ControlTimeout.
+type ControlFunc func(context.Context, Control) ControlResult
+
 // Stats is how the spot is doing, a snapshot the core keeps for its clients.
 type Stats struct {
 	State         string           `json:"state,omitempty"`
@@ -157,6 +200,9 @@ type Client struct {
 
 	wmu  sync.Mutex // one writer at a time
 	conn *websocket.Conn
+
+	cmu     sync.Mutex
+	control ControlFunc
 }
 
 // New builds a client for a core API base URL (http:// or https://) and a
@@ -217,6 +263,52 @@ func (c *Client) ReportTurn(t Turn) {
 	}
 	c.mu.Unlock()
 	c.flush()
+}
+
+// SetControl sets what answers the core's controls. Without it every control is
+// refused.
+func (c *Client) SetControl(f ControlFunc) {
+	c.cmu.Lock()
+	c.control = f
+	c.cmu.Unlock()
+}
+
+// answer runs one control and sends its result, once, whatever happens.
+func (c *Client) answer(ctl Control) {
+	res := ControlResult{ID: ctl.ID}
+	c.cmu.Lock()
+	f := c.control
+	c.cmu.Unlock()
+	switch {
+	case ctl.ID == "" || ctl.Op == "":
+		return // nothing to answer to
+	case len(ctl.Task) > maxTaskKey:
+		res.Msg = "the task key is too long"
+	case f == nil:
+		res.Msg = "this spot has no tasks to control: it does not run the temporal engine"
+	default:
+		ctx, cancel := context.WithTimeout(context.Background(), ControlTimeout)
+		done := make(chan ControlResult, 1)
+		go func() { done <- f(ctx, ctl) }()
+		select {
+		case res = <-done:
+		case <-ctx.Done():
+			res.Msg = "the spot did not finish in time; ask for the list to see where it stands"
+		}
+		cancel()
+		res.ID = ctl.ID
+	}
+	if len(res.Tasks) > maxTaskLines {
+		res.Tasks = res.Tasks[:maxTaskLines]
+	}
+	for i := range res.Tasks {
+		if t := res.Tasks[i].Title; len(t) > maxTitle {
+			res.Tasks[i].Title = strings.ToValidUTF8(t[:maxTitle], "")
+		}
+	}
+	if err := c.send(map[string]any{"controlResult": res}); err != nil {
+		c.log.Debug("control not answered: the stream is down", "op", ctl.Op)
+	}
 }
 
 // ReportWake sends one line of activity. It is dropped while the stream is
@@ -292,6 +384,8 @@ type frame struct {
 	Rooms  []string `json:"rooms"`
 	Name   string   `json:"name"`
 	Budget *Budget  `json:"budget"`
+	// Control is the core asking for an operation on a task.
+	Control *Control `json:"control"`
 }
 
 const (
@@ -369,6 +463,10 @@ func (c *Client) once(ctx context.Context) (up bool, err error) {
 			return true, err
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readIdle))
+		if f.Control != nil {
+			go c.answer(*f.Control)
+			continue
+		}
 		if f.Hello {
 			c.connected.Store(true)
 		}
