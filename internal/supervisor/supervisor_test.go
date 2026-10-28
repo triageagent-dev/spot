@@ -56,6 +56,7 @@ type fakeCore struct {
 	identities int                    // how many times it was read
 	rules      []string               // the standing notes the core holds
 	hold       bool                   // a rule says: check nothing until a person asks
+	lists      int                    // how many times the open issues were read
 }
 
 func (f *fakeCore) StandingNotes(context.Context, string) ([]string, bool, error) {
@@ -93,6 +94,7 @@ func (f *fakeCore) typingLog() string {
 func (f *fakeCore) ListOpenIssues(context.Context) ([]corecli.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lists++
 	out := append([]corecli.Issue(nil), f.issues...)
 	if f.late != nil {
 		out = append(out, f.late()...)

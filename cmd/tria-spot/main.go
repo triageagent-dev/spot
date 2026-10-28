@@ -148,6 +148,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	core := corecli.New(cfg.CoreMCPURL, cfg.CoreTokenFile, cfg.Tenant)
+	core.SetLogger(log)
 	defer core.Close()
 
 	template, err := loadInstruction(ctx, core, cfg.InstructionCell, log)

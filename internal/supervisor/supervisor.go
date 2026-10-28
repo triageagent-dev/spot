@@ -740,7 +740,10 @@ func (s *Supervisor) setTriggers(mode string) {
 
 func (s *Supervisor) untilNext() time.Duration {
 	d := s.cfg.PollInterval
-	if !s.nextTick.IsZero() {
+	// With the durable engine the workflow owns the schedule: nextTick is only
+	// what the core is told, and a past one (a wake that could not finish) is not
+	// something this loop acts on, so it must not shorten the sleep to nothing.
+	if !s.nextTick.IsZero() && s.sink == nil {
 		if until := s.nextTick.Sub(s.now()); until < d {
 			d = until
 		}

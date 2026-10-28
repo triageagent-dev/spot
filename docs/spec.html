@@ -434,7 +434,7 @@ pre code { background: none; padding: 0; font: 400 .8rem/1.6 var(--mono); white-
     <tr><td class="k">room cursors</td><td>Saved in <code>/state/supervisor</code>; a message sent while the pod was down is news on start. A room&rsquo;s first read only sets the cursor.</td></tr>
     <tr><td class="k">failed wake</td><td>Failed before its first model request (no core tools, rejected credential, timeout): its facts are put back. An edge put back three times is dropped.</td></tr>
     <tr><td class="k">heartbeat</td><td><code>upsert_memory_item</code>, kind <code>note</code>, <code>stale_after</code> twice the next sleep (at least 5m), refreshed after every successful turn. A failed turn leaves it, so reflection resumes.</td></tr>
-    <tr><td class="k">core down</td><td>No core connection or tool list fails the turn (<code>coreDown</code>); the model never starts without its tools.</td></tr>
+    <tr><td class="k">core down</td><td>No core connection or tool list fails the turn (<code>coreDown</code>); the model never starts without its tools. The supervisor&rsquo;s own client of the core waits after a failed connection (1 s, doubling to 5 min) and says so once a minute; when the core refuses the token it sends nothing more until the token file holds another one.</td></tr>
   </table></div>
 
   <h3>A message while a turn runs</h3>

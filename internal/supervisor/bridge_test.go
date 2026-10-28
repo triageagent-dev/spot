@@ -3,7 +3,9 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -487,5 +489,38 @@ func TestTheBridgeTellsTheCoreItsTasksInTheStats(t *testing.T) {
 		if w.Lane == "task" && w.Key != key {
 			t.Fatalf("the activity line names %q, the task list %q", w.Key, key)
 		}
+	}
+}
+
+type noSink struct{}
+
+func (noSink) Wake(context.Context, durable.WakeSignal) error { return nil }
+
+// The workflow owns the schedule: a next wake that is already past (a wake that
+// could not finish) must not make the supervisor read the core in a loop while
+// the stream is down. It reads once per poll interval.
+func TestTheBridgeDoesNotSpinOnAPastScheduleWhileTheCoreFails(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.PollInterval = 50 * time.Millisecond })
+	h.core.listErr = errors.New("401 unauthorized")
+	led, err := ledger.New(h.state)
+	must(t, err)
+	s := New(h.cfg, led, h.core, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.nextTick = s.now().Add(-time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.RunBridge(ctx, noSink{}) }()
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	h.core.mu.Lock()
+	n := h.core.lists
+	h.core.mu.Unlock()
+	if n > 40 {
+		t.Fatalf("the core was read %d times in 600ms with a %s poll interval", n, h.cfg.PollInterval)
+	}
+	if n < 3 {
+		t.Fatalf("the core was read %d times: the poll stopped", n)
 	}
 }

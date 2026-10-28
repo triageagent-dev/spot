@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -52,6 +53,21 @@ type RoomMessage struct {
 	Hop      int // machine-to-machine hop count the core carries; 0 when absent
 }
 
+// ErrCredentialRejected is what a call returns while the core has refused the
+// token in the token file and the file has not changed: nothing is sent until it
+// does.
+var ErrCredentialRejected = errors.New("the core rejected the credential; waiting for the token file to change")
+
+// Backoff of the connection after a failure: the first retry waits retryMin and
+// each failure doubles the wait up to retryMax. A refused credential is not
+// retried at all until the token file holds another one.
+const (
+	retryMin = time.Second
+	retryMax = 5 * time.Minute
+	// warnEvery is the least time between two warnings about the same trouble.
+	warnEvery = time.Minute
+)
+
 // Client talks to one core.
 type Client struct {
 	url       string
@@ -61,11 +77,30 @@ type Client struct {
 	mu    sync.Mutex
 	c     *client.Client
 	tools map[string]bool
+
+	log *slog.Logger
+	now func() time.Time
+	// The state of a connection that fails, under mu.
+	failures   int       // in a row
+	retryAt    time.Time // no attempt before it
+	lastErr    error
+	denied     bool   // the core refused deniedTok
+	deniedTok  string // the token the core refused
+	lastWarn   time.Time
+	suppressed int
 }
 
 // New returns a Client. It connects lazily.
 func New(url, tokenFile, tenant string) *Client {
-	return &Client{url: url, tokenFile: tokenFile, tenant: tenant}
+	return &Client{url: url, tokenFile: tokenFile, tenant: tenant, now: time.Now}
+}
+
+// SetLogger sets where the client says that the core cannot be reached: one
+// warning a minute, whatever the number of calls that failed.
+func (c *Client) SetLogger(l *slog.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.log = l
 }
 
 func (c *Client) token() string {
@@ -113,6 +148,77 @@ func (c *Client) connect(ctx context.Context) error {
 	return nil
 }
 
+// unauthorized reports whether err is the core refusing the token.
+func unauthorized(err error) bool {
+	if errors.Is(err, transport.ErrUnauthorized) || errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	// The client library wraps a 401 of the initialize call as text.
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "authorization required") || strings.Contains(m, "unauthorized") || strings.Contains(m, "(401)")
+}
+
+// open connects unless a failure of the last connection says to wait, and
+// holds back every attempt while the core refuses the token in the file. Must be
+// called with c.mu held.
+func (c *Client) open(ctx context.Context) error {
+	if c.c != nil {
+		return nil
+	}
+	tok := c.token()
+	if c.denied {
+		if tok == c.deniedTok {
+			return fmt.Errorf("%w: %v", ErrCredentialRejected, c.lastErr)
+		}
+		c.denied = false // another token: try it
+	}
+	if now := c.now(); now.Before(c.retryAt) {
+		return fmt.Errorf("the core was not reachable, next try in %s: %w", c.retryAt.Sub(now).Round(time.Second), c.lastErr)
+	}
+	err := c.connect(ctx)
+	if err == nil {
+		c.failures, c.lastErr, c.denied = 0, nil, false
+		return nil
+	}
+	c.failed(err, tok)
+	return err
+}
+
+// failed records a failed connection or call: a refused token stops the
+// attempts until the token file changes, any other failure waits longer each
+// time, and either is said once a minute.
+func (c *Client) failed(err error, tok string) {
+	c.lastErr = err
+	c.failures++
+	if unauthorized(err) {
+		c.denied, c.deniedTok = true, tok
+	} else {
+		d := retryMin << min(c.failures-1, 20)
+		if d > retryMax {
+			d = retryMax
+		}
+		c.retryAt = c.now().Add(d)
+	}
+	if c.log == nil {
+		return
+	}
+	if now := c.now(); now.Sub(c.lastWarn) < warnEvery {
+		c.suppressed++
+		return
+	} else {
+		c.lastWarn = now
+	}
+	next := "when the token file changes"
+	if !c.denied {
+		next = "in " + c.retryAt.Sub(c.now()).Round(time.Second).String()
+	}
+	c.log.Warn("the core's MCP endpoint cannot be used", "err", err, "failures", c.failures, "suppressed", c.suppressed, "nextTry", next)
+	c.suppressed = 0
+}
+
 func (c *Client) reset() {
 	if c.c != nil {
 		_ = c.c.Close()
@@ -131,7 +237,7 @@ func (c *Client) Close() {
 func (c *Client) HasTool(ctx context.Context, name string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.connect(ctx); err != nil {
+	if err := c.open(ctx); err != nil {
 		return false
 	}
 	return c.tools[name]
@@ -144,10 +250,11 @@ func (c *Client) call(ctx context.Context, name string, args map[string]any) (st
 	defer c.mu.Unlock()
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := c.connect(ctx); err != nil {
-			lastErr = err
+		if err := c.open(ctx); err != nil {
+			// The attempt that failed has said why, and so has the gate that
+			// refused it; a second try in the same call would only repeat it.
 			c.reset()
-			continue
+			return "", err
 		}
 		req := mcp.CallToolRequest{}
 		req.Params.Name = name
@@ -155,6 +262,11 @@ func (c *Client) call(ctx context.Context, name string, args map[string]any) (st
 		res, err := c.c.CallTool(ctx, req)
 		if err != nil {
 			lastErr = err
+			if unauthorized(err) {
+				c.failed(err, c.token())
+				c.reset()
+				return "", err
+			}
 			c.reset()
 			continue
 		}

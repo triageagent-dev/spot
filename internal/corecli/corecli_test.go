@@ -1,14 +1,18 @@
 package corecli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,5 +279,104 @@ func TestARuleTheSpotRewroteKeepsOnlyTheCoresStampAndStillHolds(t *testing.T) {
 	lines, hold := SelectNotes(items, "example-spot")
 	if !hold || len(lines) != 1 || !strings.HasPrefix(lines[0], "RULE:") {
 		t.Fatalf("hold=%v lines=%v", hold, lines)
+	}
+}
+
+// A core that refuses the token is asked once; nothing more is sent until the
+// token file holds another one.
+func TestARefusedTokenIsNotSentAgainUntilTheFileChanges(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte("expired"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := New(srv.URL+"/mcp", tok, "example")
+	defer c.Close()
+	var logs bytes.Buffer
+	c.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	_, err := c.ListOpenIssues(context.Background())
+	if err == nil {
+		t.Fatal("a refused token gave issues")
+	}
+	first := hits.Load()
+	if first == 0 {
+		t.Fatal("the core was never asked")
+	}
+	for i := 0; i < 200; i++ {
+		_, err = c.ListOpenIssues(context.Background())
+	}
+	if !errors.Is(err, ErrCredentialRejected) {
+		t.Fatalf("err = %v, want ErrCredentialRejected", err)
+	}
+	if hits.Load() != first {
+		t.Fatalf("%d requests after the refusal, want none", hits.Load()-first)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Fatalf("%d warnings for 201 failed calls, want 1:\n%s", n, logs.String())
+	}
+
+	// A new token is tried at once.
+	if err := os.WriteFile(tok, []byte("renewed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.ListOpenIssues(context.Background())
+	if hits.Load() == first {
+		t.Fatal("a changed token file was not tried")
+	}
+}
+
+// A core that cannot be reached is tried less and less often, up to a cap, and
+// the failures are said once a minute.
+func TestAnUnreachableCoreIsRetriedWithABackoff(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte("t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := New(srv.URL+"/mcp", tok, "example")
+	defer c.Close()
+	now := time.Unix(1_000_000, 0)
+	c.now = func() time.Time { return now }
+	var logs bytes.Buffer
+	c.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	ask := func() { _, _ = c.ListOpenIssues(context.Background()) }
+	ask()
+	one := hits.Load()
+	for i := 0; i < 50; i++ {
+		ask() // the same instant: gated
+	}
+	if hits.Load() != one {
+		t.Fatalf("%d requests inside the backoff", hits.Load()-one)
+	}
+	for _, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
+		now = now.Add(want)
+		before := hits.Load()
+		ask()
+		if hits.Load() == before {
+			t.Fatalf("no attempt after %s", want)
+		}
+	}
+	// The wait is capped.
+	for i := 0; i < 30; i++ {
+		now = now.Add(retryMax)
+		ask()
+	}
+	if got := c.retryAt.Sub(now); got != retryMax {
+		t.Fatalf("the backoff is %s, want the cap %s", got, retryMax)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n < 1 || n > 33 {
+		t.Fatalf("%d warnings:\n%s", n, logs.String())
 	}
 }

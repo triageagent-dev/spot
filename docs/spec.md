@@ -70,7 +70,7 @@ No model is used. With `--core-api-url` the core pushes content-free frames over
 | room cursors | Saved in `/state/supervisor`; a message sent while the pod was down is news on start. A room’s first read only sets the cursor. |
 | failed wake | Failed before its first model request (no core tools, rejected credential, timeout): its facts are put back. An edge put back three times is dropped. |
 | heartbeat | `upsert_memory_item`, kind `note`, `stale_after` twice the next sleep (at least 5m), refreshed after every successful turn. A failed turn leaves it, so reflection resumes. |
-| core down | No core connection or tool list fails the turn (`coreDown`); the model never starts without its tools. |
+| core down | No core connection or tool list fails the turn (`coreDown`); the model never starts without its tools. The supervisor’s own client of the core waits after a failed connection (1 s, doubling to 5 min) and says so once a minute; when the core refuses the token it sends nothing more until the token file holds another one. |
 
 ### A message while a turn runs
 
