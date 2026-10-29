@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,5 +144,27 @@ func TestWhatASuspensionWouldLoseIsOnTheDurableDirectory(t *testing.T) {
 	h.waitFor("an edge wake for the issue that came meanwhile", func() bool { return h.turns() >= 2 })
 	if in := h.file("stdin", 2); !strings.Contains(in, "new issue") {
 		t.Fatalf("the restored baseline did not tell the new issue:\n%s", in)
+	}
+}
+
+func TestTheSpansAreFlushedBeforeTheReportsLeave(t *testing.T) {
+	h, trig := substrateHarness(t)
+	var order []string
+	var mu sync.Mutex
+	trig.onIdle = func() { mu.Lock(); order = append(order, "idle"); mu.Unlock() }
+	h.flush = func() { mu.Lock(); order = append(order, "flush"); mu.Unlock() }
+	h.start()
+	defer h.stop()
+	h.waitFor("the first idle", func() bool { return trig.idleCount() > 0 })
+	before := trig.idleCount()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	h.waitFor("an idle after the turn", func() bool { return trig.idleCount() > before })
+	mu.Lock()
+	defer mu.Unlock()
+	for i, s := range order {
+		if s == "idle" && (i == 0 || order[i-1] != "flush") {
+			t.Fatalf("the reports left before the spans were flushed: %v", order)
+		}
 	}
 }

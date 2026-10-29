@@ -71,6 +71,7 @@
       "resources" (dict "limits" (dict "cpuMillicores" (int64 $sub.cpuMillicores) "memoryBytes" (int64 $sub.memoryBytes)))
       "snapshotConfig" (dict "preferredFidelity" "SNAPSHOT_FIDELITY_VOLUMES")
       "volumes" (list (dict "name" "state" "durableDir" (dict))) }}
+{{- if not $sub.goldenSnapshot }}{{ $_ := set (get $template "snapshotConfig") "goldenSnapshotConfig" (dict "mode" "GOLDEN_SNAPSHOT_MODE_DISABLED") }}{{ end }}
 {{- if $sub.workerSelector }}{{ $_ := set $template "workerSelector" (dict "matchLabels" $sub.workerSelector) }}{{ end }}
 # ActorTemplate: kubectl ate create actor-template -f -
 {{ toYaml $template }}

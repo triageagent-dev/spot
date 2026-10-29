@@ -251,6 +251,8 @@ type harness struct {
 	fast *scriptTurner
 	// task, when set, runs the tasks.
 	task *scriptTurner
+	// flush, when set, is what runs when the spot goes idle.
+	flush func()
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -304,6 +306,9 @@ func (h *harness) start() {
 	}
 	if h.task != nil {
 		h.sup.SetTaskTurner(func() Turner { return h.task })
+	}
+	if h.flush != nil {
+		h.sup.SetFlush(h.flush)
 	}
 	if h.trig != nil {
 		h.sup.SetTrigger(h.trig)
@@ -598,13 +603,18 @@ type fakeTrigger struct {
 	stats     []triggers.Stats
 	schedules []triggers.Schedule
 	idles     int
+	onIdle    func()
 }
 
 // Idle counts the times the supervisor said it had nothing left to do.
 func (f *fakeTrigger) Idle() {
 	f.mu.Lock()
 	f.idles++
+	on := f.onIdle
 	f.mu.Unlock()
+	if on != nil {
+		on()
+	}
 }
 
 func (f *fakeTrigger) idleCount() int {

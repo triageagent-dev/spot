@@ -88,6 +88,7 @@ type Supervisor struct {
 	// not (selfWakeAt).
 	nextTick     time.Time
 	scheduledWhy string
+	flush        func()          // runs when the spot goes idle (SetFlush)
 	order        *triggers.Order // a wake the core asked for, not yet taken
 	manual       *triggers.Order // a wake a person asked for from the console, not yet taken
 	// promise is the earliest wake the agent itself asked for that has not

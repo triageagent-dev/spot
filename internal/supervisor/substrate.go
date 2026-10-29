@@ -12,6 +12,11 @@ import (
 // ADR-107) is suspended whenever it is idle and starts cold on the next wake: a
 // process holds nothing between wakes but what is on its durable directory.
 
+// SetFlush sets what runs when the spot goes idle, before the reports leave: the
+// telemetry's flush, so the spans of the wake are out before the core can suspend
+// the actor.
+func (s *Supervisor) SetFlush(f func()) { s.flush = f }
+
 // Idler is a trigger that keeps its reports until the supervisor is idle and
 // then sends them all (internal/triggers.Link).
 type Idler interface{ Idle() }
@@ -43,6 +48,9 @@ func (s *Supervisor) idle() {
 		return
 	}
 	s.saveWindow()
+	if s.flush != nil {
+		s.flush() // what the exporter still holds is lost with the process, and so is the actor once the core suspends it
+	}
 	if i, ok := s.trig.(Idler); ok {
 		i.Idle()
 	}

@@ -33,7 +33,10 @@ const JoinPath = "/v2/messenger/spot/join"
 // Cert is how the spot proves who it is: its identity, and where the token the
 // core hands it is written.
 type Cert struct {
-	ID        *identity.Identity
+	ID *identity.Identity
+	// Open loads the identity when it is first needed, for a link that starts with
+	// the core's first request (Link); ID is then nil.
+	Open      func() (*identity.Identity, error)
 	Name      string // the spot's name, as in its certificate
 	Workspace string
 	Version   string

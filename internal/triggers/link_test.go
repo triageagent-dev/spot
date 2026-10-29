@@ -409,15 +409,54 @@ func frameReq(t *testing.T, l *Link, path, body string) *http.Response {
 	return resp
 }
 
-func TestReadyzIsAnswered503UntilTheLinkIsUp(t *testing.T) {
+func TestReadyzAnswersAsSoonAsTheServerListensAndTheLinkStartsWithTheFirstRequest(t *testing.T) {
 	c := newLinkCore(t)
-	l, _ := linkClient(t, c, t.TempDir())
-	if r := frameReq(t, l, "/readyz", ""); r.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("before hello: %d", r.StatusCode)
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(c.handler))
+	t.Cleanup(srv.Close)
+	tok := filepath.Join(dir, "token")
+	opened := make(chan struct{}, 4)
+	l, err := NewLink(srv.URL, Cert{Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok,
+		Open: func() (*identity.Identity, error) {
+			opened <- struct{}{}
+			return identity.Load(dir, "example-spot", "ws-1", identity.Fingerprint(c.caPub))
+		}}, quiet())
+	if err != nil {
+		t.Fatal(err)
 	}
-	l2, _, _ := upLink(t, newLinkCore(t))
-	if r := frameReq(t, l2, "/readyz", ""); r.StatusCode != http.StatusOK {
-		t.Errorf("after hello: %d", r.StatusCode)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	l.Serve(ctx)
+
+	// A process booted only to be snapshotted makes no key and does not join.
+	if r := frameReq(t, l, "/readyz", ""); r.StatusCode != http.StatusOK {
+		t.Errorf("readyz before any request: %d", r.StatusCode)
+	}
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-opened:
+		t.Fatal("the identity was opened before the core asked for anything")
+	default:
+	}
+	if _, err := os.Stat(filepath.Join(dir, "key")); err == nil {
+		t.Fatal("a key was made at boot")
+	}
+	if len(c.posts) != 0 {
+		t.Fatalf("the actor spoke to the core at boot: %v", c.posts)
+	}
+
+	// The first frame is accepted at once, and the join and hello follow.
+	if r := frameReq(t, l, "/frame", `{"wake":{"reason":"tick","why":"first"}}`); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer wcancel()
+	if err := l.WaitReady(wctx); err != nil {
+		t.Fatalf("never ready: %v", err)
+	}
+	wait(t, "connected", l.Connected)
+	if p := l.Take(); p.Order == nil || p.Order.Why != "first" {
+		t.Errorf("the frame that started the link was lost: %+v", p)
 	}
 }
 

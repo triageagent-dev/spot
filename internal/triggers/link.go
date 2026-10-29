@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +61,12 @@ type Link struct {
 	ready     chan struct{}
 	reauth    chan struct{}
 
+	// The link starts with the first request of the core, not with the process:
+	// an actor is also booted to be snapshotted before it has a wake, and the key
+	// it made then would be in every actor made from that snapshot.
+	startOnce sync.Once
+	runCtx    context.Context
+
 	// Guarded by inbox.mu.
 	outbox []Turn
 	wakes  []Wake
@@ -79,8 +86,8 @@ type Link struct {
 // identity is the same as the stream's (Cert); the token the core hands over is
 // written to Cert.TokenFile, where the MCP client reads it.
 func NewLink(apiURL string, cert Cert, log *slog.Logger) (*Link, error) {
-	if cert.ID == nil || cert.Name == "" || cert.Workspace == "" || cert.TokenFile == "" {
-		return nil, errors.New("a certificate identity needs an identity, a name, a workspace and a token file")
+	if (cert.ID == nil && cert.Open == nil) || cert.Name == "" || cert.Workspace == "" || cert.TokenFile == "" {
+		return nil, errors.New("a certificate identity needs an identity (or what opens it), a name, a workspace and a token file")
 	}
 	u, err := url.Parse(strings.TrimRight(apiURL, "/"))
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -304,13 +311,50 @@ func (l *Link) takeToken(t *tokenFrame) {
 	}
 }
 
+// Serve makes the link wait for the first request of the core: only then does it
+// open the identity, join and say hello. It returns at once; ctx ends the link.
+func (l *Link) Serve(ctx context.Context) {
+	l.mu.Lock()
+	l.runCtx = ctx
+	l.mu.Unlock()
+}
+
+// begin starts the link, once, when the core's first request arrives.
+func (l *Link) begin() {
+	l.startOnce.Do(func() {
+		l.mu.Lock()
+		ctx := l.runCtx
+		l.mu.Unlock()
+		if ctx == nil {
+			return // Run was called directly
+		}
+		go l.Run(ctx)
+	})
+}
+
+// open loads the identity the first time it is needed.
+func (l *Link) open() error {
+	if l.cert.ID != nil {
+		return nil
+	}
+	id, err := l.cert.Open()
+	if err != nil {
+		return err
+	}
+	l.cert.ID = id
+	return nil
+}
+
 // Run keeps the link up until ctx ends: it joins and says hello, says hello again
 // before the access token ends (the core does not renew it), and joins afresh
 // when the core stops accepting the token.
 func (l *Link) Run(ctx context.Context) {
 	backoff := minBackoff
 	for ctx.Err() == nil {
-		err := l.connect(ctx)
+		err := l.open()
+		if err == nil {
+			err = l.connect(ctx)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -543,11 +587,10 @@ func (l *Link) enrollKey() string { return readEnrollKey(&l.cert, l.log) }
 // Handler is the actor's HTTP server: the wake-up probe and the core's requests.
 func (l *Link) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// Ready as soon as the server listens: the join and the hello are done inside
+	// the first request of the core, which waits for them (a first join waits for a
+	// person to approve the spot).
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !l.connected.Load() {
-			http.Error(w, "the link to the core is not up", http.StatusServiceUnavailable)
-			return
-		}
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("POST /frame", l.serveFrame)
@@ -565,6 +608,7 @@ func (l *Link) serveFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	l.begin()
 	if c := f.Control; c != nil {
 		if c.ID == "" || c.Op == "" {
 			http.Error(w, "a control needs an id and an op", http.StatusBadRequest)
@@ -576,10 +620,6 @@ func (l *Link) serveFrame(w http.ResponseWriter, r *http.Request) {
 			l.mu.Unlock()
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"controlResult": l.bound(l.run(*c))})
-		return
-	}
-	if !l.connected.Load() {
-		http.Error(w, "the link to the core is not up", http.StatusServiceUnavailable)
 		return
 	}
 	f.Hello, f.Issues = false, false // the core's frames are the actor's wake; it reads the core itself

@@ -139,14 +139,19 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			return 1
 		}
 		if l, ok := tc.(*triggers.Link); ok {
+			// The server listens at once and the link starts with the core's first
+			// request, which the process then waits for.
 			shutdown, err := serve(cfg.Listen, l.Handler(), log)
 			if err != nil {
 				log.Error("listen", "addr", cfg.Listen, "err", err)
 				return 1
 			}
 			defer shutdown()
+			l.Serve(ctx)
+			log.Info("waiting for the core's first request")
+		} else {
+			go tc.Run(ctx)
 		}
-		go tc.Run(ctx)
 		stream = tc
 		if cfg.CertificateIdentity() {
 			log.Info("identity: certificate; waiting for the core to accept the spot", "stateDir", cfg.IdentityDir)
@@ -194,6 +199,15 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		})
 		sup.SetFastTurner(fast)
 		log.Info("short lane on", "maxToolCalls", cfg.FastMaxToolCalls, "maxTurnTokens", cfg.FastMaxTurnTokens)
+	}
+	if tel != nil && cfg.Substrate() {
+		sup.SetFlush(func() {
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tel.Flush(fctx); err != nil {
+				log.Warn("flushing spans", "err", err)
+			}
+		})
 	}
 	if stream != nil {
 		sup.SetTrigger(stream)
@@ -336,16 +350,24 @@ func newLink(cfg config.Config, log *slog.Logger) (coreLink, error) {
 	if !cfg.CertificateIdentity() {
 		return triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
 	}
-	id, err := identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)
+	cert := triggers.Cert{
+		Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile,
+	}
+	open := func() (*identity.Identity, error) {
+		return identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)
+	}
+	if cfg.Substrate() {
+		// The key is made when the core first asks, not when the process starts: an
+		// actor is booted to be snapshotted too, and a key made then would be in
+		// every actor made from the snapshot.
+		cert.Open = open
+		return triggers.NewLink(cfg.CoreAPIURL, cert, log)
+	}
+	id, err := open()
 	if err != nil {
 		return nil, err
 	}
-	cert := triggers.Cert{
-		ID: id, Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile,
-	}
-	if cfg.Substrate() {
-		return triggers.NewLink(cfg.CoreAPIURL, cert, log)
-	}
+	cert.ID = id
 	return triggers.NewCert(cfg.CoreAPIURL, cert, log)
 }
 
