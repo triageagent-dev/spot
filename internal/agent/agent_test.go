@@ -523,3 +523,55 @@ func TestOldToolResultsAreCutButTheRecentOnesAreWhole(t *testing.T) {
 		t.Error("cutting twice changed the result again")
 	}
 }
+
+// A run is visible as one line per model request and tool call: names and
+// numbers, never what was asked or answered.
+func TestTheTraceHasOneLinePerStepAndHoldsNoContent(t *testing.T) {
+	ft := newFakeTools()
+	f := llm.NewFake(
+		llm.ToolUse(u, llm.Call{Name: "core__list_open_issues", Input: `{"limit":15,"secret":"argument-text"}`}),
+		llm.ToolUse(u, llm.Call{Name: "finish", Input: `{"summary":"summary-text"}`}),
+	)
+	res := newAgent(f, ft, nil).Run(context.Background(), Turn{Reason: "tick", Prompt: "p"})
+	var kinds, names []string
+	for _, s := range res.Trace {
+		kinds = append(kinds, s.Kind)
+		names = append(names, s.Name)
+		if s.Kind == "model" && s.Tokens != u.Billable() {
+			t.Errorf("a model line carries the billable tokens of its request: %+v", s)
+		}
+		if s.Kind == "tool" && s.Tokens != 0 {
+			t.Errorf("a tool line has no tokens: %+v", s)
+		}
+		if strings.Contains(fmt.Sprint(s), "argument-text") || strings.Contains(fmt.Sprint(s), "summary-text") || strings.Contains(fmt.Sprint(s), `{"issues"`) {
+			t.Errorf("the trace holds content: %+v", s)
+		}
+	}
+	if got := strings.Join(kinds, ","); got != "model,tool,model,tool" {
+		t.Fatalf("kinds: %s (%+v)", got, res.Trace)
+	}
+	if names[1] != "core__list_open_issues" || names[3] != "finish" || names[0] != "fake-model" {
+		t.Errorf("names: %v", names)
+	}
+}
+
+func TestATraceOfMoreThanFortyLinesKeepsTheFirstThirtyNineAndSaysHowManyWereCut(t *testing.T) {
+	ft := newFakeTools()
+	var steps []llm.Step
+	for i := 0; i < 25; i++ {
+		steps = append(steps, llm.ToolUse(u, llm.Call{Name: "core__list_open_issues"}))
+	}
+	steps = append(steps, llm.ToolUse(u, llm.Call{Name: "finish", Input: `{"summary":"x"}`}))
+	res := newAgent(llm.NewFake(steps...), ft, func(o *Options) { o.MaxSteps, o.MaxToolCalls = 60, 100 }).Run(context.Background(), Turn{Prompt: "p"})
+	// 26 steps: 52 lines in all.
+	if len(res.Trace) != MaxTrace {
+		t.Fatalf("lines: %d", len(res.Trace))
+	}
+	last := res.Trace[MaxTrace-1]
+	if last.Kind != "cut" || last.Name != "13 cut" {
+		t.Errorf("last line: %+v", last)
+	}
+	if res.Trace[0].Kind != "model" || res.Trace[MaxTrace-2].Kind == "cut" {
+		t.Errorf("the first 39 are kept: %+v", res.Trace[:3])
+	}
+}

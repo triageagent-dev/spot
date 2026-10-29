@@ -385,3 +385,35 @@ func TestTheScheduleIsSentOnceAfterTheHello(t *testing.T) {
 		t.Fatal("no wake report")
 	}
 }
+
+// The core asks for a wake with a control of op "wake": the spot keeps it for the
+// loop and answers at once, "asked", with what it has in hand.
+func TestAControlOfOpWakeIsKeptForTheLoopAndAnswered(t *testing.T) {
+	url, got := controlServer(t, `{"control":{"id":"9","op":"wake","why":"from the console"}}`)
+	c, err := New(url, "example", tokenFile(t, "tok"), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetControl(func(_ context.Context, ctl Control) ControlResult {
+		if ctl.Op != "list" {
+			t.Errorf("the answer asks for the list, not %q", ctl.Op)
+		}
+		return ControlResult{Tasks: []TaskLine{{Key: "w-1", State: "running"}}}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	wait(t, "the answer", func() bool { return len(got()) == 1 })
+	r := results(t, got())["9"]
+	if !r.OK || r.Msg != "wake asked" || len(r.Tasks) != 1 {
+		t.Fatalf("%+v", r)
+	}
+	wait(t, "the wake", func() bool { return c.pending.Manual != nil })
+	p := c.Take()
+	if p.Manual == nil || p.Manual.Reason != "manual" || p.Manual.Why != "from the console" || p.Empty() {
+		t.Fatalf("pending: %+v", p)
+	}
+	if c.Take().Manual != nil {
+		t.Fatal("Take must clear it")
+	}
+}

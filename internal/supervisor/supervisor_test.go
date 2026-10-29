@@ -181,7 +181,8 @@ func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 	f.mu.Unlock()
 
 	u := llm.Usage{Input: tin, Output: tout}
-	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second}
+	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second,
+		Trace: []agent.Step{{Kind: "model", Name: "fake-model", Ms: 12, Tokens: u.Billable()}, {Kind: "tool", Name: "core__list_open_issues", Ms: 3}}}
 	if asked != "" {
 		var reqs []struct{ Title, Goal string }
 		_ = json.Unmarshal([]byte(asked), &reqs)
@@ -658,6 +659,9 @@ func (f *fakeTrigger) say(p triggers.Pending) {
 	f.pending.Budget = f.pending.Budget || p.Budget
 	if p.Order != nil {
 		f.pending.Order = p.Order
+	}
+	if p.Manual != nil {
+		f.pending.Manual = p.Manual
 	}
 	if p.Name != "" {
 		f.pending.Name = p.Name

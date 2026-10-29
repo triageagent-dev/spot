@@ -182,3 +182,81 @@ func TestAShortLaneReportKeepsThePlanItDoesNotChange(t *testing.T) {
 	close(g.release)
 	h.waitIdle(2)
 }
+
+func TestTheWakeReportCarriesTheTraceOfTheTurn(t *testing.T) {
+	h, trig := streamHarness(t, true)
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.waitFor("the wake line", func() bool { return len(trig.wakeLines()) == 1 })
+	w := trig.wakeLines()[0]
+	if len(w.Trace) != 2 || w.Trace[0] != (triggers.Step{Kind: "model", Name: "fake-model", Ms: 12, Tokens: 150}) || w.Trace[1].Name != "core__list_open_issues" {
+		t.Errorf("trace: %+v", w.Trace)
+	}
+}
+
+func TestAWakeAPersonAsksForRunsEvenUnderAHoldRuleAndIsNotLimited(t *testing.T) {
+	h, trig := streamHarness(t, true)
+	h.core.hold = true
+	h.core.rules = []string{"RULE: check nothing until a person asks."}
+	h.start()
+	defer h.stop()
+	h.waitFor("the startup held", func() bool { st := h.status(); return st.NextWake != nil && st.NextWake.Source == "hold" })
+	if h.turns() != 0 {
+		t.Fatalf("the startup wake ran under a hold rule")
+	}
+	trig.say(triggers.Pending{Manual: &triggers.Order{Reason: "manual", Why: "look at checkout"}})
+	h.waitIdle(1)
+	in := h.file("stdin", 1)
+	if !strings.Contains(in, "Wake reason: manual") || !strings.Contains(in, "look at checkout") || strings.Contains(in, "you have only your notes") {
+		t.Errorf("manual prompt:\n%s", in)
+	}
+	h.script.mu.Lock()
+	limited := h.script.turns[1].Limited
+	h.script.mu.Unlock()
+	if limited {
+		t.Error("the person asked: the turn has every tool")
+	}
+	h.waitFor("its line", func() bool {
+		for _, w := range trig.wakeLines() {
+			if w.Reason == "manual" && w.Lane == "long" && w.Outcome == "turn" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestAManualWakeIsNotSkippedAsQuiet(t *testing.T) {
+	h, trig := streamHarness(t, true)
+	h.cfg.SkipQuietWakes = true
+	h.start()
+	defer h.stop()
+	h.waitFor("the quiet startup", func() bool { return len(trig.wakeLines()) == 1 })
+	trig.say(triggers.Pending{Manual: &triggers.Order{Reason: "manual"}})
+	h.waitIdle(1)
+}
+
+func TestAManualWakeRunsOnTheShortLaneWhileTheLongTurnWorks(t *testing.T) {
+	h, trig, g := lanes(t)
+	defer h.stop()
+	g.set(func() { g.gated = true })
+	h.post("team", say("alice", "alice", "@example-spot look at checkout"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitFor("the long turn to run", g.isRunning)
+	trig.say(triggers.Pending{Manual: &triggers.Order{Reason: "manual", Why: "from the console"}, Rooms: []string{"team"}})
+	h.waitFor("the short lane to take it", func() bool { return h.fast.turnCount() == 1 })
+	if in := h.fast.prompt(1); !strings.Contains(in, "Wake reason: manual") || !strings.Contains(in, "from the console") {
+		t.Fatalf("short lane prompt:\n%s", in)
+	}
+	if !g.isRunning() {
+		t.Fatal("the long turn was cut for the manual wake")
+	}
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(2)
+	time.Sleep(quiet)
+	if h.turns() != 2 || h.fast.turnCount() != 1 {
+		t.Fatalf("the manual wake ran twice: long %d short %d", h.turns(), h.fast.turnCount())
+	}
+}

@@ -145,3 +145,17 @@ func TestTaskPromptCarriesTheGoalAndEndsWithFinish(t *testing.T) {
 		}
 	}
 }
+
+func TestAManualWakeSaysAPersonAskedForItAndWhatTheyWrote(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	with := Turn(Wake{Reason: Manual, Now: now, ScheduledBy: "look at checkout"})
+	if !strings.Contains(with, "Wake reason: manual") || !strings.Contains(with, "asked for this wake from the console") || !strings.Contains(with, "look at checkout") {
+		t.Errorf("prompt:\n%s", with)
+	}
+	if strings.Contains(with, "Be brief") || !strings.Contains(with, "End this turn by calling schedule_next") {
+		t.Errorf("a manual wake is not a tick:\n%s", with)
+	}
+	if without := Turn(Wake{Reason: Manual, Now: now}); !strings.Contains(without, "gave no reason") {
+		t.Errorf("prompt without a reason:\n%s", without)
+	}
+}

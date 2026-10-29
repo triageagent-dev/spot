@@ -89,6 +89,7 @@ type Supervisor struct {
 	nextTick     time.Time
 	scheduledWhy string
 	order        *triggers.Order // a wake the core asked for, not yet taken
+	manual       *triggers.Order // a wake a person asked for from the console, not yet taken
 	// promise is the earliest wake the agent itself asked for that has not
 	// fired. A later turn that wants a later (or no) wake does not move it.
 	promise    time.Time
@@ -285,6 +286,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		s.drainTasks(ctx)
 		if pend == nil {
+			pend = s.manualWake()
+		}
+		if pend == nil {
 			pend = s.ordered()
 		}
 		if pend == nil && s.selfWakeDue() {
@@ -319,6 +323,31 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.drainTasks(ctx)
 	s.setState("stopped")
 	return nil
+}
+
+// manualWake turns a wake a person asked for from the console into a wake of the
+// long lane. It is never stale: the person asked for it now.
+func (s *Supervisor) manualWake() *pending {
+	m := s.manual
+	s.manual = nil
+	if m == nil {
+		return nil
+	}
+	s.log.Info("a person asked for a wake from the console")
+	return &pending{reason: prompt.Manual, scheduledBy: m.Why}
+}
+
+// manualSide starts the wake a person asked for on the short lane while the long
+// one is busy. With no short lane, or one that is busy, it waits for the long
+// turn to end.
+func (s *Supervisor) manualSide(ctx context.Context) {
+	if s.manual == nil || s.fast == nil || s.side != nil {
+		return
+	}
+	if s.startSide(ctx, prompt.Manual, nil, nil, s.manual.Why) {
+		s.log.Info("a wake a person asked for from the console runs on the short lane")
+		s.manual = nil
+	}
 }
 
 // orderSkew is how far ahead of the plan a wake the core asks for is still
@@ -526,6 +555,9 @@ const statsEvery = 2 * time.Minute
 // budget, and a wake it asks for. A spot the core had held back wakes at once when the cap lifts,
 // instead of at midnight.
 func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
+	if p.Manual != nil {
+		s.manual = p.Manual
+	}
 	if o := p.Order; o != nil && (s.order == nil || o.Reason == "promise" || s.order.Reason != "promise") {
 		s.order = o
 	}
@@ -707,6 +739,9 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 	}
 	if !next.IsZero() {
 		w.Next = next.UnixMilli()
+	}
+	for _, st := range res.Trace {
+		w.Trace = append(w.Trace, triggers.Step{Kind: st.Kind, Name: st.Name, Ms: st.Ms, Tokens: st.Tokens})
 	}
 	s.trig.ReportWake(w)
 }
@@ -1435,6 +1470,7 @@ func (s *Supervisor) interject(ctx context.Context, inj Interjector) {
 	}
 	p := s.trig.Take()
 	s.takeCoreFacts(p)
+	s.manualSide(ctx)
 	if p.Hello || p.Issues {
 		s.readNext = true
 	}
@@ -1513,7 +1549,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if rerr != nil && ctx.Err() == nil {
 		s.log.Warn("standing notes not read; the wake goes on without them", "err", rerr)
 	}
-	if hold && p.reason != prompt.Human && (p.reason != prompt.Tick || !s.promiseHuman) {
+	if hold && p.reason != prompt.Human && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return

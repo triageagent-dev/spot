@@ -46,6 +46,8 @@ const (
 	Tick    Reason = "tick"
 	Edge    Reason = "edge"
 	Human   Reason = "human"
+	// Manual is a wake a person asked for from the console, outside the schedule.
+	Manual Reason = "manual"
 	// Task is a turn that another turn of the spot started for one piece of work.
 	Task Reason = "task"
 )
@@ -109,6 +111,12 @@ func Turn(w Wake) string {
 		b.WriteString("The core changed while you slept:\n")
 	case Human:
 		b.WriteString("Someone wrote to you:\n")
+	case Manual:
+		if w.ScheduledBy != "" {
+			fmt.Fprintf(&b, "A person asked for this wake from the console, outside your schedule. What they wrote: %s\n", w.ScheduledBy)
+		} else {
+			b.WriteString("A person asked for this wake from the console, outside your schedule, and gave no reason: look at what changed since your last wake and report what you find.\n")
+		}
 	case Task:
 		fmt.Fprintf(&b, "Another turn of yours started this task and carries on without you. Task: %s\nGoal:\n%s\n", w.Title, w.Goal)
 	}
