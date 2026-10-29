@@ -76,27 +76,20 @@ No model is used. With `--core-api-url` the core pushes content-free frames over
 
 With the stream up, a person’s message is handed to the running turn: the model sees it with the next tool results, or before the turn would end. Other messages, and one the model never saw, wait for the next wake.
 
-### Engines
+### Who wakes the spot
 
-The schedule and the turns run in one of two engines, chosen with `--engine`.
+The core keeps the spot’s schedule (the core’s ADR-106): the spot decides what to do at a wake and plans the next one, and the core remembers the plan and sends the wake when it is due. The supervisor in this process is the executor: it runs the turns, the two lanes and the tasks.
 
-| Engine | What it is |
+| Part | Rule |
 |---|---|
-| `local` (default) | The supervisor in this process owns the timers, the promised wake, the hold rule and the two lanes, and runs the loop. A restart resumes at the next wake; a turn it cuts is reported on the next start. |
-| `temporal` | A Temporal workflow per spot owns them, and a child workflow runs each turn. The pod stays the only place that calls the model and the tools; the service holds the schedule and the history. Temporal Cloud or a service of your own: the settings are the same. |
-
-| With `--engine=temporal` | Rule |
-|---|---|
-| Spot workflow | One long-running workflow per spot (`spot-<name>`). The scheduled wake and the wake a person asked for are durable timers: one that comes due while no pod runs is run by the next. The hold rule, the schedule, the failure backoff and the early-wake handling are the same as in `local` (the supervisor’s `schedule.AfterTurn`, shared). A startup wake is skipped when the schedule survived the restart. The history is carried over (continue as new) when the service suggests it. |
-| Lanes | A person’s message runs in the short lane, everything else in the long lane, one wake at a time in each, side by side. What arrives while a lane is busy waits and is one wake when it frees. A wake that is due while the long lane works runs in the short lane. The short lane has the caps of `--fast-max-tool-calls` and `--fast-max-turn-tokens`. |
-| Tasks | `start_task {"title", "goal"}` (up to 3 per turn; not offered under a hold rule or with `--max-tasks 0`) starts a task when the turn that asked ends: a child workflow of its own, in the task lane, with a new conversation that holds only the goal, the standing notes and the digest, the usual caps, the same tools and no `schedule_next` or `start_task`. Up to `--max-tasks` (3) run at once beside the long and the short lane, each with its own tool connections and gates; up to 10 more wait for a place and a task past that is dropped. A task changes no schedule and no promise. When it ends, its one-line result is a digest entry (`task <title>`) that the next wake reads, and the core gets a line of activity for it. A task posts to the room itself when its goal says so. Under a hold rule a task does not run. An operator can list, stop, kill, restart and drop tasks through the core (the `control` frame). |
-| Turn | A child workflow runs the same loop as `local` (`agent.RunLoop`); each model request and each tool call is an activity that heartbeats, so a pod that dies is noticed in seconds and the next one resumes the turn at its step. The conversation is the workflow’s history. The instruction and the tool list are not in it: they are the pod’s. |
-| At most once | A call that may have an effect (every write, every connector tool) is run once. If its pod dies in the middle, the model is told that the call did not finish and may or may not have run, and decides. A read of the core or of ego is run again, up to three times. |
-| Payloads | With `--temporal-payload-key-file` every payload, a failure’s message included, is encrypted with AES-256-GCM in the pod before it leaves it: the service holds ciphertext, plus names, timings and sizes. Over TLS or with an API key the spot does not start without the key unless `--temporal-plain-payloads` says the clear text may go. The key is a file; a payload written with another key is refused. |
-| Payloads kept in the pod | With `--temporal-local-payloads` the history holds only a reference to each payload (its sha-256), and the payload is a file in the state directory: no content, not even as ciphertext, reaches the service. A workflow replays from its history by reading those files, so the state directory must survive restarts; a payload that is gone fails the replay and the operator ends that workflow. A payload nobody read for 21 days is swept, and a run of the spot's workflow ends after 7 days when nothing is open, so a run never outlives its payloads. |
-| What stays in the pod | The intake (trigger stream, polls, held edges, cooldowns, caps), the standing notes, the prompt, the books (usage ledger, digest, heartbeat, stats, status file), the model client, the tools and the spans. The service never calls the model or a tool and holds no credential of them. |
-| Failures | A refused key and a request the model API calls wrong are not retried; other model errors are, up to three times. A turn that fails, or runs past `--turn-timeout`, is a failed wake with the same backoff as in `local`. A tool server that is down is left out of the turn, as in `local`. |
-| Cost | Each model request, each tool call, the head of a wake (`Prepare`), its books and the typing indicator are one Temporal action each, and a wake that holds under a rule costs two. Hold, caps and the daily ceiling bound them as before. |
+| Plan reported | At the end of every wake of the long or the short lane, the `wake` frame carries the plan as it stands: `next` (ms), `nextSource`, `nextWhy` and `promise` (`{at, why, human}`; absent means none). The core replaces its record with it. A task’s wake (it has a `key`) never touches the plan. After the core’s `hello` the spot sends one `schedule` frame with `next`, `nextWhy`, `nextSource`, `promise`, `backoffMs` (the wait a failed wake left) and `maxWakeMs`, so a core that restarted gets the plan back and a spot that restarted hands over what it kept (a promise a person asked for is on disk). |
+| The core sends the tick | With the stream up the supervisor keeps no timer for the plan. When the planned wake or the promise is due, the core sends `{"wake":{"reason","why"}}` (`reason` is `tick` or `promise`, `why` the spot’s own words, 200 bytes at most) and the spot starts a wake of the long lane with that reason. A tick for a time more than 30 s ahead of the spot’s own plan (the spot ran a wake meanwhile), a promise the spot no longer holds and a reason it does not know are dropped. The core keeps one wake outstanding per spot until its report arrives. |
+| The net | Without the stream (poll mode) the spot wakes itself at the planned time. With the stream up and no `wake` frame, it wakes itself once `--max-wake` after its last wake (a wake planned later, at a ceiling, is not hurried). A spot never sleeps for ever because the core is away or has no scheduler. |
+| What the spot keeps | The hold rule, the edges and their cooldowns, the two lanes, the short-lane wake on a person’s message, the caps and ceilings, the quiet-wake skip, the standing notes, the prompt, the books (usage ledger, digest, heartbeat, stats, status file), the model client, the tools and the spans. |
+| Lanes | A person’s message and a wake a person asked for run in a short turn of their own while a long turn works (`--fast-lane`, on by default), with the caps of `--fast-max-tool-calls` and `--fast-max-turn-tokens`; a message that arrives while the short turn works is handed to it. Everything else runs in the long lane, one wake at a time. |
+| Tasks | `start_task {"title", "goal"}` (up to 3 per turn; not offered under a hold rule or with `--max-tasks 0`) starts a task when the turn that asked ends: a turn of its own in the task lane, run beside the other lanes, with a new conversation that holds only the goal, the standing notes and the digest, the usual caps, the same tools and no `schedule_next` or `start_task` (the tool list is the same as for any turn, so the cached prefix is too; the call is refused). Up to `--max-tasks` (3) run at once, each with its own tool connections and gates; up to 10 more wait for a place and a task past that is dropped. A task changes no schedule and no promise. When it ends, its one-line result is a digest entry (`task <title>`) that the next wake reads, and the core gets a line of activity for it. A task posts to the room itself when its goal says so. Under a hold rule or at a ceiling a task does not run. An operator can list, stop, kill, restart and drop what the spot has in hand through the core (the `control` frame). |
+| Restart | A restart resumes at the next wake; a turn it cuts is reported on the next start and redone from its first step. The caps bound what a redo costs, and the spot’s writes to the core are upserts and comments, so repeating one is safe. A task a restart cuts is not resumed. The record of what each model step did is the span ego holds. |
+| Failures | A turn that fails, or runs past `--turn-timeout`, is a failed wake with a backoff of `--min-wake`, doubling to `--max-wake`; the backoff is in the `schedule` frame. A tool server that is down is left out of the turn. |
 
 ## The model
 
@@ -154,7 +147,7 @@ The model is offered tools named `<server>__<tool>`, sorted, with the server’s
 | core, allowed (`tools.CoreTools`) | `get_triage_instructions` `get_tenant_situation` `get_tenant_health` `get_tenant_goals` `list_open_issues` `list_issues` `get_issue_detail` `get_issue_graph` `get_recent_events` `search_memory` `search_corpus` `get_memory` `get_memory_context` `get_memory_items` `get_memory_cell` `fetch_memory` `get_world_context` `get_service_analytics` `get_service_prediction` `inspect_service` `list_services` `list_applications` `list_pattern_proposals` `analyze_issue` `verify_hypothesis` `comment_on_issue` `upsert_memory_item` `supersede_memory_item` `refute_memory_item` `note_observation` `recognize_pattern` `link_pattern` `say_in_workspace` `read_workspace_room` `read_workspace_file` `set_workspace_status` `set_spot_status` | Allowed by exact name. `--core-tools all` offers every tool the core offers: an operator’s choice, bounded by the core’s Role (`core.verbs`). |
 | core, denied (`tools.CoreToolsDenied`) | `resolve_issue` `forget_issue` `update_issue_severity` `link_issues` `set_tenant_goals` `run_rsi` `emit_event` `classify_event` `decide_event` `guardrail_event` `test_notify` `test_push` `approve_pattern` `expire_memory_item` `consolidate_memory` `build_memory` `build_knowledge` `build_rca` | Refused by name, even if also in the allow list. |
 | ego (`tools.EgoTools`) | `list_metrics` `list_sessions` `summarize_session` `explain_session` `list_runs` `get_run_results` `get_usage` `get_quality` `explain_regression` `get_findings` `list_corrections` | Read-only: sessions, usage, quality, findings. Offered when `--ego-mcp-url` is set. |
-| built-in | `schedule_next` `finish` `start_task` | The spot’s own; no prefix. `start_task` is offered only with `--engine=temporal`. |
+| built-in | `schedule_next` `finish` `start_task` | The spot’s own; no prefix. `start_task` is offered with `--max-tasks` above 0, and not under a hold rule. |
 | connectors | the names in the connector’s `tools` | By exact name only. |
 
 ### Tool calls
@@ -248,21 +241,13 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--max-edge-wakes-per-hour` | `12` | early wakes per hour; `0` = no cap |
 | `--heartbeat-id` | `system2-heartbeat-<tenant>` | memory cell id of the heartbeat |
 
-### Engine
+### Tasks
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--engine` | `local` | `local` or `temporal` (above) |
-| `--temporal-address` | required with temporal | the service’s frontend `host:port` |
-| `--temporal-namespace` | required with temporal | the namespace |
-| `--temporal-task-queue` | `tria-spot-<name>` | one queue per spot: its activities need its own state |
-| `--temporal-api-key-file` | empty | Temporal Cloud API key file, read again at each request; turns TLS on |
-| `--temporal-tls` | `false` | TLS without an API key |
-| `--temporal-tls-cert-file / --temporal-tls-key-file` | empty | client certificate for mutual TLS; both or neither |
-| `--temporal-payload-key-file` | empty | 32-byte key (64 hex characters or base64) that encrypts every payload |
-| `--temporal-local-payloads` | `false` | keep every payload in the state directory and send the service only a reference (its sha-256); no content leaves the pod, encrypted or not; excludes the key file and `--temporal-plain-payloads` |
-| `--max-tasks` | `3` | temporal: how many tasks (`start_task`) run at once, each a turn of its own; 0 takes the tool away; 10 at most |
-| `--temporal-plain-payloads` | `false` | send payloads in the clear over TLS or with an API key; excludes the key file |
+| `--max-tasks` | `3` | how many tasks (`start_task`) run at once, each a turn of its own; 0 takes the tool away; 10 at most |
+
+`--engine` and every `--temporal-*` flag are gone: the spot refuses to start with one, and the message names the core’s ADR-106.
 
 ### Telemetry and logs
 
@@ -414,10 +399,12 @@ With `telemetry.enabled` (`--otel-endpoint`) the spot exports OpenTelemetry span
 | `--daily-token-ceiling` | Input plus output plus cache-write tokens per UTC day (cache reads not counted), held in memory and written through to `usage.json`, read once at start. At the ceiling no wake starts, edges are held, the loop sleeps to UTC midnight. A turn in flight can overshoot by one turn (bounded by `--max-steps`, `--turn-timeout`). |
 | context | Every wake starts empty; `status.json` shows each turn’s `contextTokens`. |
 | the core’s cap | Policy `budgets.spotTenantDailyTokens` over `budgets.spotDailyDefaultTokens`: new input plus output per workspace per UTC day. After every turn a `turn` frame goes up the trigger stream (model, input incl. cache reads and writes, cached, output, duration, failed); the core books it as usage kind `spot` (TUI usage panel) and answers with the budget: the workspace’s `spent` and `cap`, and `own`, what this spot spent as the core counted its turns, which the spot takes as the floor of its own daily counter (so a lost state directory does not give the day back). Over the cap it refuses `say_in_workspace` and `set_workspace_status`, and the supervisor pauses all wakes until the budget lifts or UTC midnight. Frames sent while the stream is down wait (the last 100 are kept). |
-| `stats` frame | State, turns and wakes by reason today, failures in a row, context size, own token counts and ceiling, why it is paused (its own ceiling or the workspace cap), its limits and choices (model, step, tool-call and token caps, wake timing, core-tools mode, gates, connector names with their tool names; never a URL, path or credential), next wake, and `tasks`: every wake the spot has in hand, running or waiting for a place, each as `{key, title, lane, state, startedMs, ageMs}` (a title is 80 bytes, a key 128; the temporal engine only, empty on `local`). A snapshot replaces the last one; the workflow is asked when a wake has just ended or when the last list was not empty. After each turn, on a trigger-mode change and every two minutes, for the TUI’s workspace panel. Counts and labels only. |
-| `wake` frame | One line of activity when a wake ends, for the TUI’s timeline: when, the reason (`startup`, `tick`, `edge`, `human`, `promise`), the lane (`long` or `short`), the `key` and `title` of the wake when it is a task (the same as in `tasks`), the outcome (`turn`, `failed`, or a wake with no model call: `quiet`, `hold`, `ceiling`), duration, steps, tool calls, paid tokens, cache reads and output, and when the spot wakes next and why. Counts and labels only, never what was said. Dropped while the stream is down: a gap in the timeline is true, a replay of old wakes is not. |
-| `control` frame (core to spot) | `{"control":{"id","op","task"}}`: an operator (a person through the core, never a spot) acts on one wake the spot has in hand. `op` is `list`, `stop` (cancel: the turn ends at its next step and closes its tools; not a failure), `kill` (terminate: cut at once), `restart` (a task: stop, then start the same task again) or `drop` (a task that waits for a place). `task` is a key a list gave (128 bytes at most), empty for `list`; the spot checks it against what it has in hand and acts on that workflow only. A task that has not begun its turn is stopped, not killed. |
-| `controlResult` frame (spot to core) | `{"controlResult":{"id","ok","msg","tasks":[{"key","title","lane","state","startedMs","ageMs"}]}}`: sent once for every control, with the same `id`, within 8 s, a refusal included (an engine other than temporal, an unknown key, an operation that does not fit the state). `tasks` is what the spot has in hand afterwards, running and waiting, 100 at most; a title is 80 bytes. Titles and counts, never a goal or what a turn said. |
+| `stats` frame | State, turns and wakes by reason today, failures in a row, context size, own token counts and ceiling, why it is paused (its own ceiling or the workspace cap), its limits and choices (model, step, tool-call and token caps, wake timing, core-tools mode, gates, connector names with their tool names; never a URL, path or credential), next wake, and `tasks`: every wake the spot has in hand, the turns of the two lanes and the tasks, running or waiting for a place, each as `{key, title, lane, state, startedMs, ageMs}` (a title is 80 bytes, a key 128; empty when there are none). A snapshot replaces the last one. After each turn, on a trigger-mode change and every two minutes, for the TUI’s workspace panel. Counts and labels only. |
+| `wake` frame (spot to core) | One line of activity when a wake ends, for the TUI’s timeline: when, the reason (`startup`, `tick`, `edge`, `human`, `task`), the lane (`long`, `short` or `task`), the `key` and `title` of the wake when it is a task (the same as in `tasks`), the outcome (`turn`, `failed`, or a wake with no model call: `quiet`, `hold`, `ceiling`), duration, steps, tool calls, paid tokens, cache reads and output, and the plan: when the spot wakes next (`next`, ms), why (`nextWhy`) and from what (`nextSource`), and the `promise` (`{at, why, human}`) when there is one. A wake of the long or the short lane replaces the core’s record of the plan, so each carries it whole; a task’s wake does not. Counts and labels only, never what was said. Dropped while the stream is down: a gap in the timeline is true, a replay of old wakes is not. |
+| `wake` frame (core to spot) | `{"wake":{"reason","why"}}`: the planned wake or the promise is due (see Who wakes the spot). `reason` is `tick` or `promise`; `why` is the spot’s own words from its last report, 200 bytes at most. The spot starts a wake of the long lane; one it cannot place is dropped. |
+| `schedule` frame (spot to core) | `{"schedule":{"next","nextWhy","nextSource","promise","backoffMs","maxWakeMs"}}`: sent once after each `hello`, so the core has the plan again after either side restarted. Each member is optional; `next` is in ms. It replaces the core’s record and clears its outstanding wake. |
+| `control` frame (core to spot) | `{"control":{"id","op","task"}}`: an operator (a person through the core, never a spot) acts on one wake the spot has in hand. `op` is `list`, `stop` (cancel: the turn ends at its next step and closes its tools; not a failure), `kill` (cancel and take it off the list at once; its tokens are still booked), `restart` (a task: stop, then start the same task again) or `drop` (a task that waits for a place). `task` is a key a list gave (128 bytes at most), empty for `list`; the spot checks it against what it has in hand and acts on that wake only. |
+| `controlResult` frame (spot to core) | `{"controlResult":{"id","ok","msg","tasks":[{"key","title","lane","state","startedMs","ageMs"}]}}`: sent once for every control, with the same `id`, within 8 s, a refusal included (an unknown key, an operation that does not fit the state). `tasks` is what the spot has in hand afterwards, running and waiting, 100 at most; a title is 80 bytes. Titles and counts, never a goal or what a turn said. |
 | dollars | No ceiling: the spot has no price table. The spend limit on the Anthropic workspace or Google project that serves the model is the real stop. |
 
 ## Logs
@@ -447,7 +434,6 @@ Logs carry what happened, never what was said.
 | `llm.auth: key` (default) | The Secret from `llm.keySecret` (anthropic) or `llm.geminiKeySecret` (gemini, at `/secrets/gemini/<key>`), as a file. |
 | `llm.auth: vertex` | Nothing mounted. `llm.vertex.project` required, `region` defaults to `global`; the binding goes in `serviceAccount.annotations`. |
 | `llm.auth: federation` | A projected token volume at `/var/run/secrets/anthropic.com` (`tokenExpirationSeconds` 600; no Secret). `llm.federation.ruleId`, `orgId` and `serviceAccountId` are required, `workspaceId` is optional. Refused with `gemini`. |
-| `engine.type: temporal` | `engine.temporal.address` and `namespace` required. `apiKeySecret` (Temporal Cloud) and `payloadKeySecret` are Secrets mounted as files, at `/secrets/temporal/api` and `/secrets/temporal/payload`. Read with `dig`, so a release upgraded with `--reuse-values` renders as `local` until the values are set. |
 | model values | `llm.provider` (`anthropic` default, `gemini`), `llm.model` (empty = the provider’s default, no `--model` passed), `llm.effort`, `llm.maxSteps`, `llm.maxToolCalls`, `llm.maxTurnTokens`, `agent.toolTimeout`, `agent.toolResultMaxBytes`. |
 
 ### NetworkPolicy
@@ -459,15 +445,15 @@ Egress only; nothing in. It allows cluster DNS, the model API, the core, the con
 | `anthropic` with `key` or `federation` | The CIDRs Anthropic publishes (`160.79.104.0/23`, `2607:6bc0::/48`, platform.claude.com/docs/en/api/ip-addresses). |
 | `gemini` in any mode; `vertex` with either provider | The Google API ranges you name in `networkPolicy.google.cidrs` (required; for example the Private Google Access range). With `vertex` it adds the node’s metadata server for the Workload Identity token (`networkPolicy.google.metadata`, GKE’s addresses by default). |
 | core | `networkPolicy.core` is required whatever the identity: namespace and pod selector, or CIDR, and `ports` for the MCP endpoint and, with `core.apiUrl`, the API (the stream and the certificate join). |
-| Temporal, with `engine.type: temporal` | `networkPolicy.temporal`: namespace and pod selector, or CIDR, port 7233. Temporal Cloud has no fixed addresses: name the ranges your egress uses. |
 
 ### Lint
 
-`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, certificate identity, a parked spot (`spot.replicas: 0`), connectors, the Temporal engine (a service in the cluster, and Temporal Cloud). It checks that:
+`make chart-lint` runs `helm lint` and `helm template` with the flag off (must render nothing) and with every values file in `charts/tria-spot/ci` (placeholders only): key, federation, Vertex AI, Gemini with a key and on Vertex AI, telemetry, ServiceAccount identity, certificate identity, a parked spot (`spot.replicas: 0`), connectors. It checks that:
 
 - the pod has no `env`, no rule names Secrets, no ClusterRole renders, and the ServiceAccount token is not mounted;
 - nothing in the pod is loosened for a shell, and each mode mounts and opens only its own;
-- a missing required value or an unknown mode fails to render.
+- a missing required value or an unknown mode fails to render, and so does `engine.type: temporal`, with a message that names the core’s ADR-106;
+- `agent.maxTasks` is passed as `--max-tasks`.
 
 ## Connectors
 
@@ -520,12 +506,11 @@ The spot reaches no cluster unless `--connectors-file` names a connector. `Ctrl-
 | `internal/llm` | The model client (Anthropic SDK: key, federation, Vertex; Google GenAI SDK: key, Vertex), a scripted fake |
 | `internal/tools` | The model’s tools: core, ego, connectors over MCP, `schedule_next`, `finish` |
 | `internal/mcptools` | The MCP session the tools use (raw `tools/list` and `tools/call`) |
-| `internal/agent` | One turn: the loop (`RunLoop`, which does no I/O, so a workflow can run it), steps, injection, results |
-| `internal/durable` | The Temporal engine: the spot and wake workflows, the activities (model, tools, head, books), the payload encryption, the worker |
+| `internal/agent` | One turn: the loop (`RunLoop`, which does no I/O), steps, injection, results, the tasks the turn asked for |
 | `internal/telemetry` | Spans to ego over OTLP/HTTP |
 | `internal/prompt` | Renders the system prompt from its template (read from the core at start; the source is `prompts/instruction.md`) and builds turn prompts |
-| `internal/supervisor` | The wake loop, edges, schedule, ceilings, heartbeat, status; with `--engine=temporal` only the intake and the books (`bridge.go`) |
-| `internal/schedule` | The `schedule_next` request, clamped; the next wake and the promise after a turn (both engines) |
+| `internal/supervisor` | The wake loop, edges, the wakes the core asks for, ceilings, heartbeat, status; the lanes and the tasks, and the table of what the spot has in hand that the core’s controls act on |
+| `internal/schedule` | The `schedule_next` request, clamped; the next wake and the promise after a turn |
 | `internal/triggers` | The core’s websocket trigger stream |
 | `internal/corecli` | The supervisor’s own MCP client (`list_open_issues`, heartbeat, rooms) |
 | `internal/edges` | Edge detection between issue snapshots |
@@ -548,5 +533,5 @@ Run on a live install: Gemini 3 on Vertex AI with Workload Identity, a real core
 | comments | `list_open_issues` gives a comment count, not the author (all MCP comments are `mcp-client`), so every new comment is a `human` wake and the agent reads the issue to see who. Comments made during a turn are absorbed by the post-turn baseline. |
 | hop counts | Hop counts and caps are enforced by the core; the prompt only tells the agent to pass and respect them. |
 | post gate | Seen live: a post refused, then released after a memory read, in a wake that then posted. Also seen live: a `finish` in the same step as a refused post ended the turn with no post; the fix runs in tests only. |
-| Temporal engine | Tests run against Temporal’s local dev server with the real tool layer and a scripted model: a message beside a long turn, a promised wake across a worker restart, a hold rule, a crash in a turn, a write cut by a crash (reported, not repeated), a paused spot, and a history with no clear text. Not verified: a live install with a real model, Temporal Cloud, and a service of your own in a cluster; the cost in actions of a real day. |
+| Wakes from the core, tasks | Tests drive the supervisor with a scripted model and a fake stream: the tick sent by the core, the net at `--max-wake`, a stale tick dropped, a promise sent by the core, the plan and the promise on every report, tasks that queue, stop, restart, drop and are killed, a long turn stopped by an operator, a task held at a ceiling. Not verified: the two halves together on a live core. |
 | tooling | `kubeconform`, and `golangci-lint` (`make lint` runs it when present). |

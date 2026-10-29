@@ -45,20 +45,17 @@ prompt-cell`). Every other credential is a file from a Secret. Egress is an
 allow list. Each
 setting is explained in [values.yaml](charts/tria-spot/values.yaml).
 
-## Engines
+## Schedule
 
-The schedule and the turns run in the pod by default. With
-`engine.type: temporal` a Temporal workflow owns them instead (Temporal Cloud or
-a service of your own): the next wake and the wake a person asked for are
-durable timers, a turn that a crash cuts resumes at its step, and a person's
-message is answered beside a long turn. The pod still makes every model and
-tool call, and no payload leaves it readable: it is encrypted with a key from a
-Secret, or kept in the pod's state directory with only a reference sent to the
-service. See the specification.
+The core keeps the spot's schedule (the core's ADR-106). The spot reports its
+plan, the next wake and the wake it promised a person, with every wake, and the
+core sends the wake when it is due. The pod runs the turns, the two lanes and
+the tasks, and wakes itself only when the core has sent nothing for `--max-wake`.
+The Temporal engine is gone: a release whose values still set `engine.type:
+temporal` fails to render. See the specification.
 
 ## Read more
 
 - [Specification](https://triageagent.dev/spot/spec.html): the loop, tools, credentials, spans, spend, flags.
 - [ADR-098](docs/adr/098-spot-on-tria-runtime.md): why the spot is its own agent loop.
-- [Temporal engine](docs/adr/temporal-engine.md): why the schedule and the turns can run in a workflow.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [License](LICENSE) (Apache 2.0).

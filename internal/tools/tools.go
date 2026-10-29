@@ -1,7 +1,7 @@
 // Package tools is the spot's tool surface. The model gets the tools of the
 // core's MCP server, of ego when it is configured and of each connector, named
 // <server>__<tool>, plus the ones the spot provides itself (schedule_next,
-// finish and, on the durable engine, start_task). The spot has no shell, no
+// finish and start_task). The spot has no shell, no
 // filesystem tools and no cluster access of its own: a cluster is reached only
 // through a connector.
 package tools
@@ -81,8 +81,7 @@ type Options struct {
 	// chat message) is marked as data and cannot close the tag to pass for the
 	// supervisor's own words. The ego tools and the built-ins are not wrapped.
 	FenceResults bool
-	// Tasks offers start_task: work that runs on its own beside the turn. Only the
-	// durable engine can run one.
+	// Tasks offers start_task: work that runs on its own beside the turn.
 	Tasks  bool
 	Logger *slog.Logger
 }
@@ -141,6 +140,7 @@ type Registry struct {
 	finished bool
 	recalled bool // a search_memory succeeded in this turn
 	limited  bool // List offers only HoldTools and the built-ins (see Limit)
+	task     bool // the turn is a task's (see Task)
 	read     bool // a ContextTools call succeeded in this turn
 	noted    bool // a NoteTools call succeeded in this turn
 }
@@ -168,43 +168,21 @@ func (r *Registry) Limit(on bool) {
 	r.mu.Unlock()
 }
 
-// State is what the gates and the built-in tools have recorded in a turn. A
-// durable engine carries it between calls, which may run in different processes.
-type State struct {
-	Next     *ScheduleRequest
-	Tasks    []TaskRequest
-	Summary  string
-	Finished bool
-	Recalled bool // a search_memory succeeded
-	Read     bool // a ContextTools call succeeded
-	Noted    bool // a NoteTools call succeeded
-}
-
-// State returns what the turn has recorded so far.
-func (r *Registry) State() State {
+// Tasks are the tasks the model asked start_task for in this turn. The
+// supervisor starts them when the turn ends.
+func (r *Registry) Tasks() []TaskRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := State{Summary: r.summary, Finished: r.finished, Recalled: r.recalled, Read: r.read, Noted: r.noted}
-	if r.next != nil {
-		n := *r.next
-		st.Next = &n
-	}
-	st.Tasks = append([]TaskRequest(nil), r.tasks...)
-	return st
+	return append([]TaskRequest(nil), r.tasks...)
 }
 
-// SetState puts back what an earlier call recorded, so a registry built anew
-// for the next call of a turn holds the gates the turn has already passed.
-func (r *Registry) SetState(st State) {
+// Task marks the next turn as a task's: schedule_next and start_task answer that
+// a task cannot use them, and the tool list stays what it is for every other turn
+// (the cached prefix). The agent sets it before each turn.
+func (r *Registry) Task(on bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.summary, r.finished, r.recalled, r.read, r.noted = st.Summary, st.Finished, st.Recalled, st.Read, st.Noted
-	r.tasks = append([]TaskRequest(nil), st.Tasks...)
-	r.next = nil
-	if st.Next != nil {
-		n := *st.Next
-		r.next = &n
-	}
+	r.task = on
+	r.mu.Unlock()
 }
 
 // Begin starts a turn: what the built-in tools recorded in the last one is
@@ -373,6 +351,12 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	name = r.canonicalName(name)
 	if r.o.NotesOnly && IsBuiltin(name) {
 		return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
+	}
+	r.mu.Lock()
+	task := r.task
+	r.mu.Unlock()
+	if task && (name == ScheduleNext || name == StartTask) {
+		return "a task cannot schedule wakes or start tasks: do the goal, post what it asks for, and finish with a one-line result.", true
 	}
 	switch name {
 	case ScheduleNext:

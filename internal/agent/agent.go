@@ -50,6 +50,9 @@ type Turn struct {
 	// Limited gives the turn only the notes, room, post and status tools and
 	// the built-ins, when the toolbox can narrow itself.
 	Limited bool
+	// Task marks a task's turn, which cannot schedule a wake or start a task,
+	// when the toolbox can say so.
+	Task bool
 }
 
 // Result is what a turn did.
@@ -59,7 +62,10 @@ type Result struct {
 	// Summary is what the model passed to finish.
 	Summary string
 	// Next is the last schedule_next call, if any.
-	Next      *ScheduleRequest
+	Next *ScheduleRequest
+	// Tasks are the tasks the turn asked start_task for, to be started when it
+	// ends.
+	Tasks     []tools.TaskRequest
 	Steps     int // model requests made
 	ToolCalls int
 	Usage     llm.Usage
@@ -257,10 +263,16 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	if l, ok := a.o.Tools.(interface{ Limit(bool) }); ok {
 		l.Limit(t.Limited)
 	}
+	if k, ok := a.o.Tools.(interface{ Task(bool) }); ok {
+		k.Task(t.Task)
+	}
 	a.o.Tools.Begin()
 	defer a.o.Tools.End()
 	defer func() {
 		res.Next = a.o.Tools.Schedule()
+		if k, ok := a.o.Tools.(interface{ Tasks() []tools.TaskRequest }); ok {
+			res.Tasks = k.Tasks()
+		}
 		res.Summary, _ = a.o.Tools.Finished()
 		res.Duration = time.Since(start)
 		res.Canceled = parent.Err() != nil

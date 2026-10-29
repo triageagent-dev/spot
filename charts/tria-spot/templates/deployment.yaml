@@ -14,12 +14,8 @@
 {{- if not .Values.core.apiUrl }}{{ fail "core.apiUrl is required when core.identity is certificate: the spot joins over the core's websocket" }}{{ end }}
 {{- if not (regexMatch "^SHA256:[0-9a-f]{64}$" (default "" .Values.core.caFingerprint)) }}{{ fail "core.caFingerprint (SHA256:<64 lowercase hex>) is required when core.identity is certificate" }}{{ end }}
 {{- end }}
-{{- /* The engine's values are read with dig: a release upgraded with --reuse-values has none of the keys the chart added since. */}}
-{{- $engine := dig "engine" "type" "local" .Values.AsMap }}
-{{- if not (has $engine (list "local" "temporal")) }}{{ fail "engine.type must be local or temporal" }}{{ end }}
-{{- $tmp := dig "engine" "temporal" dict .Values.AsMap }}
-{{- $tmpAPI := dig "apiKeySecret" "name" "" $tmp }}
-{{- $tmpPayload := dig "payloadKeySecret" "name" "" $tmp }}
+{{- /* Read with dig: a release upgraded with --reuse-values may still carry the engine block of an older chart. */}}
+{{- if eq (dig "engine" "type" "" .Values.AsMap) "temporal" }}{{ fail "engine.type: temporal is no longer supported: the Temporal engine was removed and the core is the spot's scheduler (the core's ADR-106). Remove the engine block from the values." }}{{ end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -170,31 +166,8 @@ spec:
             {{- if .Values.agent.heartbeatId }}
             - --heartbeat-id={{ .Values.agent.heartbeatId }}
             {{- end }}
-            {{- if eq $engine "temporal" }}
-            - --engine=temporal
-            - --temporal-address={{ required "engine.temporal.address is required when engine.type is temporal" (dig "address" "" $tmp) }}
-            - --temporal-namespace={{ required "engine.temporal.namespace is required when engine.type is temporal" (dig "namespace" "" $tmp) }}
-            {{- if dig "taskQueue" "" $tmp }}
-            - --temporal-task-queue={{ dig "taskQueue" "" $tmp }}
-            {{- end }}
-            {{- if dig "tls" false $tmp }}
-            - --temporal-tls
-            {{- end }}
-            {{- if $tmpAPI }}
-            - --temporal-api-key-file=/secrets/temporal/api/{{ dig "apiKeySecret" "key" "api-key" $tmp }}
-            {{- end }}
-            {{- if $tmpPayload }}
-            - --temporal-payload-key-file=/secrets/temporal/payload/{{ dig "payloadKeySecret" "key" "key" $tmp }}
-            {{- end }}
-            {{- if dig "plainPayloads" false $tmp }}
-            - --temporal-plain-payloads
-            {{- end }}
-            {{- if dig "localPayloads" false $tmp }}
-            - --temporal-local-payloads
-            {{- end }}
-            {{- if hasKey $tmp "maxTasks" }}
-            - --max-tasks={{ get $tmp "maxTasks" | int }}
-            {{- end }}
+            {{- if hasKey .Values.agent "maxTasks" }}
+            - --max-tasks={{ int .Values.agent.maxTasks }}
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -225,16 +198,6 @@ spec:
             {{- if and .Values.telemetry.enabled .Values.telemetry.tokenSecret.name }}
             - name: otel-token
               mountPath: /secrets/otel
-              readOnly: true
-            {{- end }}
-            {{- if and (eq $engine "temporal") $tmpAPI }}
-            - name: temporal-api-key
-              mountPath: /secrets/temporal/api
-              readOnly: true
-            {{- end }}
-            {{- if and (eq $engine "temporal") $tmpPayload }}
-            - name: temporal-payload-key
-              mountPath: /secrets/temporal/payload
               readOnly: true
             {{- end }}
             {{- if and (eq $auth "key") (eq $provider "gemini") }}
@@ -292,18 +255,6 @@ spec:
                   audience: {{ .Values.core.audience }}
                   expirationSeconds: {{ int64 .Values.core.tokenExpirationSeconds }}
                   path: token
-        {{- end }}
-        {{- if and (eq $engine "temporal") $tmpAPI }}
-        - name: temporal-api-key
-          secret:
-            secretName: {{ $tmpAPI }}
-            defaultMode: 0440
-        {{- end }}
-        {{- if and (eq $engine "temporal") $tmpPayload }}
-        - name: temporal-payload-key
-          secret:
-            secretName: {{ $tmpPayload }}
-            defaultMode: 0440
         {{- end }}
         {{- if and (eq $auth "key") (eq $provider "gemini") }}
         - name: gemini-key

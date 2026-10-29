@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
@@ -281,8 +282,8 @@ func TestEveryControlIsAnsweredOnceWithItsID(t *testing.T) {
 	}
 }
 
-// A spot that cannot control tasks says so at once; the core does not have to
-// wait for its own timeout.
+// A spot that is not answering controls yet says so at once; the core does not
+// have to wait for its own timeout.
 func TestAControlIsRefusedWithoutAHandler(t *testing.T) {
 	url, got := controlServer(t, `{"control":{"id":"7","op":"list"}}`)
 	c, err := New(url, "example", tokenFile(t, "tok"), quiet())
@@ -293,7 +294,94 @@ func TestAControlIsRefusedWithoutAHandler(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 	wait(t, "the refusal", func() bool { return len(got()) == 1 })
-	if r := results(t, got())["7"]; r.OK || !strings.Contains(r.Msg, "temporal engine") {
+	if r := results(t, got())["7"]; r.OK || !strings.Contains(r.Msg, "does not answer controls") {
 		t.Fatalf("%+v", r)
+	}
+}
+
+// The core asks for a wake with a frame of its own: a promise outranks a tick, and
+// the words it carries are bounded.
+func TestAWakeTheCoreAsksForIsPendingAndAPromiseOutranksATick(t *testing.T) {
+	c, err := New("http://core.invalid", "example", tokenFile(t, "tok"), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.add(frame{Wake: &Order{Reason: "tick", Why: "first"}})
+	c.add(frame{Wake: &Order{Reason: "promise", Why: strings.Repeat("é", 300)}})
+	c.add(frame{Wake: &Order{Reason: "tick", Why: "later"}})
+	p := c.Take()
+	if p.Empty() || p.Wake() {
+		t.Fatalf("an order is news for the loop, not a reason to read the core: %+v", p)
+	}
+	if p.Order == nil || p.Order.Reason != "promise" || len(p.Order.Why) > maxOrderWhy || !utf8.ValidString(p.Order.Why) {
+		t.Fatalf("order: %+v", p.Order)
+	}
+	if c.Take().Order != nil {
+		t.Fatal("Take must clear the order")
+	}
+}
+
+// After the core's hello the spot hands over the schedule it has, once per
+// connection, so a core that restarted gets it back; wake reports carry the plan
+// and the promise.
+func TestTheScheduleIsSentOnceAfterTheHello(t *testing.T) {
+	var conns atomic.Int32
+	frames := make(chan map[string]json.RawMessage, 8)
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`))
+		if conns.Add(1) == 1 {
+			// The first connection ends once the spot has answered: the second hello
+			// must be answered again.
+			var m map[string]json.RawMessage
+			if conn.ReadJSON(&m) == nil {
+				frames <- m
+			}
+			return
+		}
+		for {
+			var m map[string]json.RawMessage
+			if conn.ReadJSON(&m) != nil {
+				return
+			}
+			frames <- m
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL, "example", tokenFile(t, "tok"), quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetSchedule(Schedule{Next: 1000, NextWhy: "look again", NextSource: "agent", Promise: &Promise{At: 900, Why: "the note", Human: true}, BackoffMs: 5, MaxWakeMs: 7200000})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case m := <-frames:
+			var sc Schedule
+			if err := json.Unmarshal(m["schedule"], &sc); err != nil || sc.Next != 1000 || sc.NextWhy != "look again" || sc.Promise == nil || sc.Promise.At != 900 || !sc.Promise.Human || sc.BackoffMs != 5 || sc.MaxWakeMs != 7200000 {
+				t.Fatalf("connection %d: %v %+v", i+1, err, string(m["schedule"]))
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no schedule on connection %d", i+1)
+		}
+	}
+	wait(t, "the second hello", c.Connected)
+	c.ReportWake(Wake{TS: 1, Reason: "tick", Outcome: "turn", Next: 2000, NextWhy: "why", Promise: &Promise{At: 1500, Why: "p"}})
+	select {
+	case m := <-frames:
+		var w Wake
+		if err := json.Unmarshal(m["wake"], &w); err != nil || w.NextWhy != "why" || w.Promise == nil || w.Promise.At != 1500 {
+			t.Fatalf("wake: %v %s", err, m["wake"])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no wake report")
 	}
 }

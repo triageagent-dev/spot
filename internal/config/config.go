@@ -111,26 +111,10 @@ type Config struct {
 	FastLane          bool
 	FastMaxToolCalls  int
 	FastMaxTurnTokens int64
-	// MaxTasks is how many tasks (start_task) the temporal engine runs at once,
-	// each a turn of its own beside the two lanes; 0 turns the tool off.
+	// MaxTasks is how many tasks (start_task) run at once, each a turn of its own
+	// beside the two lanes; 0 turns the tool off.
 	MaxTasks int
 
-	// Engine is what runs the schedule and the turns: "local" (the supervisor, in
-	// this process) or "temporal" (a Temporal workflow: durable timers, a turn
-	// that resumes at its step after a crash, the two lanes as workflows). The
-	// Temporal service is reached with the Temporal* settings; none of them holds
-	// a credential: a key is a file.
-	Engine                 string
-	TemporalAddress        string
-	TemporalNamespace      string
-	TemporalAPIKeyFile     string // a Temporal Cloud API key; turns TLS on
-	TemporalTLS            bool   // TLS without an API key
-	TemporalTLSCertFile    string // client certificate, for mutual TLS
-	TemporalTLSKeyFile     string
-	TemporalPayloadKeyFile string // encrypts every payload before it leaves the process
-	TemporalPlainPayloads  bool   // accept payloads in the clear to a service over the network
-	TemporalLocalPayloads  bool   // keep every payload in the state directory; the service gets a reference
-	TemporalTaskQueue      string // default tria-spot-<name>
 	// NotesOnly gives the model exactly one tool, search_memory over its own
 	// notes: no other core tool, no connector, no ego tool, no schedule_next or
 	// finish. The supervisor schedules the next wake itself.
@@ -163,12 +147,6 @@ const (
 	AuthVertex     = "vertex"
 )
 
-// Engines.
-const (
-	EngineLocal    = "local"
-	EngineTemporal = "temporal"
-)
-
 // Model providers.
 const (
 	ProviderAnthropic = "anthropic"
@@ -186,6 +164,11 @@ const (
 // Parse reads args (without the program name). Output of flag errors goes to
 // out.
 func Parse(args []string, out io.Writer) (Config, error) {
+	for _, a := range args {
+		if name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "="); name == "engine" || strings.HasPrefix(name, "temporal-") {
+			return Config{}, fmt.Errorf("--%s: the Temporal engine was removed; the core is the spot's scheduler (the core's ADR-106). Drop --engine and every --temporal-* flag", name)
+		}
+	}
 	var c Config
 	fs := flag.NewFlagSet("tria-spot", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -235,18 +218,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.BoolVar(&c.FastLane, "fast-lane", true, "while a long turn runs, a person's message and a wake the spot promised run in a second, short turn of their own; false = the message is handed to the running turn")
 	fs.IntVar(&c.FastMaxToolCalls, "fast-max-tool-calls", 8, "cap on tool calls in a fast-lane turn")
 	fs.Int64Var(&c.FastMaxTurnTokens, "fast-max-turn-tokens", 120000, "cap on billable tokens in a fast-lane turn")
-	fs.IntVar(&c.MaxTasks, "max-tasks", 3, "temporal: how many tasks the agent may run at once (start_task: each a turn of its own beside the others, with the usual caps); 0 takes the tool away. Up to 10 more wait for a place")
-	fs.StringVar(&c.Engine, "engine", EngineLocal, "what runs the schedule and the turns: local (this process) or temporal (a Temporal workflow: durable timers, turns that resume at their step, two lanes); temporal needs --temporal-address and --temporal-namespace")
-	fs.StringVar(&c.TemporalAddress, "temporal-address", "", "temporal: the service's frontend host:port")
-	fs.StringVar(&c.TemporalNamespace, "temporal-namespace", "", "temporal: the namespace")
-	fs.StringVar(&c.TemporalAPIKeyFile, "temporal-api-key-file", "", "temporal: file holding a Temporal Cloud API key, re-read on every request; turns TLS on")
-	fs.BoolVar(&c.TemporalTLS, "temporal-tls", false, "temporal: use TLS without an API key (a service of your own)")
-	fs.StringVar(&c.TemporalTLSCertFile, "temporal-tls-cert-file", "", "temporal: client certificate for mutual TLS (with --temporal-tls-key-file)")
-	fs.StringVar(&c.TemporalTLSKeyFile, "temporal-tls-key-file", "", "temporal: private key of the client certificate")
-	fs.StringVar(&c.TemporalPayloadKeyFile, "temporal-payload-key-file", "", "temporal: file holding a 32-byte key (64 hex characters or base64) that encrypts every payload (prompts, model text, tool results) before it leaves the process; the service holds ciphertext only")
-	fs.BoolVar(&c.TemporalLocalPayloads, "temporal-local-payloads", false, "temporal: keep every payload (prompts, model text, tool results) in the state directory and send the service only a reference to it; no content, not even encrypted, leaves the pod. The state directory must survive restarts; excludes the key file and --temporal-plain-payloads")
-	fs.BoolVar(&c.TemporalPlainPayloads, "temporal-plain-payloads", false, "temporal: send payloads in the clear to a service reached over TLS or with an API key; without the flag that needs --temporal-payload-key-file")
-	fs.StringVar(&c.TemporalTaskQueue, "temporal-task-queue", "", "temporal: the task queue of this spot; default tria-spot-<name>")
+	fs.IntVar(&c.MaxTasks, "max-tasks", 3, "how many tasks the agent may run at once (start_task: each a turn of its own beside the others, with the usual caps); 0 takes the tool away. Up to 10 more wait for a place")
 	fs.BoolVar(&c.IssueWakes, "issue-wakes", true, "a change of the core's issues wakes the spot early; false = it waits for the next scheduled wake, and only a person's message wakes it early")
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
@@ -465,7 +437,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	req(c.StateDir, "state-dir")
-	errs = append(errs, c.validateEngine()...)
+	if c.MaxTasks < 0 || c.MaxTasks > 10 {
+		errs = append(errs, errors.New("--max-tasks is between 0 and 10"))
+	}
 	if c.MinWake <= 0 {
 		errs = append(errs, errors.New("--min-wake must be positive"))
 	}
@@ -514,52 +488,4 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("--tenant must not contain spaces or slashes"))
 	}
 	return errors.Join(errs...)
-}
-
-// validateEngine checks the engine and its Temporal settings.
-func (c Config) validateEngine() []error {
-	var errs []error
-	temporal := map[string]string{
-		"temporal-address": c.TemporalAddress, "temporal-namespace": c.TemporalNamespace,
-		"temporal-api-key-file": c.TemporalAPIKeyFile, "temporal-tls-cert-file": c.TemporalTLSCertFile,
-		"temporal-tls-key-file": c.TemporalTLSKeyFile, "temporal-payload-key-file": c.TemporalPayloadKeyFile,
-		"temporal-task-queue": c.TemporalTaskQueue,
-	}
-	switch c.Engine {
-	case EngineLocal:
-		for k, v := range temporal {
-			if v != "" {
-				errs = append(errs, fmt.Errorf("--%s only applies with --engine=temporal", k))
-			}
-		}
-		if c.TemporalTLS || c.TemporalPlainPayloads || c.TemporalLocalPayloads {
-			errs = append(errs, errors.New("--temporal-tls, --temporal-plain-payloads and --temporal-local-payloads only apply with --engine=temporal"))
-		}
-	case EngineTemporal:
-		if c.TemporalAddress == "" {
-			errs = append(errs, errors.New("--temporal-address is required with --engine=temporal"))
-		}
-		if c.TemporalNamespace == "" {
-			errs = append(errs, errors.New("--temporal-namespace is required with --engine=temporal"))
-		}
-		if (c.TemporalTLSCertFile == "") != (c.TemporalTLSKeyFile == "") {
-			errs = append(errs, errors.New("--temporal-tls-cert-file and --temporal-tls-key-file go together"))
-		}
-		if c.TemporalPayloadKeyFile != "" && c.TemporalPlainPayloads {
-			errs = append(errs, errors.New("--temporal-payload-key-file and --temporal-plain-payloads exclude each other"))
-		}
-		if c.TemporalLocalPayloads && (c.TemporalPayloadKeyFile != "" || c.TemporalPlainPayloads) {
-			errs = append(errs, errors.New("--temporal-local-payloads excludes --temporal-payload-key-file and --temporal-plain-payloads"))
-		}
-		network := c.TemporalAPIKeyFile != "" || c.TemporalTLS || c.TemporalTLSCertFile != ""
-		if network && c.TemporalPayloadKeyFile == "" && !c.TemporalPlainPayloads && !c.TemporalLocalPayloads {
-			errs = append(errs, errors.New("--engine=temporal over TLS or with an API key needs --temporal-payload-key-file or --temporal-local-payloads: without them the wake prompts, the model's words and the tool results reach the service in the clear (--temporal-plain-payloads accepts that)"))
-		}
-		if c.MaxTasks < 0 || c.MaxTasks > 10 {
-			errs = append(errs, errors.New("--max-tasks is between 0 and 10"))
-		}
-	default:
-		errs = append(errs, fmt.Errorf("--engine %q is not one of local, temporal", c.Engine))
-	}
-	return errs
 }

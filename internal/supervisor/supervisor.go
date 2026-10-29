@@ -19,11 +19,11 @@ import (
 	"github.com/triageagent-dev/spot/internal/agent"
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
-	"github.com/triageagent-dev/spot/internal/durable"
 	"github.com/triageagent-dev/spot/internal/edges"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/prompt"
 	"github.com/triageagent-dev/spot/internal/schedule"
+	"github.com/triageagent-dev/spot/internal/tools"
 	"github.com/triageagent-dev/spot/internal/triggers"
 )
 
@@ -83,8 +83,12 @@ type Supervisor struct {
 	identityAt  time.Time     // when it was last read
 	triggerWait time.Duration // zero = triggerDebounce; tests shorten it
 
+	// nextTick is the planned wake. With the stream up the core sends it when it
+	// is due (order); the spot wakes itself only as a net under a core that does
+	// not (selfWakeAt).
 	nextTick     time.Time
 	scheduledWhy string
+	order        *triggers.Order // a wake the core asked for, not yet taken
 	// promise is the earliest wake the agent itself asked for that has not
 	// fired. A later turn that wants a later (or no) wake does not move it.
 	promise    time.Time
@@ -100,23 +104,16 @@ type Supervisor struct {
 	edgeWakes   []time.Time // early wakes in the last hour
 	status      Status
 
-	// The durable engine's side (see bridge.go): the workflow's calls are run on
-	// the loop's goroutine through callc, so the state above needs no lock.
-	callc chan func()
 	// recent is the tokens each turn of the last hour billed (hourlyUntil).
-	recent   []tokenAt
-	stopped  chan struct{}
-	stopOnce sync.Once
-	sink     Sink
-	bctx     context.Context
-	bseq     int64
-	inflight map[int64]*pending
-	// lastTasks is the work the stats last told the core of; ending is the wake
-	// whose end is being announced, which the work leaves out.
-	lastTasks []triggers.TaskLine
-	ending    string
-	recs      map[string]*wakeRec
-	open      int
+	recent []tokenAt
+
+	// The wakes in hand (the table the core's controls act on) and the tasks that
+	// run beside the lanes, each in a goroutine of its own: taskc brings their
+	// ends back to the loop, which does the accounting.
+	work    work
+	taskc   chan taskEnd
+	newTask func() Turner
+	twg     sync.WaitGroup
 
 	// What the core is told about how the spot is doing (counted per UTC day).
 	statsDay string
@@ -145,8 +142,7 @@ type roomState struct {
 type Status struct {
 	Name        string `json:"name"`
 	Tenant      string `json:"tenant"`
-	Engine      string `json:"engine,omitempty"` // "temporal" when the schedule and the turns run in a workflow; empty = local
-	State       string `json:"state"`            // starting, idle, running, paused-ceiling, stopping, stopped
+	State       string `json:"state"` // starting, idle, running, paused-ceiling, stopping, stopped
 	StartedAt   string `json:"startedAt"`
 	UpdatedAt   string `json:"updatedAt"`
 	LastTurn    *Turn  `json:"lastTurn,omitempty"`
@@ -208,8 +204,7 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 	s := &Supervisor{
 		cfg: cfg, led: led, core: core, turner: turner, log: log, now: time.Now,
 		rooms: map[string]*roomState{"team": {}, "agents": {}},
-		callc: make(chan func(), 16), stopped: make(chan struct{}),
-		inflight: map[int64]*pending{}, recs: map[string]*wakeRec{},
+		work:  work{running: map[string]*job{}}, taskc: make(chan taskEnd, 16),
 	}
 	// A saved cursor means the messages after it are news, restart or not.
 	for room, ts := range led.LoadRoomRead() {
@@ -250,6 +245,9 @@ type Trigger interface {
 	ReportStats(triggers.Stats)
 	// ReportWake tells the core one line of the spot's activity.
 	ReportWake(triggers.Wake)
+	// SetSchedule sets what the core is told of the schedule when the stream
+	// (re)connects.
+	SetSchedule(triggers.Schedule)
 }
 
 // SetTrigger switches the supervisor from polling to the core's stream. It
@@ -282,15 +280,20 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.setState("starting")
 
 	s.refreshIdentity(ctx, true, 0)
+	s.publishSchedule()
 	pend := &pending{reason: prompt.Startup}
 	for ctx.Err() == nil {
-		if pend == nil && !s.nextTick.IsZero() && !s.now().Before(s.nextTick) {
+		s.drainTasks(ctx)
+		if pend == nil {
+			pend = s.ordered()
+		}
+		if pend == nil && s.selfWakeDue() {
 			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
 		}
 		if pend != nil {
 			if s.paused() {
 				s.pauseForCeiling()
-				s.reportWake(string(pend.reason), durable.LaneLong, "ceiling", agent.Result{}, s.nextTick, "ceiling")
+				s.reportWake(string(pend.reason), LaneLong, "ceiling", agent.Result{}, s.nextTick, "ceiling")
 			} else {
 				s.turn(ctx, pend)
 				pend = nil
@@ -312,8 +315,74 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 	s.setState("stopping")
+	s.twg.Wait() // a task cut off by shutdown is still booked
+	s.drainTasks(ctx)
 	s.setState("stopped")
 	return nil
+}
+
+// orderSkew is how far ahead of the plan a wake the core asks for is still
+// taken: the core's clock and the job that sends it are not exact.
+const orderSkew = 30 * time.Second
+
+// ordered turns the wake the core asked for into a wake of the long lane, or
+// drops it when it is stale: a wake the spot ran meanwhile (its own net, an
+// edge) already moved the plan, and a promise the spot no longer holds is gone.
+func (s *Supervisor) ordered() *pending {
+	o := s.order
+	s.order = nil
+	if o == nil {
+		return nil
+	}
+	now := s.now()
+	why := o.Why
+	switch o.Reason {
+	case "promise":
+		if s.promise.IsZero() || s.promise.After(now.Add(orderSkew)) {
+			s.log.Debug("a promised wake the spot does not hold is dropped", "why", o.Why)
+			return nil
+		}
+		if why == "" {
+			why = s.promiseWhy
+		}
+	case "tick":
+		if !s.nextTick.IsZero() && s.nextTick.After(now.Add(orderSkew)) {
+			s.log.Debug("a tick the spot has planned later is dropped", "next", s.nextTick.Format(time.RFC3339))
+			return nil
+		}
+		if why == "" {
+			why = s.scheduledWhy
+		}
+	default:
+		s.log.Debug("a wake of a reason the spot does not know is dropped", "reason", o.Reason)
+		return nil
+	}
+	s.log.Info("the core asks for a wake", "reason", o.Reason)
+	return &pending{reason: prompt.Tick, scheduledBy: why}
+}
+
+// selfWakeAt is when the spot wakes itself for the schedule. Where nobody else
+// sends the tick (no stream is configured, or it is down and the core is polled)
+// it is the planned time. With the stream up the core sends the tick, and the
+// spot keeps no timer for it: it wakes itself only once maxWake has passed since
+// its last wake, so a core that sends none never leaves it asleep for ever. A
+// wake planned later than that (a ceiling) is not hurried.
+func (s *Supervisor) selfWakeAt() time.Time {
+	if s.nextTick.IsZero() {
+		return time.Time{}
+	}
+	if s.trig == nil || !s.trig.Connected() {
+		return s.nextTick
+	}
+	if net := s.lastTurnEnd.Add(s.cfg.MaxWake); net.After(s.nextTick) {
+		return net
+	}
+	return s.nextTick
+}
+
+func (s *Supervisor) selfWakeDue() bool {
+	at := s.selfWakeAt()
+	return !at.IsZero() && !s.now().Before(at)
 }
 
 // paused reports whether the daily ceiling, or the core's cap on the spot,
@@ -401,13 +470,13 @@ func (s *Supervisor) pauseForCeiling() {
 // wait sleeps until something needs a look and says whether to read the core
 // (read) and whether the supervisor is still running (alive). With the stream
 // up the core says when: a frame is what makes the supervisor read, and a
-// timer only wakes it for the schedule, for held edges to be judged again, and
+// timer only wakes it for its net under the core's ticks, for held edges to be judged again, and
 // to notice that the stream went down. Without the stream it sleeps the poll
 // interval and reads, as it always did.
 func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 	if s.trig == nil || !s.trig.Connected() {
 		s.setTriggers("poll")
-		return true, s.sleepServing(ctx, s.untilNext())
+		return true, s.sleepTasks(ctx, s.untilNext())
 	}
 	if s.readNext {
 		s.readNext = false
@@ -430,8 +499,8 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 		return false, false
 	case <-t.C:
 		return false, true
-	case f := <-s.callc:
-		f() // the durable engine's call; the loop goes round and waits again
+	case e := <-s.taskc:
+		s.finishTask(ctx, e)
 		return false, true
 	case <-s.trig.C():
 		wait := s.triggerWait
@@ -453,10 +522,13 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 // statsEvery is how often the core hears from the spot while it sleeps.
 const statsEvery = 2 * time.Minute
 
-// takeCoreFacts applies what the core said about the spot itself: its name, and
-// its budget. A spot the core had held back wakes at once when the cap lifts,
+// takeCoreFacts applies what the core said about the spot itself: its name, its
+// budget, and a wake it asks for. A spot the core had held back wakes at once when the cap lifts,
 // instead of at midnight.
 func (s *Supervisor) takeCoreFacts(p triggers.Pending) {
+	if o := p.Order; o != nil && (s.order == nil || o.Reason == "promise" || s.order.Reason != "promise") {
+		s.order = o
+	}
 	if p.Name != "" && p.Name != s.chatName {
 		s.log.Info("the messenger calls the spot", "name", p.Name)
 		s.chatName = p.Name
@@ -583,7 +655,7 @@ func (s *Supervisor) idleWake(reason, why, source string) {
 		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: source}
-	s.reportWake(reason, durable.LaneLong, source, agent.Result{}, s.nextTick, source)
+	s.reportWake(reason, LaneLong, source, agent.Result{}, s.nextTick, source)
 	s.setState("idle")
 }
 
@@ -608,8 +680,9 @@ func (s *Supervisor) reportWake(reason, lane, outcome string, res agent.Result, 
 	s.reportWakeAs("", "", reason, lane, outcome, res, next, nextSource)
 }
 
-// reportWakeAs is reportWake for a wake the workflow named: key is the one its
-// task list gives it, and title is a task's own.
+// reportWakeAs is reportWake for a task's wake: key is the one its task list
+// gives it, and title is the task's own. A wake with a key never touches the
+// schedule the core keeps.
 func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res agent.Result, next time.Time, nextSource string) {
 	if s.trig == nil {
 		return
@@ -620,10 +693,57 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
 		Key: clipBytes(key, triggers.MaxTaskKey), Title: clipBytes(title, triggers.MaxTitle),
 	}
+	if lane != LaneTask {
+		// The core keeps the schedule as the last wake of the long or the short lane
+		// reported it, so each says all of it: the plan as it stands, and the promise.
+		if next.IsZero() {
+			next, w.NextSource = s.nextTick, ""
+			if n := s.status.NextWake; n != nil {
+				w.NextSource = clipLabel(n.Source)
+			}
+		}
+		w.NextWhy, w.Promise = clipBytes(s.scheduledWhy, maxWhy), s.promiseReport()
+		s.trig.SetSchedule(s.schedule())
+	}
 	if !next.IsZero() {
 		w.Next = next.UnixMilli()
 	}
 	s.trig.ReportWake(w)
+}
+
+// maxWhy is the longest reason the core is told with a wake.
+const maxWhy = 200
+
+// promiseReport is the promised wake as the core is told it, nil when there is
+// none.
+func (s *Supervisor) promiseReport() *triggers.Promise {
+	if s.promise.IsZero() {
+		return nil
+	}
+	return &triggers.Promise{At: s.promise.UnixMilli(), Why: clipBytes(s.promiseWhy, maxWhy), Human: s.promiseHuman}
+}
+
+// schedule is what the spot has planned, as the core is told it when the stream
+// (re)connects.
+func (s *Supervisor) schedule() triggers.Schedule {
+	sc := triggers.Schedule{MaxWakeMs: s.cfg.MaxWake.Milliseconds(), Promise: s.promiseReport()}
+	if !s.nextTick.IsZero() {
+		sc.Next, sc.NextWhy = s.nextTick.UnixMilli(), clipBytes(s.scheduledWhy, maxWhy)
+		if n := s.status.NextWake; n != nil {
+			sc.NextSource = clipLabel(n.Source)
+		}
+	}
+	if s.failures > 0 {
+		sc.BackoffMs = s.backoff().Milliseconds()
+	}
+	return sc
+}
+
+// publishSchedule hands the client the schedule it answers a hello with.
+func (s *Supervisor) publishSchedule() {
+	if s.trig != nil {
+		s.trig.SetSchedule(s.schedule())
+	}
 }
 
 // turnOutcome is the label of a turn that ran: it went well or it failed.
@@ -740,11 +860,8 @@ func (s *Supervisor) setTriggers(mode string) {
 
 func (s *Supervisor) untilNext() time.Duration {
 	d := s.cfg.PollInterval
-	// With the durable engine the workflow owns the schedule: nextTick is only
-	// what the core is told, and a past one (a wake that could not finish) is not
-	// something this loop acts on, so it must not shorten the sleep to nothing.
-	if !s.nextTick.IsZero() && s.sink == nil {
-		if until := s.nextTick.Sub(s.now()); until < d {
+	if at := s.selfWakeAt(); !at.IsZero() {
+		if until := at.Sub(s.now()); until < d {
 			d = until
 		}
 	}
@@ -754,9 +871,8 @@ func (s *Supervisor) untilNext() time.Duration {
 	return d
 }
 
-// sleepServing is sleep that also runs the workflow's calls (the durable
-// engine) while it waits. With no engine nothing sends one.
-func (s *Supervisor) sleepServing(ctx context.Context, d time.Duration) bool {
+// sleepTasks is sleep that also accounts the tasks that end while it waits.
+func (s *Supervisor) sleepTasks(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
@@ -768,8 +884,8 @@ func (s *Supervisor) sleepServing(ctx context.Context, d time.Duration) bool {
 			return false
 		case <-t.C:
 			return true
-		case f := <-s.callc:
-			f()
+		case e := <-s.taskc:
+			s.finishTask(ctx, e)
 		}
 	}
 }
@@ -1175,6 +1291,8 @@ func (s *Supervisor) run(ctx context.Context, t agent.Turn) agent.Result {
 			return res
 		case res := <-s.sideDone():
 			s.finishSide(ctx, res)
+		case e := <-s.taskc:
+			s.finishTask(ctx, e)
 		case <-due:
 			s.startPromised(ctx)
 		case <-s.trig.C():
@@ -1199,6 +1317,7 @@ type sideTurn struct {
 	// talk are the edges the turn was started for, put back if it fails before
 	// the model saw them.
 	talk []edges.Edge
+	job  *job
 }
 
 func (s *Supervisor) sideDone() <-chan agent.Result {
@@ -1238,13 +1357,16 @@ func (s *Supervisor) startSide(ctx context.Context, reason prompt.Reason, facts 
 		Digest: s.digestLines(), Rules: rules, Side: true, Limited: limited,
 		TokensUsed: s.led.Usage().Tokens, TokensCeil: s.cfg.DailyTokenCeil,
 	})
-	st := &sideTurn{p: &pending{reason: reason, facts: facts, scheduledBy: why}, done: make(chan agent.Result, 1), talk: talk}
+	j, jctx := s.begin(ctx, LaneShort, string(reason), tools.TaskRequest{})
+	st := &sideTurn{p: &pending{reason: reason, facts: facts, scheduledBy: why}, done: make(chan agent.Result, 1), talk: talk, job: j}
 	st.inj, _ = s.fast.(Interjector)
 	s.side = st
 	s.rollDay()
 	s.wakes["side-"+string(reason)]++
 	s.log.Info("short turn start", "reason", reason, "facts", len(facts))
-	go func() { st.done <- s.fast.Run(ctx, agent.Turn{Reason: string(reason), Prompt: text, Limited: limited}) }()
+	go func() {
+		st.done <- s.fast.Run(jctx, agent.Turn{Reason: string(reason), Prompt: text, Limited: limited})
+	}()
 	return true
 }
 
@@ -1261,11 +1383,14 @@ func (s *Supervisor) endSide(ctx context.Context) {
 func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 	st := s.side
 	s.side = nil
+	if stopped, _ := s.end(st.job); stopped && ctx.Err() == nil {
+		res.Canceled = false // an operator ended it; the supervisor is not stopping
+	}
 	u := res.Usage
 	s.book(res)
 	failed := (res.Failed || res.CoreDown) && !res.Canceled
 	if !res.Canceled {
-		s.reportWake(string(st.p.reason), durable.LaneShort, turnOutcome(failed), res, time.Time{}, "")
+		s.reportWake(string(st.p.reason), LaneShort, turnOutcome(failed), res, time.Time{}, "")
 	}
 	if res.Steps == 0 && failed && len(st.talk) > 0 {
 		s.hold(st.talk)
@@ -1276,6 +1401,7 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 	if res.Canceled {
 		return
 	}
+	s.startTasks(ctx, res.Tasks)
 	if failed {
 		s.log.Error("short turn failed", "err", failureText(res, s.cfg.LLMAuth), "tokens", u.Billable())
 		return
@@ -1423,8 +1549,13 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
-	res := s.run(ctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room, Limited: limited})
+	wk, wctx := s.begin(ctx, LaneLong, string(p.reason), tools.TaskRequest{})
+	res := s.run(wctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room, Limited: limited})
 	stopTyping()
+	if stopped, _ := s.end(wk); stopped && ctx.Err() == nil {
+		res.Canceled = false // an operator ended it; the supervisor is not stopping
+		s.log.Info("turn stopped by an operator")
+	}
 	s.lastTurnEnd = s.now()
 
 	// Accounting first: tokens are spent whether or not the turn succeeded.
@@ -1461,6 +1592,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.setState("stopping")
 		return
 	}
+	s.startTasks(ctx, res.Tasks)
 
 	if failed {
 		s.failures++
@@ -1502,7 +1634,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.nextTick, s.scheduledWhy = plan.At, plan.Why
 	s.setPromise(plan.Promise.At, plan.Promise.Why, plan.Promise.Human)
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
-	s.reportWake(string(p.reason), durable.LaneLong, turnOutcome(failed), res, s.nextTick, string(w.Source))
+	s.reportWake(string(p.reason), LaneLong, turnOutcome(failed), res, s.nextTick, string(w.Source))
 	if !failed {
 		s.addDigest(p.reason, res)
 		s.markRoomsRead()
@@ -1712,7 +1844,7 @@ func (s *Supervisor) reportStats(force bool) {
 		st.Wakes[k] = v
 	}
 	st.Config = s.reportedConfig()
-	st.Tasks = s.taskLines(force)
+	st.Tasks = s.taskLines()
 	if s.status.State == "paused-ceiling" {
 		st.Pause = "workspace-cap"
 		if s.led.CeilingReached(s.cfg.DailyTokenCeil) {
@@ -1755,4 +1887,33 @@ func (s *Supervisor) setState(state string) {
 		s.log.Error("writing status", "err", err)
 	}
 	s.reportStats(false)
+}
+
+// book counts what a turn cost: in the ledger and, for the core, as the spot's
+// own count (the core books it under the spot's kind and answers with the budget
+// after it).
+func (s *Supervisor) book(res agent.Result) {
+	u := res.Usage
+	if n := u.Billable(); n > 0 {
+		s.recent = append(s.recent, tokenAt{at: s.now(), tokens: n})
+	}
+	if _, err := s.led.AddUsage(u.Billable(), u.CacheRead, u.Output); err != nil {
+		s.log.Error("saving usage", "err", err)
+	}
+	if s.trig != nil && (u.Billable() > 0 || u.CacheRead > 0) {
+		s.trig.ReportTurn(triggers.Turn{
+			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead,
+			Cached: u.CacheRead, Output: u.Output, DurationMs: res.Duration.Milliseconds(), Failed: res.Failed,
+		})
+	}
+}
+
+// lastTurn is the status file's line about the turn that just ended.
+func (s *Supervisor) lastTurn(reason prompt.Reason, res agent.Result, failed bool) *Turn {
+	return &Turn{
+		At: s.now().UTC().Format(time.RFC3339), Reason: string(reason), Seconds: res.Duration.Seconds(),
+		Tokens: res.Usage.Billable(), Steps: res.Steps, ToolCalls: res.ToolCalls, Model: res.Model, Summary: res.Summary,
+		IsError: failed, StepsExhausted: res.StepsExhausted, TimedOut: res.TimedOut, AuthFailed: res.AuthFailed,
+		CoreDown: res.CoreDown, ContextTokens: res.ContextTokens,
+	}
 }
