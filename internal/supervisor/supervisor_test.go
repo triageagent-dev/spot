@@ -597,6 +597,20 @@ type fakeTrigger struct {
 	wakes     []triggers.Wake
 	stats     []triggers.Stats
 	schedules []triggers.Schedule
+	idles     int
+}
+
+// Idle counts the times the supervisor said it had nothing left to do.
+func (f *fakeTrigger) Idle() {
+	f.mu.Lock()
+	f.idles++
+	f.mu.Unlock()
+}
+
+func (f *fakeTrigger) idleCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.idles
 }
 
 func (f *fakeTrigger) Budget() (triggers.Budget, bool) {

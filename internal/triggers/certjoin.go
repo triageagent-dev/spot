@@ -213,13 +213,15 @@ func (c *Client) join(conn *websocket.Conn, nonce []byte) (bool, error) {
 }
 
 // enrollKey is the one-time key in the spot's key file, or "".
-func (c *Client) enrollKey() string {
-	if c.cert.EnrollKeyFile == "" {
+func (c *Client) enrollKey() string { return readEnrollKey(c.cert, c.log) }
+
+func readEnrollKey(cert *Cert, log *slog.Logger) string {
+	if cert.EnrollKeyFile == "" {
 		return ""
 	}
-	b, err := os.ReadFile(c.cert.EnrollKeyFile)
+	b, err := os.ReadFile(cert.EnrollKeyFile)
 	if err != nil {
-		c.log.Warn("the enrollment key cannot be read; joining without it", "err", err)
+		log.Warn("the enrollment key cannot be read; joining without it", "err", err)
 		return ""
 	}
 	return strings.TrimSpace(string(b))

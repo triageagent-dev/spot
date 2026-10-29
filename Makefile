@@ -92,6 +92,7 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, A
 	helm lint $(CHART) -f $(CHART)/ci/telemetry-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/connectors-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/substrate-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/key-values.yaml > $(CHART_TMP)/tria-spot-keyset.yaml
@@ -121,6 +122,15 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, A
 	@! helm template t $(CHART) -f $(CHART)/ci/connectors-values.yaml --set 'connectors[0].egress=null' >/dev/null 2>&1 || { echo "a connector without an egress target must fail"; exit 1; }
 	@grep -q -- '--otel-tenant-attr=triage.tenant' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant=' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-tenant-attr' $(CHART_TMP)/tria-spot-key.yaml || { echo "telemetry: the label attribute is always passed, the label itself only when set (default: the spot's name)"; exit 1; }
 	@grep -q -- '--otel-content=true' $(CHART_TMP)/tria-spot-tel.yaml && ! grep -q -- '--otel-content' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q -- '--otel-tool-details' $(CHART_TMP)/tria-spot-tel.yaml || { echo "telemetry: the content flag is passed with telemetry, on by default, and the old tool-details flag is gone"; exit 1; }
+	helm template t $(CHART) -f $(CHART)/ci/substrate-values.yaml > $(CHART_TMP)/tria-spot-substrate.yaml
+	@grep -q 'preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES' $(CHART_TMP)/tria-spot-substrate.yaml && grep -q 'path: /readyz' $(CHART_TMP)/tria-spot-substrate.yaml && grep -qE 'image: .*@sha256:[0-9a-f]{64}' $(CHART_TMP)/tria-spot-substrate.yaml && grep -q -- '--runtime=substrate' $(CHART_TMP)/tria-spot-substrate.yaml && grep -q -- '--llm-auth=gateway' $(CHART_TMP)/tria-spot-substrate.yaml || { echo "substrate: an ActorTemplate with the volume snapshot, the wake-up probe, the image by digest and the runtime flags"; exit 1; }
+	@! grep -qE '^kind: ' $(CHART_TMP)/tria-spot-substrate.yaml || { echo "substrate renders no Kubernetes object: no Deployment, PVC, ServiceAccount, NetworkPolicy, Secret or ConfigMap"; exit 1; }
+	@! grep -qE -- '--(anthropic-key-file|core-token-file|enroll-key-file|otel-token-file|gemini-key-file|connectors-file)|mountPath: /secrets' $(CHART_TMP)/tria-spot-substrate.yaml || { echo "substrate: an actor holds no credential and mounts no file but /state"; exit 1; }
+	@grep -q 'core.example-core.svc' $(CHART_TMP)/tria-spot-substrate.yaml && sed -n '/^rules:/,$$p' $(CHART_TMP)/tria-spot-substrate.yaml | grep -q 'gateway.example-gateway.svc' && sed -n '/^rules:/,$$p' $(CHART_TMP)/tria-spot-substrate.yaml | grep -q -- '- https:' || { echo "substrate: the egress policy names the core, the gateway and each connector, http in the cluster and https outside"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/substrate-values.yaml --set llm.auth=key >/dev/null 2>&1 || { echo "substrate with a model key must fail"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/substrate-values.yaml --set substrate.imageDigest= >/dev/null 2>&1 || { echo "substrate without an image digest must fail"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/substrate-values.yaml --set core.identity=serviceAccount >/dev/null 2>&1 || { echo "substrate with the ServiceAccount identity must fail"; exit 1; }
+	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set runtime=lambda >/dev/null 2>&1 || { echo "an unknown runtime must fail"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml --set telemetry.content=false | grep -q -- '--otel-content=false' || { echo "telemetry: telemetry.content=false reaches the flag"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/telemetry-values.yaml --set telemetry.tenant=example --set 'telemetry.tenantName=Example workspace' | grep -q -- '--otel-tenant-name="Example workspace"' || { echo "telemetry: a set tenant name reaches the flag"; exit 1; }
 	@! grep -q -- '--model=' $(CHART_TMP)/tria-spot-key.yaml && ! grep -q -- '--model=' $(CHART_TMP)/tria-spot-gmkey.yaml && grep -q -- '--model=gemini-3-pro-preview' $(CHART_TMP)/tria-spot-gmvertex.yaml || { echo "an empty llm.model passes no --model (the provider's default); a set one reaches the flag"; exit 1; }

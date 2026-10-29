@@ -47,6 +47,9 @@ type Config struct {
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
+	// ConnectorsJSON is the same list given inline, for a runtime with no file to
+	// read it from (a substrate actor mounts no ConfigMap).
+	ConnectorsJSON string
 	Connectors     []Connector
 	// LLMProvider is the model provider: "anthropic" or "gemini". Both sit
 	// behind llm.Client.
@@ -67,6 +70,19 @@ type Config struct {
 	VertexProject          string
 	// VertexRegion is the Vertex AI region or global, for either provider.
 	VertexRegion string
+	// LLMBaseURL is the model gateway of --llm-auth=gateway: an in-cluster URL
+	// that holds the credential, so the spot sends none (Anthropic only).
+	LLMBaseURL string
+	// Runtime is where the spot runs: "deployment" (a pod that holds a
+	// websocket to the core, the default) or "substrate" (an Agent Substrate
+	// actor: no stream, the core's wake arrives as a request on Listen; the
+	// core's ADR-107). Substrate is the one place the process holds no model
+	// credential.
+	Runtime string
+	// Listen is the address of the HTTP server of the substrate runtime: GET
+	// /readyz (the actor's wake-up probe) and POST /frame (the core's wake and
+	// controls).
+	Listen string
 	// Model is the model id (empty = the provider's default, applied by Parse);
 	// Effort is low, medium, high, xhigh or max.
 	Model  string
@@ -145,6 +161,9 @@ const (
 	AuthKey        = "key"
 	AuthFederation = "federation"
 	AuthVertex     = "vertex"
+	// AuthGateway sends no credential: the model gateway named by --llm-base-url
+	// holds it (Anthropic only).
+	AuthGateway = "gateway"
 )
 
 // Model providers.
@@ -158,6 +177,9 @@ const (
 	DefaultStateDir       = "/state"
 	DefaultAnthropicModel = "claude-opus-5-5"
 	DefaultGeminiModel    = "gemini-3-flash-preview"
+	RuntimeDeployment     = "deployment"
+	RuntimeSubstrate      = "substrate"
+	DefaultListen         = ":80"
 	DefaultEffort         = "medium"
 )
 
@@ -182,8 +204,12 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.EnrollKeyFile, "enroll-key-file", "", "file holding the one-time enrollment key the core minted for this spot; with --core-ca-fingerprint")
 	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
+	fs.StringVar(&c.ConnectorsJSON, "connectors-json", "", "the connectors as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --connectors-file")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
-	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only) or vertex")
+	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or gateway (anthropic only: the spot sends no credential to --llm-base-url, which holds it)")
+	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "gateway: the model gateway's URL (for example http://<gateway>.<namespace>.svc/anthropic); required with --llm-auth=gateway, rejected otherwise")
+	fs.StringVar(&c.Runtime, "runtime", RuntimeDeployment, "where the spot runs: deployment (a pod with a websocket to the core) or substrate (an Agent Substrate actor, woken by the core over HTTP; the core's ADR-107)")
+	fs.StringVar(&c.Listen, "listen", DefaultListen, "substrate: the address the actor listens on, for /readyz and the core's requests")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-provider=anthropic --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.GeminiKeyFile, "gemini-key-file", "", "file holding the Gemini API key, re-read on every request (required with --llm-provider=gemini --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.IdentityTokenFile, "anthropic-identity-token-file", "", "federation: file holding the projected identity token (JWT), re-read on every exchange")
@@ -240,7 +266,15 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	}
 	c.applyDefaults()
 	var cerr error
-	if c.Connectors, cerr = LoadConnectors(c.ConnectorsFile); cerr != nil {
+	if c.ConnectorsFile != "" && c.ConnectorsJSON != "" {
+		return c, errors.Join(errors.New("--connectors-file and --connectors-json cannot both be given"), c.Validate())
+	}
+	if c.ConnectorsJSON != "" {
+		c.Connectors, cerr = ParseConnectors(c.ConnectorsJSON)
+	} else {
+		c.Connectors, cerr = LoadConnectors(c.ConnectorsFile)
+	}
+	if cerr != nil {
 		return c, errors.Join(cerr, c.Validate())
 	}
 	return c, c.Validate()
@@ -272,6 +306,35 @@ func (c Config) validateCertificateIdentity() []error {
 	return errs
 }
 
+// validateRuntime checks the runtime. A substrate actor holds no credential
+// for the model (the gateway does), joins the core by certificate, and listens
+// for the core's requests instead of holding a stream.
+func (c Config) validateRuntime() []error {
+	switch c.Runtime {
+	case RuntimeDeployment:
+		return nil
+	case RuntimeSubstrate:
+		var errs []error
+		if c.LLMAuth != AuthGateway {
+			errs = append(errs, errors.New("--runtime=substrate needs --llm-auth=gateway: an actor holds no model credential"))
+		}
+		if c.CoreCAFingerprint == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --core-ca-fingerprint: an actor joins the core by certificate"))
+		}
+		if c.CoreAPIURL == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --core-api-url: the actor's link to the core is HTTP requests to it"))
+		}
+		if strings.TrimSpace(c.Listen) == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --listen"))
+		}
+		return errs
+	}
+	return []error{fmt.Errorf("--runtime %q is not one of deployment, substrate", c.Runtime)}
+}
+
+// Substrate reports whether the spot runs as a substrate actor.
+func (c Config) Substrate() bool { return c.Runtime == RuntimeSubstrate }
+
 // CertificateIdentity reports whether the spot joins the core by certificate.
 func (c Config) CertificateIdentity() bool { return c.CoreCAFingerprint != "" }
 
@@ -291,6 +354,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HeartbeatID == "" && c.Tenant != "" {
 		c.HeartbeatID = "system2-heartbeat-" + c.Tenant
+	}
+	if c.Runtime == RuntimeSubstrate {
+		// An actor is suspended when it is idle, and nothing it holds in memory
+		// or waits for in a timer survives: an edge or a message is acted on at
+		// once, the core's next wake reads whatever the cap left.
+		c.EdgeCooldown, c.ChatBatch = 0, 0
 	}
 	if c.OtelTenant == "" {
 		c.OtelTenant = c.Name
@@ -315,7 +384,8 @@ func (c *Config) Validate() error {
 	if c.CoreTools != "curated" && c.CoreTools != "all" {
 		errs = append(errs, errors.New("--core-tools is curated or all"))
 	}
-	if c.EgoMCPURL != "" && c.OtelTokenFile == "" {
+	if c.EgoMCPURL != "" && c.OtelTokenFile == "" && !c.Substrate() {
+		// An actor holds no token: the egress policy puts it on the request.
 		errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))
 	}
 	if c.EgoMCPURL != "" && !strings.HasPrefix(c.EgoMCPURL, "http://") && !strings.HasPrefix(c.EgoMCPURL, "https://") {
@@ -386,8 +456,15 @@ func (c *Config) Validate() error {
 			only(AuthFederation, federation)
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
+		case AuthGateway:
+			if c.AnthropicKeyFile != "" {
+				errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=gateway: the spot sends no credential"))
+			}
+			only(AuthFederation, federation)
+			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
+			req(c.LLMBaseURL, "llm-base-url")
 		default:
-			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex", c.LLMAuth))
+			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex, gateway", c.LLMAuth))
 		}
 	case ProviderGemini:
 		anthropic := map[string]string{"anthropic-key-file": c.AnthropicKeyFile}
@@ -409,14 +486,22 @@ func (c *Config) Validate() error {
 			}
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
-		case AuthFederation:
-			errs = append(errs, errors.New("--llm-auth=federation is an Anthropic auth mode: use key or vertex with --llm-provider=gemini"))
+		case AuthFederation, AuthGateway:
+			errs = append(errs, fmt.Errorf("--llm-auth=%s is an Anthropic auth mode: use key or vertex with --llm-provider=gemini", c.LLMAuth))
 		default:
 			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, vertex", c.LLMAuth))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("--llm-provider %q is not one of anthropic, gemini", c.LLMProvider))
 	}
+	if c.LLMBaseURL != "" {
+		if c.LLMAuth != AuthGateway {
+			errs = append(errs, errors.New("--llm-base-url only applies with --llm-auth=gateway"))
+		} else if !strings.HasPrefix(c.LLMBaseURL, "http://") && !strings.HasPrefix(c.LLMBaseURL, "https://") {
+			errs = append(errs, errors.New("--llm-base-url must be an http:// or https:// URL"))
+		}
+	}
+	errs = append(errs, c.validateRuntime()...)
 	req(c.Model, "model")
 	switch c.Effort {
 	case "low", "medium", "high", "xhigh", "max":

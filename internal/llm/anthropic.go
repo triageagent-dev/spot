@@ -25,6 +25,9 @@ const (
 	// AuthVertex is Claude on Google Vertex AI through Application Default
 	// Credentials, the pod's Workload Identity.
 	AuthVertex = "vertex"
+	// AuthGateway sends no credential at all: BaseURL is a model gateway that
+	// holds it (the core's ADR-107, a substrate actor holds none).
+	AuthGateway = "gateway"
 )
 
 // DefaultMaxTokens is the output cap of one request when the request names none.
@@ -120,8 +123,16 @@ func NewAnthropic(ctx context.Context, o Options) (*Anthropic, error) {
 			region = "global"
 		}
 		opts = append(opts, vertex.WithGoogleAuth(ctx, region, o.VertexProject))
+	case AuthGateway:
+		if strings.TrimSpace(o.BaseURL) == "" {
+			return nil, errors.New("llm: the gateway needs a base URL")
+		}
+		// No key, no token, and nothing from the environment: a stray
+		// ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL must neither be sent to the
+		// gateway nor choose another host.
+		opts = append(opts, option.WithoutEnvironmentDefaults())
 	default:
-		return nil, fmt.Errorf("llm: auth %q is not one of key, federation, vertex", o.Auth)
+		return nil, fmt.Errorf("llm: auth %q is not one of key, federation, vertex, gateway", o.Auth)
 	}
 	if o.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(o.BaseURL))

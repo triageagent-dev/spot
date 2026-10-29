@@ -378,3 +378,76 @@ func TestEnrollKeyFileNeedsTheCertificateIdentity(t *testing.T) {
 		t.Fatal("an enrollment key was accepted without the certificate identity")
 	}
 }
+
+var substrateArgs = []string{"--tenant", "example", "--core-mcp-url", "http://core.invalid/mcp",
+	"--core-api-url", "http://core.invalid:8080", "--core-ca-fingerprint", "SHA256:" + strings.Repeat("ab", 32),
+	"--runtime", "substrate", "--llm-auth", "gateway", "--llm-base-url", "http://gateway.invalid/anthropic"}
+
+func TestSubstrateRuntimeHoldsNoCredentialAndWaitsForNothing(t *testing.T) {
+	c, err := Parse(with(substrateArgs, "--edge-cooldown", "5m", "--chat-batch", "10m"), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Substrate() || c.Listen != ":80" || c.LLMAuth != AuthGateway || c.LLMBaseURL != "http://gateway.invalid/anthropic" {
+		t.Fatalf("%+v", c)
+	}
+	if c.EdgeCooldown != 0 || c.ChatBatch != 0 {
+		t.Errorf("an actor is suspended when idle, so nothing waits: cooldown %s batch %s", c.EdgeCooldown, c.ChatBatch)
+	}
+	if c.CoreTokenFile != "/state/identity/token" {
+		t.Errorf("the token is the identity's own: %q", c.CoreTokenFile)
+	}
+}
+
+func TestSubstrateRuntimeRefusesWhatDoesNotFit(t *testing.T) {
+	for name, args := range map[string][]string{
+		"a model key":           with(substrateArgs, "--anthropic-key-file", "/s/key"),
+		"key auth":              with(substrateArgs, "--llm-auth", "key", "--llm-base-url", ""),
+		"no gateway URL":        with(substrateArgs, "--llm-base-url", ""),
+		"a gateway that is not": with(substrateArgs, "--llm-base-url", "gateway.invalid"),
+		"no core API URL":       with(substrateArgs, "--core-api-url", ""),
+		"no certificate":        with(substrateArgs, "--core-ca-fingerprint", ""),
+		"no listen address":     with(substrateArgs, "--listen", ""),
+		"an unknown runtime":    with(substrateArgs, "--runtime", "lambda"),
+		"gemini on the gateway": with(substrateArgs, "--llm-provider", "gemini"),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+func TestTheGatewayIsAnAuthModeNotARuntime(t *testing.T) {
+	c, err := Parse(with(required[:6], "--llm-auth", "gateway", "--llm-base-url", "http://gateway.invalid"), io.Discard)
+	if err != nil || c.Runtime != RuntimeDeployment || c.LLMAuth != AuthGateway {
+		t.Fatalf("a deployment may use the gateway too: %+v %v", c, err)
+	}
+	if _, err := Parse(with(required, "--llm-base-url", "http://gateway.invalid"), io.Discard); err == nil {
+		t.Error("--llm-base-url was accepted without --llm-auth=gateway")
+	}
+}
+
+func TestConnectorsCanBeGivenInlineForARuntimeWithNoFile(t *testing.T) {
+	js := `[{"name":"example-kube","url":"http://example.invalid/mcp","tools":["get_pods"],"hint":"read only"}]`
+	c, err := Parse(with(substrateArgs, "--connectors-json", js), io.Discard)
+	if err != nil || len(c.Connectors) != 1 || c.Connectors[0].Name != "example-kube" {
+		t.Fatalf("%+v %v", c.Connectors, err)
+	}
+	if _, err := Parse(with(substrateArgs, "--connectors-json", js, "--connectors-file", "/x"), io.Discard); err == nil {
+		t.Error("both forms were accepted")
+	}
+	if _, err := Parse(with(substrateArgs, "--connectors-json", `[{"name":"Bad Name","url":"x","tools":[]}]`), io.Discard); err == nil {
+		t.Error("an invalid inline connector was accepted")
+	}
+}
+
+func TestAnActorNeedsNoTokenFileForEgo(t *testing.T) {
+	args := with(substrateArgs, "--ego-mcp-url", "http://ego.invalid/mcp")
+	if _, err := Parse(args, io.Discard); err != nil {
+		t.Fatalf("the egress policy puts ego's token on the request: %v", err)
+	}
+	dep := with(required, "--ego-mcp-url", "http://ego.invalid/mcp")
+	if _, err := Parse(dep, io.Discard); err == nil {
+		t.Error("a deployment must still name the token file")
+	}
+}

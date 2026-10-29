@@ -1,0 +1,80 @@
+{{- if and .Values.spot.enabled (eq (include "tria-spot.runtime" .) "substrate") }}
+{{- /* The spot as an actor of Agent Substrate (the core's ADR-107). Actors are not
+       Kubernetes objects: this renders the two documents the substrate API takes
+       (its JSON, as YAML) and nothing else. Apply them with the substrate CLI; see
+       the README. */ -}}
+{{- $name := include "tria-spot.name" . }}
+{{- $tenant := include "tria-spot.tenant" . }}
+{{- $sub := .Values.substrate }}
+{{- $llm := .Values.llm }}
+{{- if ne $llm.provider "anthropic" }}{{ fail "runtime: substrate needs llm.provider anthropic: the model gateway serves the Anthropic API" }}{{ end }}
+{{- if ne $llm.auth "gateway" }}{{ fail "runtime: substrate needs llm.auth gateway: an actor holds no model credential" }}{{ end }}
+{{- if ne (include "tria-spot.coreIdentity" .) "certificate" }}{{ fail "runtime: substrate needs core.identity certificate: an actor has no ServiceAccount token and no Secret" }}{{ end }}
+{{- if not .Values.core.apiUrl }}{{ fail "core.apiUrl is required for runtime: substrate: the actor's link to the core is HTTP requests to it" }}{{ end }}
+{{- if not (regexMatch "^SHA256:[0-9a-f]{64}$" (default "" .Values.core.caFingerprint)) }}{{ fail "core.caFingerprint (SHA256:<64 lowercase hex>) is required when core.identity is certificate" }}{{ end }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (default "" $sub.imageDigest)) }}{{ fail "substrate.imageDigest (sha256:<64 lowercase hex>) is required: the template names the image by digest" }}{{ end }}
+{{- $_ := required "substrate.atespace is required" $sub.atespace }}
+
+{{- /* What the actor reaches, from the URLs it is given: http for in-cluster names,
+       https for what leaves the cluster. One rule per destination, no duplicates. */ -}}
+{{- $urls := list (required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl) .Values.core.apiUrl (required "llm.gateway.url is required when llm.auth is gateway" $llm.gateway.url) }}
+{{- if .Values.telemetry.enabled }}
+{{- $urls = append $urls (required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint) }}
+{{- if .Values.telemetry.mcpUrl }}{{ $urls = append $urls .Values.telemetry.mcpUrl }}{{ end }}
+{{- end }}
+{{- range .Values.connectors }}{{ $urls = append $urls .url }}{{ end }}
+{{- $order := list }}
+{{- $ports := dict }}
+{{- range $urls }}
+{{- $d := include "tria-spot.destination" . | fromJson }}
+{{- $key := printf "%s %s" $d.scheme $d.host }}
+{{- if not (hasKey $ports $key) }}{{ $order = append $order $key }}{{ $_ := set $ports $key (list) }}{{ end }}
+{{- if not (has (int $d.port) (get $ports $key)) }}{{ $_ := set $ports $key (append (get $ports $key) (int $d.port)) }}{{ end }}
+{{- end }}
+{{- $rules := list }}
+{{- range $key := $order }}
+{{- $scheme := first (splitList " " $key) }}
+{{- $host := last (splitList " " $key) }}
+{{- $rule := dict "hostnames" (list $host) }}
+{{- $list := get $ports $key }}
+{{- /* The default port of the scheme is left out; any other port, or more than one, is named. */}}
+{{- if ne (join "," $list) (ternary "443" "80" (eq $scheme "https")) }}{{ $_ := set $rule "ports" (dict "numbers" $list) }}{{ end }}
+{{- $rules = append $rules (dict $scheme $rule) }}
+{{- end }}
+{{- range $sub.egress.extraRules }}{{ $rules = append $rules . }}{{ end }}
+
+{{- $conns := list }}
+{{- range .Values.connectors }}
+{{- $conns = append $conns (dict "name" (required "connectors[].name is required" .name) "url" (required (printf "connectors[%s].url is required" .name) .url) "tools" (required (printf "connectors[%s].tools must name the tools the spot may call" .name) .tools) "hint" (default "" .hint)) }}
+{{- end }}
+
+{{- $args := list
+      (printf "--tenant=%s" $tenant) (printf "--name=%s" $name)
+      (printf "--core-mcp-url=%s" .Values.core.mcpUrl) (printf "--core-api-url=%s" .Values.core.apiUrl)
+      (printf "--core-ca-fingerprint=%s" .Values.core.caFingerprint)
+      "--runtime=substrate" "--listen=:80"
+      "--llm-provider=anthropic" "--llm-auth=gateway" (printf "--llm-base-url=%s" $llm.gateway.url) }}
+{{- if .Values.spot.chatName }}{{ $args = append $args (printf "--chat-name=%s" .Values.spot.chatName) }}{{ end }}
+{{- if $conns }}{{ $args = append $args (printf "--connectors-json=%s" (toJson $conns)) }}{{ end }}
+{{- $args = concat $args (include "tria-spot.agentArgs" . | fromYamlArray) }}
+
+{{- $template := dict
+      "metadata" (dict "atespace" $sub.atespace "name" $name)
+      "containers" (list (dict
+        "name" "tria-spot"
+        "image" (printf "%s@%s" .Values.image.repository $sub.imageDigest)
+        "command" $sub.command
+        "args" $args
+        "wakeupProbe" (dict "httpGet" (dict "path" "/readyz" "port" 80) "timeoutSeconds" (int $sub.wakeupTimeoutSeconds))
+        "volumeMounts" (list (dict "name" "state" "mountPath" "/state"))
+        "securityContext" (dict "capabilities" (dict "add" (list "NET_BIND_SERVICE")))))
+      "resources" (dict "limits" (dict "cpuMillicores" (int64 $sub.cpuMillicores) "memoryBytes" (int64 $sub.memoryBytes)))
+      "snapshotConfig" (dict "preferredFidelity" "SNAPSHOT_FIDELITY_VOLUMES")
+      "volumes" (list (dict "name" "state" "durableDir" (dict))) }}
+{{- if $sub.workerSelector }}{{ $_ := set $template "workerSelector" (dict "matchLabels" $sub.workerSelector) }}{{ end }}
+# ActorTemplate: kubectl ate create actor-template -f -
+{{ toYaml $template }}
+---
+# EgressPolicy of the spot's actor (CreateActorEgressPolicy): hostnames only, anything not named is refused
+{{ toYaml (dict "rules" $rules) }}
+{{- end }}

@@ -1,0 +1,32 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# The spot as an actor of Agent Substrate: no Secret, no ServiceAccount.
+runtime: substrate
+spot:
+  enabled: true
+  tenant: example
+core:
+  identity: certificate
+  mcpUrl: http://core.example-core.svc:8080/mcp
+  apiUrl: http://core.example-core.svc:8080
+  caFingerprint: "SHA256:0000000000000000000000000000000000000000000000000000000000000000"
+llm:
+  auth: gateway
+  gateway:
+    url: http://gateway.example-gateway.svc/anthropic
+substrate:
+  atespace: spots
+  imageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  workerSelector:
+    workload: spots
+telemetry:
+  enabled: true
+  endpoint: http://ego.example-ego.svc:4318
+  mcpUrl: http://ego.example-ego.svc:8001/mcp
+connectors:
+  - name: example-kube
+    url: http://example-connector.example-ns.svc:8080/mcp
+    tools: [get_pods]
+    hint: read only
+  - name: example-saas
+    url: https://mcp.example.com/mcp
+    tools: [search]

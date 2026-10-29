@@ -264,19 +264,13 @@ type Client struct {
 	log       *slog.Logger
 
 	connected atomic.Bool
-	signal    chan struct{}
 
-	mu      sync.Mutex
-	pending Pending
-	budget  *Budget
-	outbox  []Turn // reported turns the core has not taken yet
-	sched   *Schedule
+	inbox
+	outbox []Turn // reported turns the core has not taken yet
+	sched  *Schedule
 
 	wmu  sync.Mutex // one writer at a time
 	conn *websocket.Conn
-
-	cmu     sync.Mutex
-	control ControlFunc
 
 	// cert is set when the spot joins by certificate (NewCert): the stream is
 	// opened with the join handshake and the token comes over it.
@@ -307,35 +301,12 @@ func New(apiURL, tenant, tokenFile string, log *slog.Logger) (*Client, error) {
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + Path
 	u.RawQuery = url.Values{"tenant": {tenant}}.Encode()
-	return &Client{url: u.String(), tokenFile: tokenFile, log: log, signal: make(chan struct{}, 1)}, nil
+	return &Client{url: u.String(), tokenFile: tokenFile, log: log, inbox: newInbox()}, nil
 }
 
 // Connected reports whether the stream is up. While it is not, the supervisor
 // falls back to reading the core on its poll interval.
 func (c *Client) Connected() bool { return c.connected.Load() }
-
-// C signals that something is pending; it is coalesced, so one receive may
-// stand for many frames.
-func (c *Client) C() <-chan struct{} { return c.signal }
-
-// Take returns what happened since the last call and clears it.
-func (c *Client) Take() Pending {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	p := c.pending
-	c.pending = Pending{}
-	return p
-}
-
-// Budget is the last budget the core sent, false before any.
-func (c *Client) Budget() (Budget, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.budget == nil {
-		return Budget{}, false
-	}
-	return *c.budget, true
-}
 
 // ReportTurn tells the core what a turn cost. A turn the stream cannot take
 // now waits for the next connection (the last maxOutbox are kept).
@@ -367,40 +338,12 @@ func (c *Client) sendSchedule() {
 	}
 }
 
-// SetControl sets what answers the core's controls. Without it every control is
-// refused.
-func (c *Client) SetControl(f ControlFunc) {
-	c.cmu.Lock()
-	c.control = f
-	c.cmu.Unlock()
-}
-
 // answer runs one control and sends its result, once, whatever happens.
 func (c *Client) answer(ctl Control) {
-	res := ControlResult{ID: ctl.ID}
-	c.cmu.Lock()
-	f := c.control
-	c.cmu.Unlock()
-	switch {
-	case ctl.ID == "" || ctl.Op == "":
+	if ctl.ID == "" || ctl.Op == "" {
 		return // nothing to answer to
-	case len(ctl.Task) > maxTaskKey:
-		res.Msg = "the task key is too long"
-	case f == nil:
-		res.Msg = "this spot does not answer controls yet"
-	default:
-		ctx, cancel := context.WithTimeout(context.Background(), ControlTimeout)
-		done := make(chan ControlResult, 1)
-		go func() { done <- f(ctx, ctl) }()
-		select {
-		case res = <-done:
-		case <-ctx.Done():
-			res.Msg = "the spot did not finish in time; ask for the list to see where it stands"
-		}
-		cancel()
-		res.ID = ctl.ID
 	}
-	c.reply(res)
+	c.reply(c.run(ctl))
 }
 
 // reply bounds the answer to a control and sends it.
@@ -422,24 +365,7 @@ func (c *Client) reply(res ControlResult) {
 // it, and answers the control that carried it. The answer is "asked": the loop
 // starts the wake when it is free, or on the short lane at once.
 func (c *Client) askManual(id, why string) {
-	why = strings.ToValidUTF8(clipTo(why, maxOrderWhy), "")
-	c.mu.Lock()
-	c.pending.Manual = &Order{Reason: "manual", Why: why}
-	c.mu.Unlock()
-	select {
-	case c.signal <- struct{}{}:
-	default:
-	}
-	res := ControlResult{ID: id, OK: true, Msg: "wake asked"}
-	c.cmu.Lock()
-	f := c.control
-	c.cmu.Unlock()
-	if f != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), ControlTimeout)
-		res.Tasks = f(ctx, Control{ID: id, Op: "list"}).Tasks
-		cancel()
-	}
-	c.reply(res)
+	c.reply(c.manualAnswer(id, why))
 }
 
 // ReportWake sends one line of activity. It is dropped while the stream is
@@ -478,38 +404,6 @@ func (c *Client) flush() {
 			c.outbox = c.outbox[1:]
 		}
 		c.mu.Unlock()
-	}
-}
-
-func (c *Client) add(f frame) {
-	c.mu.Lock()
-	if f.Name != "" {
-		c.pending.Name = f.Name
-	}
-	if f.Budget != nil {
-		b := *f.Budget
-		c.budget = &b
-		c.pending.Budget = true
-	}
-	if o := f.Wake; o != nil && (o.Reason == "promise" || c.pending.Order == nil || c.pending.Order.Reason != "promise") {
-		o.Why = strings.ToValidUTF8(clipTo(o.Why, maxOrderWhy), "")
-		c.pending.Order = o
-	}
-	c.pending.Hello = c.pending.Hello || f.Hello
-	c.pending.Issues = c.pending.Issues || f.Issues
-	for _, r := range f.Rooms {
-		seen := false
-		for _, x := range c.pending.Rooms {
-			seen = seen || x == r
-		}
-		if !seen {
-			c.pending.Rooms = append(c.pending.Rooms, r)
-		}
-	}
-	c.mu.Unlock()
-	select {
-	case c.signal <- struct{}{}:
-	default:
 	}
 }
 

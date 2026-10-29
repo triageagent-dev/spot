@@ -319,3 +319,37 @@ func TestFakeRecordsAndScripts(t *testing.T) {
 		t.Errorf("seen %d left %d", len(f.Requests()), f.Left())
 	}
 }
+
+func TestTheGatewaySendsNoCredentialWhateverTheEnvironmentHolds(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-from-env")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-from-env")
+	var hdr http.Header
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hdr, path = r.Header.Clone(), r.URL.Path
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"test-model","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	a, err := NewAnthropic(context.Background(), Options{Auth: AuthGateway, Model: "test-model", BaseURL: srv.URL + "/anthropic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Complete(context.Background(), Request{Messages: []Message{UserText("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/anthropic/v1/messages" {
+		t.Errorf("the request went to %q, not under the gateway's base URL", path)
+	}
+	for _, h := range []string{"X-Api-Key", "Authorization", "Anthropic-Identity-Token"} {
+		if v := hdr.Get(h); v != "" {
+			t.Errorf("the gateway request carries %s", h)
+		}
+	}
+}
+
+func TestTheGatewayNeedsABaseURL(t *testing.T) {
+	if _, err := NewAnthropic(context.Background(), Options{Auth: AuthGateway, Model: "m"}); err == nil {
+		t.Error("a gateway with no base URL was accepted")
+	}
+}
