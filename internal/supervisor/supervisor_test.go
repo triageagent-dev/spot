@@ -177,10 +177,19 @@ func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 		_, _ = fmt.Sscan(v, &tin, &tout)
 	}
 	next, summary := f.vals["next"], f.vals["summary"]
+	asked := f.vals["tasks"]
 	f.mu.Unlock()
 
 	u := llm.Usage{Input: tin, Output: tout}
-	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second}
+	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second,
+		Trace: []agent.Step{{Kind: "model", Name: "fake-model", Ms: 12, Tokens: u.Billable()}, {Kind: "tool", Name: "core__list_open_issues", Ms: 3}}}
+	if asked != "" {
+		var reqs []struct{ Title, Goal string }
+		_ = json.Unmarshal([]byte(asked), &reqs)
+		for _, r := range reqs {
+			res.Tasks = append(res.Tasks, tools.TaskRequest{Title: r.Title, Goal: r.Goal})
+		}
+	}
 	switch mode {
 	case "fail":
 		return agent.Result{Failed: true, Err: errors.New("boom: simulated failure")}
@@ -240,6 +249,8 @@ type harness struct {
 	wrap func(Turner) Turner
 	// fast, when set, is the spot's second lane.
 	fast *scriptTurner
+	// task, when set, runs the tasks.
+	task *scriptTurner
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -290,6 +301,9 @@ func (h *harness) start() {
 	h.sup.typingEvery = h.typingEvery
 	if h.fast != nil {
 		h.sup.SetFastTurner(h.fast)
+	}
+	if h.task != nil {
+		h.sup.SetTaskTurner(func() Turner { return h.task })
 	}
 	if h.trig != nil {
 		h.sup.SetTrigger(h.trig)
@@ -582,6 +596,7 @@ type fakeTrigger struct {
 	turns     []triggers.Turn
 	wakes     []triggers.Wake
 	stats     []triggers.Stats
+	schedules []triggers.Schedule
 }
 
 func (f *fakeTrigger) Budget() (triggers.Budget, bool) {
@@ -605,6 +620,11 @@ func (f *fakeTrigger) ReportWake(w triggers.Wake) {
 func (f *fakeTrigger) ReportStats(s triggers.Stats) {
 	f.mu.Lock()
 	f.stats = append(f.stats, s)
+	f.mu.Unlock()
+}
+func (f *fakeTrigger) SetSchedule(sc triggers.Schedule) {
+	f.mu.Lock()
+	f.schedules = append(f.schedules, sc)
 	f.mu.Unlock()
 }
 func (f *fakeTrigger) setBudget(b triggers.Budget) {
@@ -637,6 +657,12 @@ func (f *fakeTrigger) say(p triggers.Pending) {
 	f.pending.Issues = f.pending.Issues || p.Issues
 	f.pending.Rooms = append(f.pending.Rooms, p.Rooms...)
 	f.pending.Budget = f.pending.Budget || p.Budget
+	if p.Order != nil {
+		f.pending.Order = p.Order
+	}
+	if p.Manual != nil {
+		f.pending.Manual = p.Manual
+	}
 	if p.Name != "" {
 		f.pending.Name = p.Name
 	}

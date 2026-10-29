@@ -50,6 +50,9 @@ type Turn struct {
 	// Limited gives the turn only the notes, room, post and status tools and
 	// the built-ins, when the toolbox can narrow itself.
 	Limited bool
+	// Task marks a task's turn, which cannot schedule a wake or start a task,
+	// when the toolbox can say so.
+	Task bool
 }
 
 // Result is what a turn did.
@@ -59,7 +62,13 @@ type Result struct {
 	// Summary is what the model passed to finish.
 	Summary string
 	// Next is the last schedule_next call, if any.
-	Next      *ScheduleRequest
+	Next *ScheduleRequest
+	// Tasks are the tasks the turn asked start_task for, to be started when it
+	// ends.
+	Tasks []tools.TaskRequest
+	// Trace is one line per model request and tool call of the turn, for the
+	// core's view of a run: names and numbers, never arguments or results.
+	Trace     []Step
 	Steps     int // model requests made
 	ToolCalls int
 	Usage     llm.Usage
@@ -88,6 +97,50 @@ type Result struct {
 	// Undelivered are messages handed to Inject that the turn ended without
 	// showing to the model.
 	Undelivered []string
+}
+
+// Step is one model request or tool call of a turn.
+type Step struct {
+	Kind   string // model | tool | cut
+	Name   string
+	Ms     int64
+	Tokens int64 // billable tokens of a model request
+}
+
+// Trace limits: a turn keeps the first MaxTrace-1 lines and, when there were
+// more, a last line of kind "cut" that says how many were left out.
+const (
+	MaxTrace     = 40
+	maxTraceName = 64
+)
+
+type trace struct {
+	mu    sync.Mutex
+	lines []Step
+	extra int
+}
+
+func (t *trace) add(kind, name string, began time.Time, tokens int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.lines) >= MaxTrace-1 {
+		t.extra++
+		return
+	}
+	if len(name) > maxTraceName {
+		name = strings.ToValidUTF8(name[:maxTraceName], "")
+	}
+	t.lines = append(t.lines, Step{Kind: kind, Name: name, Ms: time.Since(began).Milliseconds(), Tokens: tokens})
+}
+
+func (t *trace) done() []Step {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := append([]Step(nil), t.lines...)
+	if t.extra > 0 {
+		out = append(out, Step{Kind: "cut", Name: fmt.Sprintf("%d cut", t.extra)})
+	}
+	return out
 }
 
 // Options configure an Agent.
@@ -235,6 +288,7 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 
 	a.open()
 	defer func() { res.Undelivered = append(res.Undelivered, a.close()...) }()
+	tr := &trace{}
 
 	parent := ctx
 	if a.o.Timeout > 0 {
@@ -257,10 +311,17 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	if l, ok := a.o.Tools.(interface{ Limit(bool) }); ok {
 		l.Limit(t.Limited)
 	}
+	if k, ok := a.o.Tools.(interface{ Task(bool) }); ok {
+		k.Task(t.Task)
+	}
 	a.o.Tools.Begin()
 	defer a.o.Tools.End()
 	defer func() {
 		res.Next = a.o.Tools.Schedule()
+		res.Trace = tr.done()
+		if k, ok := a.o.Tools.(interface{ Tasks() []tools.TaskRequest }); ok {
+			res.Tasks = k.Tasks()
+		}
 		res.Summary, _ = a.o.Tools.Finished()
 		res.Duration = time.Since(start)
 		res.Canceled = parent.Err() != nil
@@ -291,8 +352,14 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	steps := Steps{
 		Complete: func(req llm.Request) (llm.Response, error) {
 			chat := root.Chat(a.o.Model, req)
+			began := time.Now()
 			resp, err := a.o.LLM.Complete(ctx, req)
 			chat.End(resp, err)
+			name := resp.Model
+			if name == "" {
+				name = a.o.Model
+			}
+			tr.add("model", name, began, resp.Usage.Billable())
 			return resp, err
 		},
 		Call: func(c llm.Block) (string, bool) {
@@ -300,6 +367,7 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 			began := time.Now()
 			content, isErr := a.o.Tools.Call(ctx, c.Name, c.Input)
 			span.End(content, isErr)
+			tr.add("tool", c.Name, began, 0)
 			attrs := []any{"tool", c.Name, "ms", time.Since(began).Milliseconds(), "error", isErr}
 			if a.o.LogContent {
 				attrs = append(attrs, "input", clip(string(c.Input), 600))

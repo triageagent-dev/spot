@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +21,6 @@ import (
 	"github.com/triageagent-dev/spot/internal/agent"
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
-	"github.com/triageagent-dev/spot/internal/durable"
 	"github.com/triageagent-dev/spot/internal/identity"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
@@ -116,7 +114,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.Engine == config.EngineTemporal && cfg.MaxTasks > 0, Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0, Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {
@@ -161,73 +159,19 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		Connectors: promptConnectors(cfg.Connectors),
 	})}
 
-	// watch gives the supervisor the core's trigger stream, when it is configured.
-	watch := func() error {
-		if stream != nil {
-			sup.SetTrigger(stream)
-		}
-		return nil
-	}
-
-	if cfg.Engine == config.EngineTemporal {
-		sup = supervisor.New(cfg, led, core, nil, log)
-		if err := watch(); err != nil {
-			log.Error("trigger stream", "err", err)
-			return 1
-		}
-		eng, err := durable.Open(durable.Options{
-			Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, APIKeyFile: cfg.TemporalAPIKeyFile,
-			TLS: cfg.TemporalTLS, TLSCertFile: cfg.TemporalTLSCertFile, TLSKeyFile: cfg.TemporalTLSKeyFile,
-			PayloadKeyFile: cfg.TemporalPayloadKeyFile, PayloadDir: payloadDir(cfg), TaskQueue: cfg.TemporalTaskQueue, Name: cfg.Name, Logger: log,
-		}, durable.Deps{
-			LLM: model, NewTools: newRegistry, Telemetry: tel, System: system, Model: cfg.Model, Effort: cfg.Effort,
-			Host: sup.Host(), Logger: log, LogContent: cfg.LogContent,
+	// newAgent builds a long-lane agent: its own tool state (the gates and the
+	// connections are per turn), the same model client and the usual caps.
+	newAgent := func() *agent.Agent {
+		return agent.New(agent.Options{
+			LLM: model, Tools: newRegistry(), Model: cfg.Model, Effort: cfg.Effort, System: system,
+			MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, MaxTurnTokens: cfg.MaxTurnTokens, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
 		})
-		if err != nil {
-			log.Error("temporal engine", "err", err)
-			return 1
-		}
-		if err := eng.Start(); err != nil {
-			eng.Close()
-			log.Error("temporal worker", "err", err)
-			return 1
-		}
-		if stream != nil {
-			stream.SetControl(controlOf(eng))
-		}
-		log.Info("engine: temporal", "address", cfg.TemporalAddress, "namespace", cfg.TemporalNamespace, "workflow", eng.WorkflowID(),
-			"encrypted", cfg.TemporalPayloadKeyFile != "" && !cfg.TemporalLocalPayloads, "payloadsKeptHere", cfg.TemporalLocalPayloads)
-		// The supervisor keeps serving the workflow's calls (the notes, the books)
-		// until the worker has drained its activities: a turn that ends during the
-		// shutdown is still booked. The turns it cannot finish are resumed by the
-		// next pod.
-		bctx, bstop := context.WithCancel(context.Background())
-		defer bstop()
-		done := make(chan error, 1)
-		go func() { done <- sup.RunBridge(bctx, eng) }()
-		var runErr error
-		select {
-		case <-ctx.Done():
-			eng.Close()
-			bstop()
-			runErr = <-done
-		case runErr = <-done:
-			eng.Close()
-		}
-		if runErr != nil {
-			log.Error("supervisor", "err", runErr)
-			return 1
-		}
-		log.Info("stopped")
-		return 0
 	}
 
-	ag := agent.New(agent.Options{
-		LLM: model, Tools: newRegistry(), Model: cfg.Model, Effort: cfg.Effort, System: system,
-		MaxSteps: cfg.MaxSteps, MaxToolCalls: cfg.MaxToolCalls, MaxTurnTokens: cfg.MaxTurnTokens, Timeout: cfg.TurnTimeout, Telemetry: tel, Logger: log, LogContent: cfg.LogContent,
-	})
-
-	sup = supervisor.New(cfg, led, core, ag, log)
+	sup = supervisor.New(cfg, led, core, newAgent(), log)
+	if cfg.MaxTasks > 0 {
+		sup.SetTaskTurner(func() supervisor.Turner { return newAgent() })
+	}
 	if cfg.FastLane {
 		// The short lane: its own tool state (the gates and the connections are
 		// per turn), the same model client, and tighter caps.
@@ -239,9 +183,9 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		sup.SetFastTurner(fast)
 		log.Info("short lane on", "maxToolCalls", cfg.FastMaxToolCalls, "maxTurnTokens", cfg.FastMaxTurnTokens)
 	}
-	if err := watch(); err != nil {
-		log.Error("trigger stream", "err", err)
-		return 1
+	if stream != nil {
+		sup.SetTrigger(stream)
+		stream.SetControl(sup.Control)
 	}
 	if err := sup.Run(ctx); err != nil {
 		log.Error("supervisor", "err", err)
@@ -359,15 +303,6 @@ func loadInstruction(ctx context.Context, core *corecli.Client, id string, log *
 		case <-time.After(instructionRetry):
 		}
 	}
-}
-
-// payloadDir is where the temporal engine keeps the payloads it does not send,
-// or empty when it sends them (encrypted or not).
-func payloadDir(cfg config.Config) string {
-	if !cfg.TemporalLocalPayloads {
-		return ""
-	}
-	return filepath.Join(cfg.StateDir, "temporal-payloads")
 }
 
 // newStream builds the client of the core's trigger stream: with the bearer token

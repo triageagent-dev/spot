@@ -444,28 +444,3 @@ func TestProviderNameFollowsTheOption(t *testing.T) {
 		t.Errorf("provider = %q", got)
 	}
 }
-
-// The ids of the workflow that ran a turn are on its root span, so a trace
-// leads to its workflow; an empty value is left off, and a nil turn is safe.
-func TestTurnSetPutsIdsOnTheRootSpan(t *testing.T) {
-	exp := tracetest.NewInMemoryExporter()
-	p, err := New(context.Background(), Options{Endpoint: "http://x", Name: "example-spot", exporter: exp})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, turn := p.StartTurn(context.Background(), "tick", "")
-	turn.Set(map[string]string{"temporal.workflow.id": "example-wake-1", "temporal.run.id": "run-1", "temporal.spot.run_id": ""})
-	turn.End("", nil)
-	if err := p.Flush(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	a := attrs(exp.GetSpans()[0].Attributes)
-	if a["temporal.workflow.id"].AsString() != "example-wake-1" || a["temporal.run.id"].AsString() != "run-1" {
-		t.Errorf("attributes: %v", a)
-	}
-	if _, has := a["temporal.spot.run_id"]; has {
-		t.Error("an empty id must not be set")
-	}
-	var none *Turn
-	none.Set(map[string]string{"x": "y"})
-}

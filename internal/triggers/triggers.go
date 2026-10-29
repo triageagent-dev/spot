@@ -67,10 +67,60 @@ type Wake struct {
 	Output     int64  `json:"output,omitempty"`
 	Next       int64  `json:"next,omitempty"`
 	NextSource string `json:"nextSource,omitempty"`
+	// NextWhy is the spot's own words for the wake at Next, which the core hands
+	// back with the tick. Promise is the wake the agent promised, as it stands
+	// when this wake ends; absent = none. A wake of the long or the short lane
+	// replaces the core's record of both, so each carries the schedule as it is.
+	NextWhy string   `json:"nextWhy,omitempty"`
+	Promise *Promise `json:"promise,omitempty"`
+	// Trace is one line per model request and tool call of the wake, 40 at most
+	// (the first 39, then a "cut" line saying how many were left out): names and
+	// numbers, never arguments or results.
+	Trace []Step `json:"trace,omitempty"`
 	// Key names the wake the way a task list does, so a line of activity and a
 	// row of Stats.Tasks are the same wake; Title is a task's (80 bytes at most).
 	Key   string `json:"key,omitempty"`
 	Title string `json:"title,omitempty"`
+}
+
+// Step is one line of a wake's trace. Kind is "model", "tool" or "cut"; Name is
+// the model id or the tool's name (64 bytes at most); Tokens are the billable
+// tokens of a model request.
+type Step struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Ms     int64  `json:"ms,omitempty"`
+	Tokens int64  `json:"tokens,omitempty"`
+}
+
+// Promise is the wake the agent promised for later, as the core is told it: At
+// in ms; Human says it answers a person's request.
+type Promise struct {
+	At    int64  `json:"at"`
+	Why   string `json:"why,omitempty"`
+	Human bool   `json:"human,omitempty"`
+}
+
+// Schedule is what the spot has planned, sent once after the core's hello so a
+// core that restarted gets it back, and a restarted spot hands over what it kept.
+// The core is the spot's scheduler (its ADR-106): it sends the wake when Next or
+// the promise is due. BackoffMs is the wait a failed wake left, 0 = none;
+// MaxWakeMs is the longest the spot sleeps without a word from the core.
+type Schedule struct {
+	Next       int64    `json:"next,omitempty"`
+	NextWhy    string   `json:"nextWhy,omitempty"`
+	NextSource string   `json:"nextSource,omitempty"`
+	Promise    *Promise `json:"promise,omitempty"`
+	BackoffMs  int64    `json:"backoffMs,omitempty"`
+	MaxWakeMs  int64    `json:"maxWakeMs,omitempty"`
+}
+
+// Order is a wake the core asks for: Reason is "tick" (the planned wake is due)
+// or "promise" (the wake the agent promised is); Why is the spot's own words
+// from its last report.
+type Order struct {
+	Reason string `json:"reason"`
+	Why    string `json:"why,omitempty"`
 }
 
 // Control is the core asking the spot to act on one of its wakes (a task):
@@ -80,6 +130,8 @@ type Control struct {
 	ID   string `json:"id"`
 	Op   string `json:"op"`
 	Task string `json:"task,omitempty"`
+	// Why is the words of a person who asks for a wake (op "wake").
+	Why string `json:"why,omitempty"`
 }
 
 // TaskLine is one wake the spot has in hand: running, or a task waiting for a
@@ -112,7 +164,9 @@ const (
 const (
 	maxTaskKey   = MaxTaskKey
 	maxTaskLines = 100
-	maxTitle     = MaxTitle
+	// maxOrderWhy bounds the words a wake order carries.
+	maxOrderWhy = 200
+	maxTitle    = MaxTitle
 	// ControlTimeout is how long a Control may take; the core gives up on its
 	// own after 10 s.
 	ControlTimeout = 8 * time.Second
@@ -184,11 +238,16 @@ type Pending struct {
 	Rooms  []string // rooms with a new message
 	Name   string   // the core named the spot (again)
 	Budget bool     // the core sent the spot's budget (again); read it with Budget()
+	// Order is a wake the core asks for; a promise outranks a tick.
+	Order *Order
+	// Manual is a wake a person asked for from the console; it is kept apart so a
+	// tick cannot take its place.
+	Manual *Order
 }
 
 // Empty reports whether nothing happened.
 func (p Pending) Empty() bool {
-	return !p.Hello && !p.Issues && len(p.Rooms) == 0 && p.Name == "" && !p.Budget
+	return !p.Hello && !p.Issues && len(p.Rooms) == 0 && p.Name == "" && !p.Budget && p.Order == nil && p.Manual == nil
 }
 
 // Wake reports whether the core's issues or rooms may have changed, which is
@@ -211,6 +270,7 @@ type Client struct {
 	pending Pending
 	budget  *Budget
 	outbox  []Turn // reported turns the core has not taken yet
+	sched   *Schedule
 
 	wmu  sync.Mutex // one writer at a time
 	conn *websocket.Conn
@@ -289,6 +349,24 @@ func (c *Client) ReportTurn(t Turn) {
 	c.flush()
 }
 
+// SetSchedule sets the schedule the next hello is answered with. The wake
+// reports keep the core's copy current while the stream is up.
+func (c *Client) SetSchedule(s Schedule) {
+	c.mu.Lock()
+	c.sched = &s
+	c.mu.Unlock()
+}
+
+// sendSchedule hands the core the schedule, once per connection.
+func (c *Client) sendSchedule() {
+	c.mu.Lock()
+	s := c.sched
+	c.mu.Unlock()
+	if s != nil {
+		_ = c.send(map[string]any{"schedule": s})
+	}
+}
+
 // SetControl sets what answers the core's controls. Without it every control is
 // refused.
 func (c *Client) SetControl(f ControlFunc) {
@@ -309,7 +387,7 @@ func (c *Client) answer(ctl Control) {
 	case len(ctl.Task) > maxTaskKey:
 		res.Msg = "the task key is too long"
 	case f == nil:
-		res.Msg = "this spot has no tasks to control: it does not run the temporal engine"
+		res.Msg = "this spot does not answer controls yet"
 	default:
 		ctx, cancel := context.WithTimeout(context.Background(), ControlTimeout)
 		done := make(chan ControlResult, 1)
@@ -322,6 +400,11 @@ func (c *Client) answer(ctl Control) {
 		cancel()
 		res.ID = ctl.ID
 	}
+	c.reply(res)
+}
+
+// reply bounds the answer to a control and sends it.
+func (c *Client) reply(res ControlResult) {
 	if len(res.Tasks) > maxTaskLines {
 		res.Tasks = res.Tasks[:maxTaskLines]
 	}
@@ -331,8 +414,32 @@ func (c *Client) answer(ctl Control) {
 		}
 	}
 	if err := c.send(map[string]any{"controlResult": res}); err != nil {
-		c.log.Debug("control not answered: the stream is down", "op", ctl.Op)
+		c.log.Debug("control not answered: the stream is down", "msg", res.Msg)
 	}
+}
+
+// askManual keeps a wake a person asked for from the console until the loop takes
+// it, and answers the control that carried it. The answer is "asked": the loop
+// starts the wake when it is free, or on the short lane at once.
+func (c *Client) askManual(id, why string) {
+	why = strings.ToValidUTF8(clipTo(why, maxOrderWhy), "")
+	c.mu.Lock()
+	c.pending.Manual = &Order{Reason: "manual", Why: why}
+	c.mu.Unlock()
+	select {
+	case c.signal <- struct{}{}:
+	default:
+	}
+	res := ControlResult{ID: id, OK: true, Msg: "wake asked"}
+	c.cmu.Lock()
+	f := c.control
+	c.cmu.Unlock()
+	if f != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), ControlTimeout)
+		res.Tasks = f(ctx, Control{ID: id, Op: "list"}).Tasks
+		cancel()
+	}
+	c.reply(res)
 }
 
 // ReportWake sends one line of activity. It is dropped while the stream is
@@ -384,6 +491,10 @@ func (c *Client) add(f frame) {
 		c.budget = &b
 		c.pending.Budget = true
 	}
+	if o := f.Wake; o != nil && (o.Reason == "promise" || c.pending.Order == nil || c.pending.Order.Reason != "promise") {
+		o.Why = strings.ToValidUTF8(clipTo(o.Why, maxOrderWhy), "")
+		c.pending.Order = o
+	}
 	c.pending.Hello = c.pending.Hello || f.Hello
 	c.pending.Issues = c.pending.Issues || f.Issues
 	for _, r := range f.Rooms {
@@ -408,6 +519,8 @@ type frame struct {
 	Rooms  []string `json:"rooms"`
 	Name   string   `json:"name"`
 	Budget *Budget  `json:"budget"`
+	// Wake is the core asking for a wake: the spot's schedule is the core's.
+	Wake *Order `json:"wake"`
 	// Control is the core asking for an operation on a task.
 	Control *Control `json:"control"`
 	// Token is the short-lived access token of a certificate identity (the
@@ -510,6 +623,10 @@ func (c *Client) serve(ctx context.Context, conn *websocket.Conn) (up bool, err 
 			return true, err
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readIdle))
+		if f.Control != nil && f.Control.Op == "wake" && f.Control.ID != "" {
+			go c.askManual(f.Control.ID, f.Control.Why)
+			continue
+		}
 		if f.Control != nil {
 			go c.answer(*f.Control)
 			continue
@@ -520,7 +637,16 @@ func (c *Client) serve(ctx context.Context, conn *websocket.Conn) (up bool, err 
 		}
 		if f.Hello {
 			c.connected.Store(true)
+			c.sendSchedule()
 		}
 		c.add(f)
 	}
+}
+
+// clipTo cuts s to n bytes.
+func clipTo(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

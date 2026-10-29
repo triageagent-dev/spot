@@ -1,7 +1,5 @@
 package tools
 
-import "strings"
-
 // CoreTools is the core's tools the loop needs: the ones the instruction
 // names, the read-only situation and memory tools, and the speech tools.
 // Everything else the core offers is not given to the model, and the tools in
@@ -91,24 +89,3 @@ const (
 	searchMemory     = "search_memory"
 	SpotTagPrefix    = "spot:"
 )
-
-// writers are the core's tools that change something or put words in front of
-// people. Every other tool of the core and of ego only reads.
-var writers = []string{
-	"comment_on_issue", "upsert_memory_item", "supersede_memory_item", "refute_memory_item", "note_observation",
-	"recognize_pattern", "link_pattern", "say_in_workspace", "set_workspace_status", "set_spot_status", "set_workspace_typing",
-	"analyze_issue", "verify_hypothesis",
-}
-
-// Retryable reports whether a call to the tool (named as the model sees it,
-// <server>__<tool>) can be run again after a crash without a second effect: a
-// read of the core or of ego. A connector's tool, a write and a post are not:
-// the connector is the operator's and the spot does not know what its tool
-// does, so a call that was cut is reported as such and the model decides.
-func Retryable(name string) bool {
-	server, tool, ok := strings.Cut(name, Sep)
-	if !ok || (server != CoreServer && server != EgoServer) {
-		return false
-	}
-	return !inList(writers, tool)
-}

@@ -763,55 +763,6 @@ func TestALimitedTurnHasOnlyTheNotesTheRoomAndThePost(t *testing.T) {
 	}
 }
 
-func TestRetryableIsAReadOfTheCoreOrEgoOnly(t *testing.T) {
-	for name, want := range map[string]bool{
-		"core__get_memory_context": true, "core__list_open_issues": true, "core__search_memory": true,
-		"ego__get_ego_score": true, "core__say_in_workspace": false, "core__upsert_memory_item": false,
-		"core__comment_on_issue": false, "aks-kube__get_pods": false, "schedule_next": false, "finish": false,
-	} {
-		if got := Retryable(name); got != want {
-			t.Errorf("Retryable(%q) = %v, want %v", name, got, want)
-		}
-	}
-}
-
-// What a turn recorded can be put into a registry built anew: a durable engine
-// runs the calls of one turn on different registries.
-func TestStateCarriesTheGatesAndTheBuiltinsToANewRegistry(t *testing.T) {
-	url, _ := fakeServer(t)
-	mut := func(o *Options) {
-		o.RecallFirst = true
-		o.Core.Allow = append(o.Core.Allow, "search_memory")
-	}
-	a := newRegistry(t, url, mut)
-	a.Begin()
-	if _, err := a.List(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got, isErr := a.Call(context.Background(), "core__list_open_issues", json.RawMessage(`{}`)); !isErr || !Held(got) {
-		t.Fatalf("the gate did not hold the call: %q", got)
-	}
-	a.Call(context.Background(), "core__search_memory", json.RawMessage(`{}`))
-	a.Call(context.Background(), "schedule_next", json.RawMessage(`{"after":"5m","why":"the note"}`))
-	a.Call(context.Background(), "finish", json.RawMessage(`{"summary":"done"}`))
-	st := a.State()
-	if !st.Recalled || !st.Finished || st.Summary != "done" || st.Next == nil || st.Next.Why != "the note" {
-		t.Fatalf("state: %+v", st)
-	}
-
-	b := newRegistry(t, url, mut)
-	if _, err := b.List(context.Background()); err != nil { // no Begin: it would forget
-		t.Fatal(err)
-	}
-	b.SetState(st)
-	if got, isErr := b.Call(context.Background(), "core__list_open_issues", json.RawMessage(`{}`)); isErr {
-		t.Fatalf("the new registry held a call the turn had already searched for: %q", got)
-	}
-	if sum, ok := b.Finished(); !ok || sum != "done" || b.Schedule() == nil || b.State().Next.After != "5m" {
-		t.Fatalf("builtins not carried: %+v", b.State())
-	}
-}
-
 func TestBareToolNameIsTheOneServerOffering(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, nil)
@@ -879,18 +830,12 @@ func TestStartTaskRecordsTheTaskAndKeepsAtMostThreePerTurn(t *testing.T) {
 	if got, isErr := call("functions.start_task", `{"title":"d","goal":"do d"}`); !isErr || !strings.Contains(got, "3 tasks") {
 		t.Errorf("a fourth task: %q %v", got, isErr)
 	}
-	st := r.State()
-	if len(st.Tasks) != 3 || st.Tasks[0] != (TaskRequest{Title: "a", Goal: "do a"}) {
-		t.Fatalf("tasks: %+v", st.Tasks)
-	}
-	// The state travels with the turn.
-	r2 := newRegistry(t, url, func(o *Options) { o.Tasks = true })
-	r2.SetState(st)
-	if got := r2.State().Tasks; len(got) != 3 {
-		t.Fatalf("restored: %+v", got)
+	got := r.Tasks()
+	if len(got) != 3 || got[0] != (TaskRequest{Title: "a", Goal: "do a"}) {
+		t.Fatalf("tasks: %+v", got)
 	}
 	r.Begin()
-	if len(r.State().Tasks) != 0 {
+	if len(r.Tasks()) != 0 {
 		t.Error("Begin forgets the tasks")
 	}
 }
@@ -903,5 +848,34 @@ func TestStartTaskIsUnknownWithoutTasks(t *testing.T) {
 	}
 	if got, isErr := r.Call(context.Background(), "start_task", json.RawMessage(`{"title":"a","goal":"b"}`)); !isErr || !strings.Contains(got, "unknown tool") {
 		t.Errorf("%q %v", got, isErr)
+	}
+}
+
+func TestATaskTurnCannotScheduleOrStartTasks(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) { o.Tasks = true })
+	r.Task(true)
+	r.Begin()
+	defs, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]bool{}
+	for _, d := range defs {
+		offered[d.Name] = true
+	}
+	if !offered[ScheduleNext] || !offered[StartTask] {
+		t.Fatalf("the tool list of a task must be the same as any turn's (the cached prefix): %v", offered)
+	}
+	for _, c := range []struct{ name, in string }{{"schedule_next", `{"after":"5m"}`}, {"start_task", `{"title":"a","goal":"b"}`}} {
+		if got, isErr := r.Call(context.Background(), c.name, json.RawMessage(c.in)); !isErr || !strings.Contains(got, "a task cannot") {
+			t.Errorf("%s: %q %v", c.name, got, isErr)
+		}
+	}
+	if r.Schedule() != nil || len(r.Tasks()) != 0 {
+		t.Error("a refused call recorded something")
+	}
+	if got, isErr := r.Call(context.Background(), "finish", json.RawMessage(`{"summary":"done"}`)); isErr {
+		t.Errorf("a task ends with finish: %q", got)
 	}
 }
