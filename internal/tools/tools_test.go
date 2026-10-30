@@ -879,3 +879,27 @@ func TestATaskTurnCannotScheduleOrStartTasks(t *testing.T) {
 		t.Errorf("a task ends with finish: %q", got)
 	}
 }
+
+func TestTheNotesTheSupervisorReadCountAsTheSearch(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = []string{"search_memory", "list_open_issues"}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
+		t.Fatal("held until the notes are searched")
+	}
+	r.NotesRead()
+	if c, isErr := r.Call(ctx, "core__list_open_issues", nil); isErr {
+		t.Errorf("the supervisor read the notes for this turn: %q", c)
+	}
+	r.Begin()
+	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
+		t.Error("the next turn starts held again")
+	}
+}

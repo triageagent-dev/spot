@@ -53,6 +53,10 @@ type Turn struct {
 	// Task marks a task's turn, which cannot schedule a wake or start a task,
 	// when the toolbox can say so.
 	Task bool
+	// NotesRead says the supervisor read the spot's standing notes for this wake
+	// and put them in the prompt, so the toolbox need not hold the model's first
+	// call back until it searches them again.
+	NotesRead bool
 }
 
 // Result is what a turn did.
@@ -316,6 +320,9 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	}
 	a.o.Tools.Begin()
 	defer a.o.Tools.End()
+	if k, ok := a.o.Tools.(interface{ NotesRead() }); ok && t.NotesRead {
+		k.NotesRead()
+	}
 	defer func() {
 		res.Next = a.o.Tools.Schedule()
 		res.Trace = tr.done()
