@@ -1,4 +1,4 @@
-{{- if and .Values.spot.enabled (eq (include "tria-spot.runtime" .) "deployment") .Values.connectors }}
+{{- if and .Values.spot.enabled .Values.connectors }}
 {{- $list := list }}
 {{- range .Values.connectors }}
 {{- $list = append $list (dict "name" (required "connectors[].name is required" .name) "url" (required (printf "connectors[%s].url is required" .name) .url) "tools" (required (printf "connectors[%s].tools must name the tools the spot may call" .name) .tools) "hint" (default "" .hint)) }}

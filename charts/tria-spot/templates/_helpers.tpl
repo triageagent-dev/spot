@@ -63,24 +63,3 @@ app.kubernetes.io/instance: {{ include "tria-spot.name" . }}
 {{- end -}}
 {{- toYaml $peers -}}
 {{- end -}}
-
-{{- /* Where the spot runs: a pod (deployment) or an actor of Agent Substrate
-       (substrate; the core's ADR-107). */ -}}
-{{- define "tria-spot.runtime" -}}
-{{- $r := default "deployment" .Values.runtime -}}
-{{- if not (has $r (list "deployment" "substrate")) -}}
-{{- fail "runtime must be deployment or substrate" -}}
-{{- end -}}
-{{- $r -}}
-{{- end -}}
-
-{{- /* One egress destination of a substrate actor, from a URL: a dict with the
-       scheme, the host name and the port. A bare host:port is read as http. */ -}}
-{{- define "tria-spot.destination" -}}
-{{- $u := urlParse . -}}
-{{- $scheme := $u.scheme -}}
-{{- if not $scheme }}{{ fail (printf "%q is not a URL with a scheme" .) }}{{ end -}}
-{{- if not (has $scheme (list "http" "https")) }}{{ fail (printf "%q: only http and https URLs can be reached from an actor" .) }}{{ end -}}
-{{- $port := default (ternary "443" "80" (eq $scheme "https")) (trimPrefix ":" (regexFind ":[0-9]+$" $u.host)) -}}
-{{- dict "scheme" $scheme "host" $u.hostname "port" (int $port) | toJson -}}
-{{- end -}}

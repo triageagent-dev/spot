@@ -56,13 +56,14 @@ temporal` fails to render. See the specification.
 
 ## Run as an actor of Agent Substrate
 
-`runtime: substrate` (the core's ADR-107) runs the spot as an actor: it is
+`--runtime substrate` (the core's ADR-107) runs the spot as an actor: it is
 suspended while it is idle and holds no credential of any kind. The model auth
 is `injected` (the spot sends a placeholder key and the egress policy puts the real one on the request from a Secret), the core identity is the
-certificate, and the chart renders an ActorTemplate and an EgressPolicy for the
-substrate CLI and no Kubernetes object. The spot serves `/readyz` and `/frame`
-on port 80, talks to the core in requests and reports when it is idle. See the
-specification.
+certificate, and the install is the two manifests in `deploy/substrate/` (an
+ActorTemplate and an EgressPolicy) applied with the substrate CLI; the Helm
+chart installs the deployment runtime only. The spot serves `/readyz` and
+`/frame` on port 80, talks to the core in requests and reports when it is idle.
+See the specification.
 
 ## Read more
 

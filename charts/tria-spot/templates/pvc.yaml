@@ -1,4 +1,4 @@
-{{- if and .Values.spot.enabled (eq (include "tria-spot.runtime" .) "deployment") (not .Values.persistence.existingClaim) }}
+{{- if and .Values.spot.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

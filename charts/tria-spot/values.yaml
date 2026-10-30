@@ -1,52 +1,6 @@
 # The Tria spot (the core's ADR-095, ADR-098). Everything below renders nothing until
 # spot.enabled is true.
 
-# Where the spot runs. deployment: a pod with a volume, a ServiceAccount and a
-# NetworkPolicy, awake all the time. substrate: an actor of Agent Substrate (the
-# core's ADR-107), suspended while it is idle, with no credential of any kind:
-# the chart then renders an ActorTemplate and an EgressPolicy (the substrate
-# API's documents) and none of the Kubernetes objects. The model auth must be
-# injected and the core identity certificate.
-runtime: deployment
-
-substrate:
-  atespace: ""                 # the atespace the actor is created in (required for substrate)
-  imageDigest: ""              # sha256:<64 hex> of the image: the template names it by digest (required)
-  workerSelector: {}           # matchLabels of the worker pool; empty = any
-  command: ["/ko-app/tria-spot"]
-  # The platform boots the image once to make a golden snapshot, and every actor
-  # made from the template starts from it. The spot opens its identity only when
-  # the core first asks, so nothing it made is in the snapshot; false turns the
-  # golden snapshot off (the actor then boots from the image).
-  goldenSnapshot: true
-  cpuMillicores: 1000
-  memoryBytes: 536870912       # 512Mi
-  wakeupTimeoutSeconds: 30
-  # The Secret that holds the model key, which the platform's egress puts in the
-  # x-api-key header of a request to the API; the actor never holds it. The
-  # atespace must be granted the namespace on the platform side. It is named in
-  # the egress policy as ate-secret://k8s.io/default/<namespace>/<name>/<key>.
-  modelKey:
-    namespace: ""
-    name: ""
-    key: api-key
-  # The one-time key the core minted for this spot (kind spot, label = the spot's
-  # name), for the first join only. The actor does not hold it: the egress policy
-  # puts it in the header X-Triage-Enroll-Key of the join request from this
-  # Secret. Leave name empty once the spot has joined (a spent key left in place
-  # is harmless).
-  enrollKey:
-    namespace: ""
-    name: ""
-    key: key
-  egress:
-    # Rules added to the ones the chart derives from the URLs the spot uses (the
-    # core, the model API, telemetry, each connector): EgressRule objects as
-    # the substrate API writes them (http, https or tlsPassthrough, with hostnames,
-    # ports and effects). This is where a credential the actor must not hold is put
-    # on a request instead, for example the token ego checks.
-    extraRules: []
-
 spot:
   # Off in the chart. Setting it to true starts a model-driven agent that
   # sends what it reads from the cluster to the model API; a tenant accepts
@@ -133,11 +87,6 @@ llm:
   # vertex: Claude or Gemini on Google Vertex AI through the pod's Workload
   #   Identity (Application Default Credentials). Annotate serviceAccount for
   #   it, and set networkPolicy.google.cidrs.
-  # injected: Anthropic only. The spot holds no key and sends a placeholder
-  #   x-api-key; whatever stands between it and the API (the egress gateway of a
-  #   substrate actor) replaces the header with the real key. The only mode of
-  #   runtime: substrate. baseUrl names the API when it is not
-  #   https://api.anthropic.com.
   auth: key
   # The model id, on Vertex AI too, with no prefix. Empty = the provider's
   # default: claude-opus-5-5 for anthropic, gemini-3-flash-preview for gemini.
@@ -152,7 +101,6 @@ llm:
   geminiKeySecret:             # provider gemini, auth: key. Secret name only; mounted as a file at /secrets/gemini/<key>
     name: ""
     key: key
-  baseUrl: ""                  # auth: injected. Empty = https://api.anthropic.com
   federation:                  # auth: federation. None of these ids is a secret
     ruleId: ""                 # fdrl_...
     orgId: ""
@@ -196,14 +144,6 @@ telemetry:
   tenantAttr: triage.tenant    # the attribute ego reads the label from (ego's --usage-tenant-attr)
   mcpUrl: ""                   # ego's MCP endpoint (e.g. http://<service>.<namespace>.svc:8001/mcp); with it the spot reads sessions, usage and findings through the same token. Add its port to networkPolicy.telemetry.ports
   tokenSecret:
-    name: ""
-    key: token
-  # runtime: substrate. An actor mounts no Secret: the sender token is put in the
-  # Authorization header of requests to the OTLP endpoint and ego's MCP by the
-  # egress policy, from this Secret (the actor sends a placeholder). Set name to
-  # turn it on.
-  tokenInject:
-    namespace: ""
     name: ""
     key: token
   content: true

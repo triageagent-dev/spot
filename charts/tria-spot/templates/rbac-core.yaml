@@ -1,4 +1,4 @@
-{{- if and .Values.spot.enabled (eq (include "tria-spot.runtime" .) "deployment") (eq (include "tria-spot.coreIdentity" .) "serviceAccount") .Values.core.rbac.create }}
+{{- if and .Values.spot.enabled (eq (include "tria-spot.coreIdentity" .) "serviceAccount") .Values.core.rbac.create }}
 # The core grant for this spot's ServiceAccount. The core resolves grants from
 # Roles and RoleBindings in its own namespace, which is why the chart is
 # installed there in this mode.
