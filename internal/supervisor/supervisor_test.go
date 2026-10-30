@@ -2218,3 +2218,28 @@ func TestATickOfAnActorReadsTheRooms(t *testing.T) {
 		t.Fatalf("a tick must carry the message waiting in the room:\n%s", in)
 	}
 }
+
+// The first thing a person says to a spot with no cursor is the message that
+// wakes it. It is in the room when the process starts, and it is news.
+func TestTheMessageThatWakesACursorlessProcessIsNews(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	old := say("alice", "alice", "welcome")
+	old.TS = h.clock.Now().Add(-time.Hour).UnixMilli()
+	waking := say("alice", "alice", "@example-spot hello")
+	waking.TS = h.clock.Now().Add(-3 * time.Second).UnixMilli()
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{old, waking}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitIdle(1)
+	in := h.file("stdin", 1)
+	if !strings.Contains(in, "hello") || strings.Contains(in, "welcome") {
+		t.Fatalf("the waking message is news and the hour-old one is history:\n%s", in)
+	}
+}
