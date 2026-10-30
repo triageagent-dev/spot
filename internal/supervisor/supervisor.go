@@ -1651,7 +1651,12 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if rerr != nil && ctx.Err() == nil {
 		s.log.Warn("standing notes not read; the wake goes on without them", "err", rerr)
 	}
-	if hold && p.reason != prompt.Human && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
+	// A person's message the wake carries (a tick that read the rooms) is a person asking.
+	asked := p.reason == prompt.Human
+	for _, e := range p.edges {
+		asked = asked || e.Human
+	}
+	if hold && !asked && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return
@@ -1668,7 +1673,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// A person writes while a rule says to check nothing until asked: the turn
 	// has the notes, the room and the post tools only. A check they ask for is a
 	// wake the spot schedules, and that one has every tool.
-	limited := hold && p.reason == prompt.Human
+	limited := hold && asked
 	text := prompt.Turn(prompt.Wake{
 		Limited: limited,
 		Reason:  p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
