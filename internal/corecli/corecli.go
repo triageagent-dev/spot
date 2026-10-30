@@ -367,9 +367,13 @@ func (c *Client) RememberTask(ctx context.Context, key, title, result, spot stri
 }
 
 // SayInBus posts one message in the spot's own bus (say_in_workspace, room
-// "bus"): an answer to the request replyTo, with the memory item it rests on.
-func (c *Client) SayInBus(ctx context.Context, text, replyTo, memory string) error {
+// "bus"): an answer to the request replyTo, with the memory item it rests on,
+// at the given hop (the request's plus one).
+func (c *Client) SayInBus(ctx context.Context, text, replyTo, memory string, hop int) error {
 	args := map[string]any{"text": clipRunes(text, 2000), "room": "bus", "tenant": c.tenant}
+	if hop > 0 {
+		args["hop"] = hop
+	}
 	if replyTo != "" {
 		args["reply_to"] = replyTo
 	}

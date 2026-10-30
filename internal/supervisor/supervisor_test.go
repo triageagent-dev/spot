@@ -64,7 +64,10 @@ type fakeCore struct {
 }
 
 type taskNote struct{ Key, Title, Result, Spot string }
-type busLine struct{ Text, ReplyTo, Memory string }
+type busLine struct {
+	Text, ReplyTo, Memory string
+	Hop                   int
+}
 
 func (f *fakeCore) RememberTask(_ context.Context, key, title, result, spot string) (string, error) {
 	f.mu.Lock()
@@ -76,10 +79,10 @@ func (f *fakeCore) RememberTask(_ context.Context, key, title, result, spot stri
 	return fmt.Sprintf("item-%d", len(f.notes)), nil
 }
 
-func (f *fakeCore) SayInBus(_ context.Context, text, replyTo, memory string) error {
+func (f *fakeCore) SayInBus(_ context.Context, text, replyTo, memory string, hop int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.bus = append(f.bus, busLine{text, replyTo, memory})
+	f.bus = append(f.bus, busLine{text, replyTo, memory, hop})
 	return nil
 }
 
@@ -1338,6 +1341,10 @@ func TestEveryRequestInTheBusWakesAtOnceEvenWithChatBatchOn(t *testing.T) {
 			t.Fatalf("the request must reach the agent with %q:\n%s", want, in)
 		}
 	}
+	// The spot knows the request's hop, for the reply to carry the next one.
+	if hop, ok := h.sup.RequestHop("$req1"); !ok || hop != 1 {
+		t.Fatalf("the hop of the request: %d %v", hop, ok)
+	}
 }
 
 func TestARequestWithALaterTimeBecomesAPromiseAndWakesNobody(t *testing.T) {
@@ -2440,7 +2447,7 @@ func TestATaskActorLeavesOneNoteAndOneLineInTheBusAndReportsWithItsKey(t *testin
 	if len(h.core.notes) != 1 || h.core.notes[0] != (taskNote{"task-9", "check the nightly job report", "The nightly job ran at 02:00 and passed.\nNo errors in the last 24h.", "example-spot"}) {
 		t.Fatalf("the note: %+v", h.core.notes)
 	}
-	if len(h.core.bus) != 1 || h.core.bus[0].ReplyTo != "$req" || h.core.bus[0].Memory != "item-1" ||
+	if len(h.core.bus) != 1 || h.core.bus[0].ReplyTo != "$req" || h.core.bus[0].Memory != "item-1" || h.core.bus[0].Hop != 2 ||
 		h.core.bus[0].Text != "The nightly job ran at 02:00 and passed. No errors in the last 24h." {
 		t.Fatalf("the line in the bus: %+v", h.core.bus)
 	}

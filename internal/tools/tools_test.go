@@ -944,3 +944,43 @@ func TestTheBusIsTheOnlyRoomAToolReachesAndATaskStaysInItsWorkspace(t *testing.T
 		t.Errorf("unreadable arguments are the core's to refuse: %s %q", got, refusal)
 	}
 }
+
+func TestAReplyInTheBusCarriesTheNextHopAndTheModelCannotSetIt(t *testing.T) {
+	hops := map[string]int{"$one": 1, "$deep": 3}
+	r := New(Options{RequestHop: func(id string) (int, bool) { h, ok := hops[id]; return h, ok }})
+	hopOf := func(in string) (int, string) {
+		out, refusal := r.withHop(json.RawMessage(in))
+		var m struct {
+			Hop int `json:"hop"`
+		}
+		_ = json.Unmarshal(out, &m)
+		return m.Hop, refusal
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$one"}`); h != 2 || ref != "" {
+		t.Errorf("a reply to a request at hop 1: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$one","hop":99}`); h != 2 || ref != "" {
+		t.Errorf("the model's own hop stood: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$unknown"}`); h != 2 || ref != "" {
+		t.Errorf("a request the spot did not read: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x"}`); h != 1 || ref != "" {
+		t.Errorf("a message that answers nothing: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$deep"}`); ref == "" || !strings.Contains(ref, "exchange is over") || h != 0 {
+		t.Errorf("a reply to a request at hop 3 was sent: %d %q", h, ref)
+	}
+	// What the turn read itself counts too.
+	r.noteHops(`{"messages":[{"id":"$read","hop":2},{"id":"$deep2","hop":3}]}`)
+	if h, _ := hopOf(`{"reply_to":"$read"}`); h != 3 {
+		t.Errorf("a request read by the model: %d", h)
+	}
+	if _, ref := hopOf(`{"reply_to":"$deep2"}`); ref == "" {
+		t.Error("a reply to a request the model read at hop 3 was sent")
+	}
+	r.Begin()
+	if h, _ := hopOf(`{"reply_to":"$read"}`); h != 2 {
+		t.Errorf("a new turn remembers the last turn's reads: %d", h)
+	}
+}

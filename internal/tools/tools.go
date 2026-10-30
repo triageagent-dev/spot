@@ -46,6 +46,10 @@ type Options struct {
 	// NotesOnly offers the model one tool, the core's search_memory: nothing
 	// from a connector or ego, no other core tool, no schedule_next or finish.
 	NotesOnly bool
+	// RequestHop gives the hop count of the request with that id in the bus, when
+	// the supervisor read it. A reply carries that hop plus one; the model does not
+	// set it.
+	RequestHop func(id string) (int, bool)
 	// RoomSince gives, for a room, the timestamp (ms) of the newest message the
 	// last finished turn could see; read_workspace_room is then asked only for
 	// what is newer, unless the model names its own since_ts. Nil or 0 = no
@@ -145,11 +149,12 @@ type Registry struct {
 	tasks    []TaskRequest
 	summary  string
 	finished bool
-	recalled bool // a search_memory succeeded in this turn
-	limited  bool // List offers only HoldTools and the built-ins (see Limit)
-	task     bool // the turn is a task's (see Task)
-	read     bool // a ContextTools call succeeded in this turn
-	noted    bool // a NoteTools call succeeded in this turn
+	recalled bool           // a search_memory succeeded in this turn
+	limited  bool           // List offers only HoldTools and the built-ins (see Limit)
+	task     bool           // the turn is a task's (see Task)
+	read     bool           // a ContextTools call succeeded in this turn
+	noted    bool           // a NoteTools call succeeded in this turn
+	hops     map[string]int // the hop of each message of the bus this turn read
 }
 
 // New returns a Registry.
@@ -198,6 +203,7 @@ func (r *Registry) Begin() {
 	r.End()
 	r.mu.Lock()
 	r.next, r.tasks, r.summary, r.finished, r.recalled, r.read, r.noted = nil, nil, "", false, false, false, false
+	r.hops = nil
 	r.mu.Unlock()
 }
 
@@ -413,6 +419,12 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 			return refusal, true
 		}
 	}
+	if rt.server == CoreServer && rt.tool == sayInWorkspace {
+		var refusal string
+		if args, refusal = r.withHop(args); refusal != "" {
+			return refusal, true
+		}
+	}
 	if rt.server == CoreServer && rt.tool == upsertMemoryItem && r.o.SpotName != "" {
 		args = withSpotTag(args, SpotTagPrefix+r.o.SpotName)
 	}
@@ -438,6 +450,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 				r.noted = true
 			}
 			r.mu.Unlock()
+		}
+		if rt.server == CoreServer && rt.tool == readWorkspaceRoom && !res.IsError {
+			r.noteHops(res.Text)
 		}
 		return r.fence(rt, r.cut(res.Text)), res.IsError
 	case ctx.Err() != nil:
@@ -650,6 +665,84 @@ const BusRoom = "bus"
 
 // busTools are the core's workspace tools that take a room.
 var busTools = []string{"say_in_workspace", readWorkspaceRoom, "read_workspace_file", "set_workspace_typing"}
+
+const sayInWorkspace = "say_in_workspace"
+
+// MaxHop is how deep an exchange between machines may go: the core refuses a
+// message past it, so a reply to a request that is already this deep is not sent.
+const MaxHop = 3
+
+// withHop sets the hop of a message in the bus. The model never does: a reply
+// carries the hop of the request it answers plus one (2 when the spot did not
+// read the request), a message that answers nothing starts at 1, and a reply to
+// a request already MaxHop deep is refused, because the exchange is over.
+func (r *Registry) withHop(args json.RawMessage) (json.RawMessage, string) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return args, ""
+	}
+	hop := 1
+	var to string
+	if raw, ok := m["reply_to"]; ok {
+		_ = json.Unmarshal(raw, &to)
+	}
+	if to != "" {
+		req, known := r.requestHop(to)
+		if !known {
+			req = 1
+		}
+		if req >= MaxHop {
+			return args, "not sent: the request you answer is already three messages deep between machines, so the exchange is over. Say nothing more in the bus; Tria has what you wrote before."
+		}
+		hop = req + 1
+	}
+	m["hop"], _ = json.Marshal(hop)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return args, ""
+	}
+	return out, ""
+}
+
+// requestHop is the hop of a request: from what this registry read in the turn,
+// else from what the supervisor read.
+func (r *Registry) requestHop(id string) (int, bool) {
+	r.mu.Lock()
+	h, ok := r.hops[id]
+	r.mu.Unlock()
+	if ok {
+		return h, true
+	}
+	if r.o.RequestHop != nil {
+		return r.o.RequestHop(id)
+	}
+	return 0, false
+}
+
+// noteHops keeps the hop of each message a read of the bus returned, so a reply
+// to a request the model read for itself is counted too. A reply it cannot read
+// is left alone.
+func (r *Registry) noteHops(text string) {
+	var out struct {
+		Messages []struct {
+			ID  string  `json:"id"`
+			Hop float64 `json:"hop"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(text)), &out) != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hops == nil {
+		r.hops = map[string]int{}
+	}
+	for _, m := range out.Messages {
+		if m.ID != "" && len(r.hops) < 200 {
+			r.hops[m.ID] = int(m.Hop)
+		}
+	}
+}
 
 // busArgs keeps a call to the core inside the spot's own bus. A workspace tool
 // goes to the room "bus" and to no other, with no spot named (the core takes

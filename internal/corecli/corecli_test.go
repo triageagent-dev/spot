@@ -452,7 +452,7 @@ func TestATaskLeavesOneNoteAndOneLineInTheBus(t *testing.T) {
 	if err != nil || id != "x" {
 		t.Fatalf("id %q err %v", id, err)
 	}
-	if err := c.SayInBus(ctx, "done, see the note", "$req", id); err != nil {
+	if err := c.SayInBus(ctx, "done, see the note", "$req", id, 2); err != nil {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
@@ -462,7 +462,7 @@ func TestATaskLeavesOneNoteAndOneLineInTheBus(t *testing.T) {
 		u["content"] != "the job ran at 02:00 and passed" || u["tags"] != "task,spot:example-spot" || u["tenant"] != "example" {
 		t.Fatalf("the note: %v", u)
 	}
-	if len(f.says) != 1 || f.says[0]["room"] != "bus" || f.says[0]["reply_to"] != "$req" || f.says[0]["memory"] != "x" || f.says[0]["tenant"] != "example" {
+	if len(f.says) != 1 || f.says[0]["room"] != "bus" || f.says[0]["reply_to"] != "$req" || f.says[0]["memory"] != "x" || f.says[0]["hop"] != float64(2) || f.says[0]["tenant"] != "example" {
 		t.Fatalf("the line in the bus: %v", f.says)
 	}
 }

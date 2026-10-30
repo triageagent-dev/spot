@@ -21,13 +21,17 @@ import (
 // item, and one line in the bus that carries the item's id.
 type TaskCore interface {
 	RememberTask(ctx context.Context, key, title, result, spot string) (string, error)
-	SayInBus(ctx context.Context, text, replyTo, memory string) error
+	SayInBus(ctx context.Context, text, replyTo, memory string, hop int) error
 }
 
 // TaskLink is the task actor's channel to the core: its one wake report.
 type TaskLink interface {
 	ReportWake(ctx context.Context, w triggers.Wake) error
 }
+
+// taskReplyHop is the hop of a task's answer. The task frame does not carry the
+// hop of the request, which Tria made at hop 1: its answer is 2.
+const taskReplyHop = 2
 
 // maxBusLine is how much of the result the line in the bus carries; the memory
 // item holds the rest.
@@ -82,7 +86,7 @@ func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task, link TaskLink
 		s.log.Error("the task result could not be saved to memory", "err", err)
 		line, id = oneLine(result, maxBusLine-60)+" (the full result could not be saved)", ""
 	}
-	if err := tc.SayInBus(dctx, line, t.ReplyTo, id); err != nil {
+	if err := tc.SayInBus(dctx, line, t.ReplyTo, id, taskReplyHop); err != nil {
 		s.log.Error("the task result could not be sent to the bus", "err", err)
 		failed = true
 	}

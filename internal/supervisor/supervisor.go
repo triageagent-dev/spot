@@ -98,6 +98,10 @@ type Supervisor struct {
 	// a request named a time for. They run even under a hold rule and survive a
 	// restart; the earliest fires, the others stay (ADR-109).
 	promises schedule.Promises
+	// hops is the hop count of the requests read in the bus, by message id, so a
+	// reply can carry the next one (see tools.Registry.withHop).
+	hopMu sync.Mutex
+	hops  map[string]int
 	// dueNoted is set when a request in the bus room named a later time and
 	// became a promise; the core is told at the end of the read.
 	dueNoted bool
@@ -1218,6 +1222,27 @@ func (s *Supervisor) pollRooms(ctx context.Context, rooms ...string) []edges.Edg
 	return out
 }
 
+// noteHop remembers the hop of a request in the bus.
+func (s *Supervisor) noteHop(id string, hop int) {
+	if id == "" {
+		return
+	}
+	s.hopMu.Lock()
+	defer s.hopMu.Unlock()
+	if s.hops == nil || len(s.hops) >= 256 {
+		s.hops = map[string]int{}
+	}
+	s.hops[id] = hop
+}
+
+// RequestHop is the hop of a request the spot read in the bus.
+func (s *Supervisor) RequestHop(id string) (int, bool) {
+	s.hopMu.Lock()
+	defer s.hopMu.Unlock()
+	h, ok := s.hops[id]
+	return h, ok
+}
+
 // BusRoom is the one room the spot reads and speaks in (ADR-109): Tria's
 // requests come in it and the spot's answers go back in it. The tools take the
 // word "bus" for the spot's own room; the core finds it from the token.
@@ -1321,6 +1346,9 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			who = m.Sender
 		}
 		page[m.ID] = quoted{who: who, text: m.Text}
+		if room == BusRoom {
+			s.noteHop(m.ID, m.Hop)
+		}
 	}
 	if first && next == "" {
 		// An empty room has no cursor to save, and a room that is not saved is

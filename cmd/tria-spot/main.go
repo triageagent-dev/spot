@@ -110,6 +110,12 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	var sup *supervisor.Supervisor // set below; the registry asks it for the rooms's watermark
 	newRegistry := func() *tools.Registry {
 		return tools.New(tools.Options{
+			RequestHop: func(id string) (int, bool) {
+				if sup == nil {
+					return 0, false
+				}
+				return sup.RequestHop(id)
+			},
 			RoomSince: func(room string) int64 {
 				if sup == nil {
 					return 0
