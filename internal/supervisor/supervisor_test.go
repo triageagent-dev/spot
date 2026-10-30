@@ -2191,3 +2191,30 @@ func TestAnEmptyRoomGetsACursorToo(t *testing.T) {
 		}
 	}
 }
+
+// A frame the actor takes for a poke (no usable token) becomes a plain tick that
+// reads nothing of it. The message the core meant must still reach that wake.
+func TestATickOfAnActorReadsTheRooms(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.post("team", say("alice", "alice", "@example-spot are you there?"))
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "are you there?") {
+		t.Fatalf("a tick must carry the message waiting in the room:\n%s", in)
+	}
+}

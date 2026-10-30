@@ -299,7 +299,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			pend = s.manualWake()
 		}
 		if pend == nil {
-			pend = s.ordered()
+			if pend = s.ordered(); pend != nil && s.cfg.Substrate() {
+				pend = s.withRooms(ctx, pend)
+			}
 		}
 		if pend == nil && s.selfWakeDue() {
 			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
@@ -354,6 +356,23 @@ func (s *Supervisor) primeRooms(ctx context.Context) {
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s.pollRooms(pctx, cold...)
+}
+
+// withRooms reads the rooms for a wake the core ordered from an actor. The
+// core's request may have come with no usable token, which the actor answers
+// with a plain tick that reads nothing of it: what was said in the rooms is
+// then a fact of this wake, not of a wake that may never come.
+func (s *Supervisor) withRooms(ctx context.Context, p *pending) *pending {
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	es := s.pollRooms(pctx, "team", "agents")
+	if len(es) == 0 {
+		return p
+	}
+	s.hold(es)
+	h := s.fromHeld()
+	h.scheduledBy = p.scheduledBy
+	return h
 }
 
 // manualWake turns a wake a person asked for from the console into a wake of the
