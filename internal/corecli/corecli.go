@@ -58,6 +58,9 @@ type RoomMessage struct {
 	// when the core does not say (an older core, or a spot its roster does
 	// not know yet): the spot then reads the message as before.
 	ForYou *bool
+	// ReplyTo is the id of the message this one answers, empty when it is not a
+	// reply or the core does not say.
+	ReplyTo string
 }
 
 // ErrCredentialRejected is what a call returns while the core has refused the
@@ -455,6 +458,7 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 			Time:   str(m, "time", "created_at"),
 			Spot:   str(m, "spot"),
 		}
+		rm.ReplyTo = str(m, "replyTo", "reply_to")
 		if t, ok := m["tria"].(bool); ok {
 			rm.Tria = t
 		}

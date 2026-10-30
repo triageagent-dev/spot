@@ -245,6 +245,13 @@ func TestParseRoomCarriesTheCoresAddressee(t *testing.T) {
 	}
 }
 
+func TestParseRoomKeepsWhatAReplyAnswers(t *testing.T) {
+	m, _, err := ParseRoom(`{"messages":[{"id":"$a","sender":"@u.alice:s","body":"q","ts":1},{"id":"$b","sender":"@u.alice:s","body":"re","ts":2,"replyTo":"$a"}]}`, "")
+	if err != nil || len(m) != 2 || m[0].ReplyTo != "" || m[1].ReplyTo != "$a" {
+		t.Fatalf("%+v %v", m, err)
+	}
+}
+
 func TestParseRoomShowsAnAttachment(t *testing.T) {
 	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.alice:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.alice:s","body":"hi","ts":6}]}`, "")
 	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {
