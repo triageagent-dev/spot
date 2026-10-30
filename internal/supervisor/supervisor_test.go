@@ -1276,8 +1276,34 @@ func TestMessageForAnotherSpotDoesNotWake(t *testing.T) {
 	mine.ForYou = &yes
 	h.post("team", mine)
 	h.waitIdle(2)
-	if in := h.file("stdin", 2); !strings.Contains(in, "checkout pods") || strings.Contains(in, "@other-spot") || strings.Contains(in, "anyone around") {
-		t.Fatalf("only the message for this spot may reach the agent:\n%s", in)
+	in := h.file("stdin", 2)
+	if !strings.Contains(in, "checkout pods") {
+		t.Fatalf("the message for this spot must reach the agent:\n%s", in)
+	}
+	// What the room said meanwhile is context, in order, marked as not for this spot.
+	a, b, c := strings.Index(in, "@other-spot hey"), strings.Index(in, "anyone around"), strings.Index(in, "checkout pods")
+	if a < 0 || b < a || c < b || strings.Count(in, "not addressed to you") != 2 {
+		t.Fatalf("the messages for others must come as context, in order, before the one for this spot:\n%s", in)
+	}
+}
+
+func TestAReplyIsReadWithTheMessageItAnswers(t *testing.T) {
+	h := roomHarness(t, nil)
+	defer h.stop()
+	no, yes := false, true
+	q := say("alice", "alice", "do you have ego access?")
+	q.ID, q.ForYou = "$q1", &no
+	h.post("team", q)
+	time.Sleep(150 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("a message for another spot woke this one")
+	}
+	r := say("alice", "alice", "check the answer above")
+	r.ID, r.ReplyTo, r.ForYou = "$r1", "$q1", &yes
+	h.post("team", r)
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "do you have ego access?") || !strings.Contains(in, "a reply to") {
+		t.Fatalf("the reply must carry the message it answers:\n%s", in)
 	}
 }
 

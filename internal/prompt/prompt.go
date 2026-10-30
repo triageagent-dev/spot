@@ -122,7 +122,7 @@ func Turn(w Wake) string {
 		fmt.Fprintf(&b, "Another turn of yours started this task and carries on without you. Task: %s\nGoal:\n%s\n", w.Title, w.Goal)
 	}
 	if w.Asked && w.Reason != Human {
-		b.WriteString("Someone wrote to you in a room, and what they wrote is among the lines below: answer them there. A message whose @mention names another spot is for that spot, not for you: do not answer it.\n")
+		b.WriteString("Someone wrote to you in a room, and what they wrote is among the lines below: answer them there. A message marked as not addressed to you is only what the room has been saying: read it as context, so that what they point at (a question above, what Tria answered) is found. If they point at something that is not among the lines, read the room with read_workspace_room. A message whose @mention names another spot is for that spot, not for you: do not answer it.\n")
 	}
 	for _, f := range w.Facts {
 		fmt.Fprintf(&b, "- %s\n", f)

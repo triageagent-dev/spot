@@ -1239,6 +1239,14 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		return nil, false
 	}
 	first := !rs.primed
+	page := make(map[string]quoted, len(msgs))
+	for _, m := range msgs {
+		who := m.Name
+		if who == "" {
+			who = m.Sender
+		}
+		page[m.ID] = quoted{who: who, text: m.Text}
+	}
 	if first && next == "" {
 		// An empty room has no cursor to save, and a room that is not saved is
 		// read as history again by the next process. "0" sends no since_ts, so
@@ -1279,19 +1287,30 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		// A person is talking to the spot; Tria and other agents are news but
 		// not a human asking.
 		human := !m.Tria && m.Spot == ""
-		if human && m.ForYou != nil && !*m.ForYou {
-			// The core says the message is for another spot, or for nobody and
-			// another spot is the one that answers: not news for this one.
-			s.log.Debug("a person's message for another spot dropped", "room", room)
-			continue
-		}
+		// The core says the message is for another spot, or for nobody and
+		// another spot is the one that answers. It never wakes this spot and is
+		// not asking it anything, but it is what the room has been saying: a
+		// person's "my question above" or "what Tria answered" points at it.
+		aside := human && m.ForYou != nil && !*m.ForYou
 		if !human && m.Hop >= 2 {
 			// A machine conversation two hops deep: not answered, not even
 			// shown, so two agents cannot keep each other awake.
 			s.log.Debug("machine message past the hop limit dropped", "room", room, "hop", m.Hop)
 			continue
 		}
-		fact := fmt.Sprintf("message in the %s room from %s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), edges.Fence(m.Text, roomFactRunes))
+		note := ""
+		if aside {
+			note = ", not addressed to you"
+		}
+		fact := fmt.Sprintf("message in the %s room from %s%s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), note, edges.Fence(m.Text, roomFactRunes))
+		if m.ReplyTo != "" {
+			// A reply is read together with the message it answers.
+			if to, ok := page[m.ReplyTo]; ok {
+				fact += fmt.Sprintf(" [a reply to %s: %s]", edges.Fence(orUnknown(to.who), 60), edges.Fence(to.text, replyQuoteRunes))
+			} else {
+				fact += fmt.Sprintf(" [a reply to the earlier message %q: read it with read_workspace_room]", m.ReplyTo)
+			}
+		}
 		if edges.Cut(m.Text, roomFactRunes) {
 			// Never let the agent answer a half-read message: say it is cut.
 			fact += fmt.Sprintf(" [message cut at %d characters: read the whole of it with read_workspace_room before you answer]", roomFactRunes)
@@ -1303,14 +1322,14 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		}
 		// The core names the spots a message addresses; with forYou true and a
 		// list, this spot is one of them.
-		mentioned := s.mentioned(m.Text) || (m.ForYou != nil && *m.ForYou && len(m.Mentions) > 0)
-		if !mentioned && human && strings.Contains(m.Text, "@") {
+		mentioned := !aside && (s.mentioned(m.Text) || (m.ForYou != nil && *m.ForYou && len(m.Mentions) > 0))
+		if !mentioned && human && !aside && strings.Contains(m.Text, "@") {
 			// Someone is addressing somebody, and the name they used may be
 			// the spot's new one: look again, at most every few seconds.
 			s.refreshIdentity(ctx, false, identityGap)
 			mentioned = s.mentioned(m.Text)
 		}
-		out = append(out, edges.Edge{Kind: edges.Message, Human: human, Room: room, Mentioned: mentioned, Fact: fact})
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human && !aside, Room: room, Mentioned: mentioned, Fact: fact})
 	}
 	return out, moved
 }
@@ -1385,6 +1404,12 @@ func anyMentioned(es []edges.Edge) bool {
 	}
 	return false
 }
+
+// quoted is a message of the page being read, kept to show what a reply answers.
+type quoted struct{ who, text string }
+
+// replyQuoteRunes is how much of the message a reply answers is quoted with it.
+const replyQuoteRunes = 200
 
 // roomFactRunes is how much of a room message goes into the wake prompt; the
 // rest is one read_workspace_room away.
