@@ -4,6 +4,9 @@
 #   kubectl ate create egress-policy <actor-name> -a <atespace> -f egress-policy.yaml
 # In-cluster names are fully qualified (<svc>.<ns>.svc.cluster.local): the
 # platform's DNS relay does not expand short names.
+# A rule applies to every request to its hostname and ports, and replaces a
+# header only on a request that carries it. Give the core and ego different
+# hostnames (or ports): on a shared one the core would get ego's bearer.
 rules:
 # The core: the one-time key of the first join (the Secret may be dropped from
 # the rule once the spot has joined; a spent key left in place is harmless).

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,8 +60,10 @@ type Link struct {
 	hc   *http.Client
 
 	connected atomic.Bool
+	poked     atomic.Bool // a request with no token has already been answered with a tick
 	ready     chan struct{}
 	reauth    chan struct{}
+	frameSlot chan struct{} // one request of the core at a time
 
 	// The link starts with the first request of the core, not with the process:
 	// an actor is also booted to be snapshotted before it has a wake, and the key
@@ -77,6 +81,7 @@ type Link struct {
 	// running and waits for a wake report to mark it suspended.
 	owed         bool
 	bearer       string
+	prevBearer   string // the token before the last hello: the core may still be sending it
 	tokenExp     time.Time
 	actor        string
 	noRenewUntil time.Time
@@ -97,7 +102,7 @@ func NewLink(apiURL string, cert Cert, log *slog.Logger) (*Link, error) {
 	return &Link{
 		inbox: newInbox(), base: u.String(), cert: cert, log: log,
 		hc:    &http.Client{Timeout: 30 * time.Second},
-		ready: make(chan struct{}), reauth: make(chan struct{}, 1),
+		ready: make(chan struct{}), reauth: make(chan struct{}, 1), frameSlot: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -312,6 +317,9 @@ func (l *Link) takeToken(t *tokenFrame) {
 		exp = time.UnixMilli(t.Exp)
 	}
 	l.mu.Lock()
+	if l.bearer != "" && l.bearer != t.Value {
+		l.prevBearer = l.bearer
+	}
 	l.bearer, l.tokenExp = t.Value, exp
 	l.mu.Unlock()
 }
@@ -625,10 +633,71 @@ func (l *Link) Handler() http.Handler {
 	return mux
 }
 
+// authorised reports whether the request carries the access token the core got
+// from hello: the core puts it on every request it sends the actor. A process
+// started for a wake has not said hello yet, so it takes the token its
+// predecessor saved, which is the one the core still holds.
+func (l *Link) authorised(r *http.Request) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || got == "" {
+		return false
+	}
+	l.mu.Lock()
+	known := []string{l.bearer, l.prevBearer}
+	l.mu.Unlock()
+	if known[0] == "" {
+		if b, err := os.ReadFile(l.cert.TokenFile); err == nil {
+			known[0] = strings.TrimSpace(string(b))
+		}
+	}
+	match := 0
+	for _, k := range known {
+		if k != "" {
+			match |= subtle.ConstantTimeCompare([]byte(got), []byte(k))
+		}
+	}
+	return match == 1
+}
+
 // serveFrame takes one frame of the core. A control is answered in the
 // response; a wake, the rooms, the name and the budget are kept for the loop and
 // answered 202 at once, the wake report going back when the supervisor is idle.
+//
+// Anyone who can reach the port can send a request, so a frame counts only with
+// the access token. Until the link is up a request without it is a bare poke:
+// nothing in it is read, and it starts the join and the hello and asks for one
+// plain tick wake (the actor owes the core a wake report). Once the link is up
+// a request without the token is refused.
 func (l *Link) serveFrame(w http.ResponseWriter, r *http.Request) {
+	select {
+	case l.frameSlot <- struct{}{}:
+		defer func() { <-l.frameSlot }()
+	default:
+		http.Error(w, "one request at a time", http.StatusTooManyRequests)
+		return
+	}
+	if !l.authorised(r) {
+		if l.connected.Load() {
+			http.Error(w, "not the core", http.StatusUnauthorized)
+			return
+		}
+		// The first request of a process may come with no token (the core has
+		// none to send before the hello): a wake it asked for must not be lost,
+		// so the first poke of the process is answered with a plain tick, whose
+		// words are the spot's own default and not the request's. One only, so
+		// that a stranger cannot make a turn per request.
+		l.mu.Lock()
+		l.owed = true
+		l.mu.Unlock()
+		if l.poked.CompareAndSwap(false, true) {
+			l.add(frame{Wake: &Order{Reason: "tick"}})
+		}
+		l.begin()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, "{}\n")
+		return
+	}
 	var f frame
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrameBody))
 	if err := dec.Decode(&f); err != nil {
@@ -636,12 +705,12 @@ func (l *Link) serveFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if c := f.Control; c != nil && (c.ID == "" || c.Op == "") {
+		http.Error(w, "a control needs an id and an op", http.StatusBadRequest)
+		return
+	}
 	l.begin()
 	if c := f.Control; c != nil {
-		if c.ID == "" || c.Op == "" {
-			http.Error(w, "a control needs an id and an op", http.StatusBadRequest)
-			return
-		}
 		if c.Op == "wake" {
 			l.mu.Lock()
 			l.owed = true // the core marks the actor running for a wake it asked for

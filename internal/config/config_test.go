@@ -426,6 +426,9 @@ func TestInjectionIsAnAuthModeNotARuntime(t *testing.T) {
 	if _, err := Parse(with(required, "--llm-base-url", "http://proxy.invalid"), io.Discard); err == nil {
 		t.Error("--llm-base-url was accepted without --llm-auth=injected")
 	}
+	if _, err := Parse(with(required[:6], "--llm-auth", "injected"), io.Discard); err == nil {
+		t.Error("injected auth with nothing to replace the placeholder was accepted in a deployment")
+	}
 }
 
 func TestConnectorsCanBeGivenInlineForARuntimeWithNoFile(t *testing.T) {

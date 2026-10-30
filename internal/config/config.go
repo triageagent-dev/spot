@@ -324,6 +324,10 @@ func (c Config) validateCertificateIdentity() []error {
 func (c Config) validateRuntime() []error {
 	switch c.Runtime {
 	case RuntimeDeployment:
+		if c.LLMAuth == AuthInjected && c.LLMBaseURL == "" {
+			// Nothing in front of api.anthropic.com would replace the placeholder.
+			return []error{errors.New("--llm-auth=injected outside --runtime=substrate needs --llm-base-url: the proxy that puts the key on the request")}
+		}
 		return nil
 	case RuntimeSubstrate:
 		var errs []error

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -404,6 +405,12 @@ func waitFor(t *testing.T, d time.Duration, what string, ok func() bool) {
 
 func frameReq(t *testing.T, l *Link, path, body string) *http.Response {
 	t.Helper()
+	return frameReqAs(t, l, path, body, "spt1.token-example-spot")
+}
+
+// frameReqAs sends a request as a client that holds token ("" = none).
+func frameReqAs(t *testing.T, l *Link, path, body, token string) *http.Response {
+	t.Helper()
 	srv := httptest.NewServer(l.Handler())
 	t.Cleanup(srv.Close)
 	method := http.MethodPost
@@ -411,6 +418,9 @@ func frameReq(t *testing.T, l *Link, path, body string) *http.Response {
 		method = http.MethodGet
 	}
 	req, _ := http.NewRequest(method, srv.URL+path, bytes.NewBufferString(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -458,8 +468,9 @@ func TestReadyzAnswersAsSoonAsTheServerListensAndTheLinkStartsWithTheFirstReques
 		t.Fatalf("the actor spoke to the core at boot: %v", c.posts)
 	}
 
-	// The first frame is accepted at once, and the join and hello follow.
-	if r := frameReq(t, l, "/frame", `{"wake":{"reason":"tick","why":"first"}}`); r.StatusCode != http.StatusAccepted {
+	// The first request has no token to show: it is a bare poke, accepted at once,
+	// and the join and hello follow.
+	if r := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"first"}}`, ""); r.StatusCode != http.StatusAccepted {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
@@ -468,8 +479,82 @@ func TestReadyzAnswersAsSoonAsTheServerListensAndTheLinkStartsWithTheFirstReques
 		t.Fatalf("never ready: %v", err)
 	}
 	wait(t, "connected", l.Connected)
+	if p := l.Take(); p.Order == nil || p.Order.Reason != "tick" || p.Order.Why != "" {
+		t.Errorf("a poke without the token must ask for a plain tick, with none of its words: %+v", p)
+	}
+}
+
+func TestAFrameNeedsTheAccessTokenOnceTheLinkIsUp(t *testing.T) {
+	l, _, _ := upLink(t, newLinkCore(t))
+	_ = l.Take()
+	for name, tok := range map[string]string{"none": "", "wrong": "spt1.token-other", "prefix": "spt1.token-example-spo"} {
+		r := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"forged"}}`, tok)
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s: status %d", name, r.StatusCode)
+		}
+	}
+	r := frameReqAs(t, l, "/frame", `{"control":{"id":"1","op":"wake","why":"forged"}}`, "")
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Errorf("control with no token: status %d", r.StatusCode)
+	}
+	if p := l.Take(); p.Order != nil || p.Manual != nil {
+		t.Errorf("a forged frame ordered a wake: %+v", p)
+	}
+	if r := frameReq(t, l, "/frame", `{"wake":{"reason":"tick","why":"genuine"}}`); r.StatusCode != http.StatusAccepted {
+		t.Errorf("the core's own frame: status %d", r.StatusCode)
+	}
+}
+
+func TestAFreshProcessTakesTheTokenItsPredecessorSaved(t *testing.T) {
+	c := newLinkCore(t)
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(c.handler))
+	t.Cleanup(srv.Close)
+	tok := filepath.Join(dir, "token")
+	if err := os.WriteFile(tok, []byte("spt1.token-example-spot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewLink(srv.URL, Cert{Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok,
+		Open: func() (*identity.Identity, error) {
+			return identity.Load(dir, "example-spot", "ws-1", identity.Fingerprint(c.caPub))
+		}}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		l.Wait()
+	})
+	l.Serve(ctx)
+	if r := frameReq(t, l, "/frame", `{"wake":{"reason":"tick","why":"first"}}`); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d", r.StatusCode)
+	}
 	if p := l.Take(); p.Order == nil || p.Order.Why != "first" {
-		t.Errorf("the frame that started the link was lost: %+v", p)
+		t.Errorf("the core's frame with the saved token was dropped: %+v", p)
+	}
+}
+
+func TestOneRequestOfTheCoreIsAnsweredAtATime(t *testing.T) {
+	l, _, _ := upLink(t, newLinkCore(t))
+	l.frameSlot <- struct{}{}
+	if r := frameReq(t, l, "/frame", `{}`); r.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("a second request: status %d", r.StatusCode)
+	}
+	<-l.frameSlot
+}
+
+func TestABudgetOrNameTheCoreCouldNotHaveSentIsDropped(t *testing.T) {
+	l, _, _ := upLink(t, newLinkCore(t))
+	_ = l.Take()
+	frameReq(t, l, "/frame", `{"budget":{"own":9000000000000000000},"name":"bad\u0000name"}`)
+	p := l.Take()
+	if p.Budget || p.Name != "" {
+		t.Errorf("an absurd budget or a name with a control character was kept: %+v", p)
+	}
+	frameReq(t, l, "/frame", `{"budget":{"own":10,"cap":100,"remaining":90},"name":"Example"}`)
+	if p := l.Take(); !p.Budget || p.Name != "Example" {
+		t.Errorf("a plain budget and name were not kept: %+v", p)
 	}
 }
 
@@ -610,4 +695,25 @@ func runUntilCleanup(t *testing.T, cancel context.CancelFunc, ctx context.Contex
 		cancel()
 		<-done
 	})
+}
+
+func TestOnlyTheFirstPokeOfAProcessAsksForATick(t *testing.T) {
+	l, err := NewLink("http://core.invalid", Cert{Name: "example-spot", Workspace: "ws-1", TokenFile: filepath.Join(t.TempDir(), "token"),
+		Open: func() (*identity.Identity, error) { return nil, errors.New("not opened") }}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if r := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"forged"}}`, ""); r.StatusCode != http.StatusAccepted {
+			t.Fatalf("poke %d: status %d", i, r.StatusCode)
+		}
+		if i == 0 {
+			if p := l.Take(); p.Order == nil || p.Order.Why != "" {
+				t.Fatalf("the first poke: %+v", p)
+			}
+		}
+	}
+	if p := l.Take(); p.Order != nil {
+		t.Errorf("a later poke asked for a wake: %+v", p)
+	}
 }

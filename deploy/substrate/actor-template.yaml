@@ -1,5 +1,8 @@
 # The ActorTemplate of a spot that runs as an actor of Agent Substrate (ADR-107):
 #   kubectl ate create actor-template -f actor-template.yaml
+# Keep the golden snapshot off (below): a process booted to be snapshotted could
+# be made to join by a request to its port, and the key it made would then be in
+# every actor made from the snapshot.
 # Replace every <placeholder>. The image is named by digest. Volumes cannot be
 # changed later (a template swapped under an actor must have the same volumes).
 metadata:
@@ -32,8 +35,12 @@ containers:
   # A path to the egress CA, not a credential.
   - name: SSL_CERT_FILE
     value: /run/ate/egress-trust-bundle/trust-bundle.pem
+  # The router reaches an actor on port 80 unless the caller tunnels to another,
+  # so the process binds :80 and keeps that one capability; the rest are dropped.
   securityContext:
     capabilities:
+      drop:
+      - ALL
       add:
       - NET_BIND_SERVICE
   volumeMounts:

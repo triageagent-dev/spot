@@ -379,7 +379,10 @@ func serve(addr string, h http.Handler, log *slog.Logger) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
+	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server", "err", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // inbox is what the core has said since the supervisor last looked: it is the
@@ -62,10 +63,10 @@ func (b *inbox) wake() {
 // add keeps what a frame from the core says.
 func (b *inbox) add(f frame) {
 	b.mu.Lock()
-	if f.Name != "" {
-		b.pending.Name = f.Name
+	if n := cleanName(f.Name); n != "" {
+		b.pending.Name = n
 	}
-	if f.Budget != nil {
+	if f.Budget != nil && sane(*f.Budget) {
 		v := *f.Budget
 		b.budget = &v
 		b.pending.Budget = true
@@ -144,4 +145,32 @@ func (b *inbox) run(ctl Control) ControlResult {
 		res.ID = ctl.ID
 	}
 	return res
+}
+
+// maxName bounds the persona name the core gives the spot.
+const maxName = 64
+
+// maxTokensFigure bounds a figure of a budget frame: far above any real day of
+// tokens, far below what would overflow a sum.
+const maxTokensFigure = int64(1) << 40
+
+// cleanName keeps a name the spot can match a mention against: valid text with
+// no control characters, cut to maxName.
+func cleanName(n string) string {
+	n = strings.TrimSpace(strings.ToValidUTF8(clipTo(n, maxName), ""))
+	if strings.ContainsFunc(n, unicode.IsControl) {
+		return ""
+	}
+	return n
+}
+
+// sane reports whether the figures of a budget are ones the core could have
+// counted. A frame that is not is dropped whole.
+func sane(b Budget) bool {
+	for _, v := range []int64{b.Spent, b.Own, b.Cap, b.Remaining} {
+		if v < 0 || v > maxTokensFigure {
+			return false
+		}
+	}
+	return true
 }

@@ -128,6 +128,10 @@ func (s *Supervisor) taskLines() []triggers.TaskLine {
 // has in hand after it. A key the spot does not have is refused.
 func (s *Supervisor) Control(ctx context.Context, c triggers.Control) triggers.ControlResult {
 	ok, msg := s.control(ctx, c.Op, c.Task)
+	if !ok {
+		// A refused control tells nothing of what the spot has in hand.
+		return triggers.ControlResult{ID: c.ID, Msg: msg}
+	}
 	return triggers.ControlResult{ID: c.ID, OK: ok, Msg: msg, Tasks: s.taskLines()}
 }
 
