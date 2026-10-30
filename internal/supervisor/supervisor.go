@@ -94,13 +94,14 @@ type Supervisor struct {
 	flush        func()          // runs when the spot goes idle (SetFlush)
 	order        *triggers.Order // a wake the core asked for, not yet taken
 	manual       *triggers.Order // a wake a person asked for from the console, not yet taken
-	// promise is the earliest wake the agent itself asked for that has not
-	// fired. A later turn that wants a later (or no) wake does not move it.
-	promise    time.Time
-	promiseWhy string
-	// promiseHuman is set when the promised wake answers a person's request for
-	// later: it runs even under a hold rule, and it survives a restart.
-	promiseHuman bool
+	// promises are the wakes the spot owes: a person's timed asks and the pieces
+	// a request named a time for. They run even under a hold rule and survive a
+	// restart; the earliest fires, the others stay (ADR-109).
+	promises schedule.Promises
+	// kept is the earliest wake the agent asked for on its own: an edge wake that
+	// wants a later one does not push it back. It is no promise and is not
+	// reported as one.
+	kept schedule.Promise
 	// digest is the spot's own summary of each of its last wakes, the only
 	// thing carried from one wake to the next (the conversation is not).
 	digest      []ledger.DigestEntry
@@ -227,8 +228,8 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 	if cfg.Substrate() {
 		s.loadWindow()
 	}
-	if pr := led.LoadPromise(); !pr.At.IsZero() {
-		s.promise, s.promiseWhy, s.promiseHuman = pr.At, pr.Why, true
+	for _, pr := range led.LoadPromises() {
+		s.promises, _ = s.promises.Add(s.now(), schedule.Promise{At: pr.At, Why: pr.Why, Human: true, For: pr.For, Room: pr.Room, Task: pr.Task})
 	}
 	s.status = Status{Name: cfg.Name, Tenant: cfg.Tenant, HeartbeatID: cfg.HeartbeatID}
 	return s
@@ -442,12 +443,12 @@ func (s *Supervisor) ordered() *pending {
 	}
 	switch o.Reason {
 	case "promise":
-		if s.promise.IsZero() || s.promise.After(now.Add(orderSkew)) {
+		if !s.promises.Due(now) {
 			s.log.Debug("a promised wake the spot does not hold is dropped", "why", o.Why)
 			return nil
 		}
 		if why == "" {
-			why = s.promiseWhy
+			why = s.promises[0].Why
 		}
 	case "tick":
 		if !s.nextTick.IsZero() && s.nextTick.After(now.Add(orderSkew)) {
@@ -725,20 +726,15 @@ func (s *Supervisor) addDigest(reason prompt.Reason, res agent.Result) {
 	}
 }
 
-// setPromise records the earliest wake the agent promised itself; human says it
-// answers a person's request, and only those are kept on disk.
-func (s *Supervisor) promiseNow() schedule.Promise {
-	return schedule.Promise{At: s.promise, Why: s.promiseWhy, Human: s.promiseHuman}
-}
-
-func (s *Supervisor) setPromise(at time.Time, why string, human bool) {
-	s.promise, s.promiseWhy, s.promiseHuman = at, why, human
-	pr := ledger.Promise{}
-	if human {
-		pr = ledger.Promise{At: at, Why: why}
+// setPromises records the wakes the spot owes; they are kept on disk.
+func (s *Supervisor) setPromises(ps schedule.Promises) {
+	s.promises = ps
+	out := make([]ledger.Promise, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, ledger.Promise{At: p.At, Why: p.Why, Human: p.Human, For: p.For, Room: p.Room, Task: p.Task})
 	}
-	if err := s.led.SavePromise(pr); err != nil {
-		s.log.Error("writing the promised wake", "err", err)
+	if err := s.led.SavePromises(out); err != nil {
+		s.log.Error("writing the promised wakes", "err", err)
 	}
 }
 
@@ -759,8 +755,8 @@ func (s *Supervisor) idleWake(reason, why, source string) {
 	s.lastTurnEnd = s.now()
 	s.nextTick = s.now().Add(s.cfg.MaxWake)
 	s.scheduledWhy = why
-	if s.promiseHuman && !s.promise.IsZero() && s.promise.Before(s.nextTick) {
-		s.nextTick, s.scheduledWhy = s.promise, s.promiseWhy
+	if e, ok := s.promises.Earliest(); ok && e.At.Before(s.nextTick) {
+		s.nextTick, s.scheduledWhy = e.At, e.Why
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: source}
 	s.reportWake(reason, LaneLong, source, agent.Result{}, s.nextTick, source)
@@ -810,7 +806,7 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 				w.NextSource = clipLabel(n.Source)
 			}
 		}
-		w.NextWhy, w.Promise = clipBytes(s.scheduledWhy, maxWhy), s.promiseReport()
+		w.NextWhy, w.Promises = clipBytes(s.scheduledWhy, maxWhy), s.promiseReport()
 		s.trig.SetSchedule(s.schedule())
 	}
 	if !next.IsZero() {
@@ -825,19 +821,20 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 // maxWhy is the longest reason the core is told with a wake.
 const maxWhy = 200
 
-// promiseReport is the promised wake as the core is told it, nil when there is
+// promiseReport is the promises as the core is told them, nil when there are
 // none.
-func (s *Supervisor) promiseReport() *triggers.Promise {
-	if s.promise.IsZero() {
-		return nil
+func (s *Supervisor) promiseReport() []triggers.Promise {
+	var out []triggers.Promise
+	for _, p := range s.promises {
+		out = append(out, triggers.Promise{At: p.At.UnixMilli(), Why: clipBytes(p.Why, maxWhy), Human: p.Human, For: p.For, Room: p.Room, Task: p.Task})
 	}
-	return &triggers.Promise{At: s.promise.UnixMilli(), Why: clipBytes(s.promiseWhy, maxWhy), Human: s.promiseHuman}
+	return out
 }
 
 // schedule is what the spot has planned, as the core is told it when the stream
 // (re)connects.
 func (s *Supervisor) schedule() triggers.Schedule {
-	sc := triggers.Schedule{MaxWakeMs: s.cfg.MaxWake.Milliseconds(), Promise: s.promiseReport()}
+	sc := triggers.Schedule{MaxWakeMs: s.cfg.MaxWake.Milliseconds(), Promises: s.promiseReport()}
 	if !s.nextTick.IsZero() {
 		sc.Next, sc.NextWhy = s.nextTick.UnixMilli(), clipBytes(s.scheduledWhy, maxWhy)
 		if n := s.status.NextWake; n != nil {
@@ -1499,12 +1496,12 @@ func (s *Supervisor) sideDone() <-chan agent.Result {
 // startPromised starts the wake a person asked for when its time comes while a
 // long turn is still running.
 func (s *Supervisor) startPromised(ctx context.Context) {
-	if s.side != nil || !s.promiseHuman || s.promise.IsZero() || s.now().Before(s.promise) {
+	if s.side != nil || !s.promises.Due(s.now()) {
 		return
 	}
-	why := s.promiseWhy
+	why := s.promises[0].Why
 	if s.startSide(ctx, prompt.Tick, nil, nil, why) {
-		s.setPromise(time.Time{}, "", false) // it fired
+		s.setPromises(s.promises.Without()) // it fired
 	}
 }
 
@@ -1580,10 +1577,7 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 	if asked {
 		after, why = res.Next.After, res.Next.Why
 	}
-	cur := s.promiseNow()
-	if pr := schedule.AfterShortTurn(s.now(), s.cfg.MinWake, s.cfg.MaxWake, asked, after, why, cur); pr != cur {
-		s.setPromise(pr.At, pr.Why, pr.Human)
-	}
+	s.setPromises(schedule.AfterShortTurn(s.now(), s.cfg.MinWake, s.cfg.MaxWake, asked, after, why, s.promises))
 	s.addDigest(st.p.reason, res)
 	s.markRoomsRead()
 	s.reportStats(true)
@@ -1688,17 +1682,17 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	for _, e := range p.edges {
 		asked = asked || e.Human
 	}
-	if hold && !asked && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
+	if hold && !asked && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promises.Due(s.now())) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return
 	}
-	if p.reason == prompt.Tick && s.promiseHuman {
+	if p.reason == prompt.Tick && s.promises.Due(s.now()) {
 		// This wake is the promised one: the short lane must not run it again.
-		s.setPromise(time.Time{}, "", false)
+		s.setPromises(s.promises.Fired(s.now()))
 	}
 	p.facts = s.currentFacts(ctx, p)
-	if s.quiet(ctx, p.reason, p, p.scheduledBy != "" || s.promiseHuman) {
+	if s.quiet(ctx, p.reason, p, p.scheduledBy != "" || len(s.promises) > 0) {
 		s.quietWake(p)
 		return
 	}
@@ -1793,7 +1787,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	te := schedule.TurnEnd{
 		Now: s.now(), Min: s.cfg.MinWake, Max: s.cfg.MaxWake,
 		Human: p.reason == prompt.Human, Tick: p.reason == prompt.Tick,
-		Failed: failed, Promise: s.promiseNow(),
+		Failed: failed, Promises: s.promises, Kept: s.kept,
 	}
 	if res.Next != nil {
 		te.Asked, te.After, te.Why = true, res.Next.After, res.Next.Why
@@ -1807,7 +1801,8 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 		s.log.Warn("schedule not taken as written", "source", w.Source, "note", w.Note, "after", w.After)
 	}
 	s.nextTick, s.scheduledWhy = plan.At, plan.Why
-	s.setPromise(plan.Promise.At, plan.Promise.Why, plan.Promise.Human)
+	s.kept = plan.Kept
+	s.setPromises(plan.Promises)
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
 	s.reportWake(string(p.reason), LaneLong, turnOutcome(failed), res, s.nextTick, string(w.Source))
 	if !failed {

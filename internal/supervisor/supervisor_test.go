@@ -2006,7 +2006,7 @@ func TestAWakeAPersonAskedForRunsUnderAHoldRuleAndAfterARestart(t *testing.T) {
 	h.core.roomMsgs["team"] = append(h.core.roomMsgs["team"], corecli.RoomMessage{Sender: "alice", Name: "alice", Text: "give me a note in 3 min"})
 	h.core.mu.Unlock()
 	h.waitIdle(1)
-	if got := h.sup.led.LoadPromise(); got.At.IsZero() || got.Why != "give the note" {
+	if got := h.sup.led.LoadPromises(); len(got) != 1 || got[0].Why != "give the note" {
 		t.Fatalf("the promise is not kept for a restart: %+v", got)
 	}
 	// The pod restarts: the startup wake is held, the promise stays.
@@ -2025,7 +2025,7 @@ func TestAWakeAPersonAskedForRunsUnderAHoldRuleAndAfterARestart(t *testing.T) {
 	if in := h.script.prompt(2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "give the note") {
 		t.Fatalf("the promised wake did not run with its reason:\n%s", in)
 	}
-	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
+	if got := h.sup.led.LoadPromises(); len(got) != 0 {
 		t.Errorf("a wake that fired is still promised: %+v", got)
 	}
 }
@@ -2131,7 +2131,7 @@ func TestAWakeAPersonAskedForRunsOnTheShortLaneWhileALongTurnWorks(t *testing.T)
 	if h.fast.turnCount() != 1 {
 		t.Fatalf("the promised wake ran twice: %d", h.fast.turnCount())
 	}
-	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
+	if got := h.sup.led.LoadPromises(); len(got) != 0 {
 		t.Errorf("a wake that fired is still promised: %+v", got)
 	}
 }

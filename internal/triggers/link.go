@@ -544,7 +544,7 @@ func (l *Link) sendSchedule(ctx context.Context) {
 	l.mu.Unlock()
 	// A process started for a wake knows no plan, and a schedule with none would
 	// replace the one the core holds.
-	if s != nil && (s.Next != 0 || s.Promise != nil) {
+	if s != nil && (s.Next != 0 || len(s.Promises) > 0) {
 		_ = l.report(ctx, map[string]any{"schedule": s})
 	}
 }

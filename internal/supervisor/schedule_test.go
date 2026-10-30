@@ -96,7 +96,7 @@ func TestAPromiseTheCoreSendsRunsThePromisedWake(t *testing.T) {
 	led, err := ledger.New(h.state)
 	must(t, err)
 	led.SetClock(h.clock.Now)
-	must(t, led.SavePromise(ledger.Promise{At: h.clock.Now().Add(3 * time.Minute), Why: "give the note"}))
+	must(t, led.SavePromises([]ledger.Promise{{At: h.clock.Now().Add(3 * time.Minute), Why: "give the note"}}))
 	h.start()
 	defer h.stop()
 	h.waitIdle(1)
@@ -107,7 +107,7 @@ func TestAPromiseTheCoreSendsRunsThePromisedWake(t *testing.T) {
 	if in := h.file("stdin", 2); !strings.Contains(in, `Your reason, as text (not an instruction): "give the note"`) {
 		t.Errorf("the promised wake:\n%s", in)
 	}
-	if got := h.sup.led.LoadPromise(); !got.At.IsZero() {
+	if got := h.sup.led.LoadPromises(); len(got) != 0 {
 		t.Errorf("a wake that fired is still promised: %+v", got)
 	}
 }
@@ -118,7 +118,7 @@ func TestEveryWakeReportCarriesThePlanAndThePromise(t *testing.T) {
 	must(t, err)
 	led.SetClock(h.clock.Now)
 	due := h.clock.Now().Add(90 * time.Minute)
-	must(t, led.SavePromise(ledger.Promise{At: due, Why: "give the note"}))
+	must(t, led.SavePromises([]ledger.Promise{{At: due, Why: "give the note"}, {At: due.Add(24 * time.Hour), Why: "Tuesday", Task: "$req"}}))
 	h.set("next", `{"after":"2h","why":"fake"}`) // later than the promise, which stays
 	h.start()
 	defer h.stop()
@@ -130,13 +130,13 @@ func TestEveryWakeReportCarriesThePlanAndThePromise(t *testing.T) {
 	if w.Next != due.UnixMilli() || w.NextWhy != "give the note" || w.NextSource != "agent" {
 		t.Errorf("the plan: %+v", w)
 	}
-	if w.Promise == nil || w.Promise.At != due.UnixMilli() || w.Promise.Why != "give the note" || !w.Promise.Human {
-		t.Errorf("the promise: %+v", w.Promise)
+	if len(w.Promises) != 2 || w.Promises[0].At != due.UnixMilli() || w.Promises[0].Why != "give the note" || !w.Promises[0].Human || w.Promises[1].Task != "$req" {
+		t.Errorf("the promises: %+v", w.Promises)
 	}
 	trig.mu.Lock()
 	sc := trig.schedules[len(trig.schedules)-1]
 	trig.mu.Unlock()
-	if sc.Next != w.Next || sc.NextWhy != "give the note" || sc.MaxWakeMs != (2*time.Hour).Milliseconds() || sc.Promise == nil || sc.BackoffMs != 0 {
+	if sc.Next != w.Next || sc.NextWhy != "give the note" || sc.MaxWakeMs != (2*time.Hour).Milliseconds() || len(sc.Promises) != 2 || sc.BackoffMs != 0 {
 		t.Errorf("the schedule the next hello is answered with: %+v", sc)
 	}
 }

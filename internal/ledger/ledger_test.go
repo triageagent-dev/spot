@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -147,5 +148,43 @@ func TestRoomCursorsRoundTrip(t *testing.T) {
 	}
 	if c := l.LoadRoomCursors(); c["team"] != "1761000000000" {
 		t.Fatalf("cursors: %v", c)
+	}
+}
+
+func TestPromisesAreAListAndAnOldSinglePromiseIsAListOfOne(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	if got := l.LoadPromises(); len(got) != 0 {
+		t.Fatalf("a fresh ledger holds %+v", got)
+	}
+	// An earlier layout's file.
+	if err := os.WriteFile(l.Path(PromiseFile), []byte(`{"at":"2026-10-30T12:00:00Z","why":"the note"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := l.LoadPromises()
+	if len(got) != 1 || !got[0].At.Equal(at) || got[0].Why != "the note" || !got[0].Human {
+		t.Fatalf("an old promise is a list of one: %+v", got)
+	}
+	// The list replaces it for good.
+	later := []Promise{{At: at.Add(2 * time.Hour), Why: "b", Human: true, Task: "$req"}, {At: at.Add(time.Hour), Why: "a", Human: true}}
+	if err := l.SavePromises(later); err != nil {
+		t.Fatal(err)
+	}
+	got = l.LoadPromises()
+	if len(got) != 2 || got[0].Why != "a" || got[1].Task != "$req" {
+		t.Fatalf("saved list, earliest first: %+v", got)
+	}
+	if _, err := os.Stat(l.Path(PromiseFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the old file is still there: %v", err)
+	}
+	if err := l.SavePromises(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.LoadPromises(); len(got) != 0 {
+		t.Fatalf("cleared: %+v", got)
 	}
 }

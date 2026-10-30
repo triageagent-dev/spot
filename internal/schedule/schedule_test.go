@@ -64,42 +64,97 @@ func TestAfterTurnKeepsAnEarlierPromiseAndMakesAPersonsRequestOne(t *testing.T) 
 
 	// A person asks for a note in 3 minutes: not held to the floor, and a promise.
 	p := AfterTurn(TurnEnd{Now: now, Min: min, Max: max, Human: true, Asked: true, After: "3m", Why: "the note"})
-	if p.Wake.After != 3*time.Minute || p.Promise.At != now.Add(3*time.Minute) || !p.Promise.Human || p.Promise.Why != "the note" {
+	if len(p.Promises) != 1 || p.Wake.After != 3*time.Minute || p.Promises[0].At != now.Add(3*time.Minute) || !p.Promises[0].Human || p.Promises[0].Why != "the note" {
 		t.Fatalf("a person's request: %+v", p)
 	}
 
 	// An edge wake that wants the idle schedule does not push the promise back.
-	q := AfterTurn(TurnEnd{Now: now.Add(time.Minute), Min: min, Max: max, Asked: true, After: "1h", Why: "idle", Promise: p.Promise})
-	if q.At != p.Promise.At || q.Why != "the note" || q.Wake.Note == "" || q.Promise != p.Promise {
+	q := AfterTurn(TurnEnd{Now: now.Add(time.Minute), Min: min, Max: max, Asked: true, After: "1h", Why: "idle", Promises: p.Promises})
+	if q.At != p.Promises[0].At || q.Why != "the note" || q.Wake.Note == "" || len(q.Promises) != 1 {
 		t.Fatalf("an earlier promise is kept: %+v", q)
 	}
 
 	// The promised wake itself clears it; the agent's own request is then not a human promise.
-	r := AfterTurn(TurnEnd{Now: now.Add(3 * time.Minute), Min: min, Max: max, Tick: true, Asked: true, After: "1h", Why: "idle", Promise: p.Promise})
-	if r.At != now.Add(3*time.Minute).Add(time.Hour) || r.Promise.Human {
+	r := AfterTurn(TurnEnd{Now: now.Add(3 * time.Minute), Min: min, Max: max, Tick: true, Asked: true, After: "1h", Why: "idle", Promises: p.Promises})
+	if r.At != now.Add(3*time.Minute).Add(time.Hour) || len(r.Promises) != 0 {
 		t.Fatalf("after the promised wake: %+v", r)
 	}
 
 	// No call: the minimum; a failure raises it to the backoff.
 	f := AfterTurn(TurnEnd{Now: now, Min: min, Max: max, Failed: true, Backoff: 40 * time.Minute})
-	if f.Wake.Source != SourceMissing || f.Wake.After != 40*time.Minute || !f.Promise.None() {
+	if f.Wake.Source != SourceMissing || f.Wake.After != 40*time.Minute || len(f.Promises) != 0 || !f.Kept.None() {
 		t.Fatalf("a failed turn: %+v", f)
 	}
 }
 
-func TestAfterShortTurnMovesThePromiseOnlyEarlier(t *testing.T) {
+func TestAnEarlierWakeTheAgentAskedForOnItsOwnIsKeptButIsNoPromise(t *testing.T) {
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	cur := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "5m", "later", Promise{})
-	if cur.At != now.Add(5*time.Minute) || !cur.Human {
+	min, max := 10*time.Minute, 2*time.Hour
+	a := AfterTurn(TurnEnd{Now: now, Min: min, Max: max, Asked: true, After: "30m", Why: "look again"})
+	if len(a.Promises) != 0 || a.Kept.At != now.Add(30*time.Minute) {
+		t.Fatalf("an agent's own wake: %+v", a)
+	}
+	b := AfterTurn(TurnEnd{Now: now.Add(time.Minute), Min: min, Max: max, Asked: true, After: "2h", Why: "routine", Kept: a.Kept})
+	if b.At != a.Kept.At || b.Why != "look again" || len(b.Promises) != 0 {
+		t.Fatalf("kept: %+v", b)
+	}
+}
+
+func TestPromisesAreAListAndNoneMovesAnother(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	var ps Promises
+	for _, d := range []time.Duration{72 * time.Hour, 24 * time.Hour, 96 * time.Hour} {
+		var ok bool
+		if ps, ok = ps.Add(now, Promise{At: now.Add(d), Why: "ask", Human: true}); !ok {
+			t.Fatalf("%v refused", d)
+		}
+	}
+	if len(ps) != 3 || ps[0].At != now.Add(24*time.Hour) || ps[2].At != now.Add(96*time.Hour) {
+		t.Fatalf("Monday, Tuesday and Friday are three entries, earliest first: %+v", ps)
+	}
+	if got, ok := ps.Add(now, Promise{At: now.Add(24 * time.Hour), Why: "ask", Human: true}); ok || len(got) != 3 {
+		t.Fatalf("the same promise twice: %+v", got)
+	}
+	if _, ok := ps.Add(now, Promise{At: now.Add(MaxPromiseAhead + time.Hour), Why: "too far"}); ok {
+		t.Fatal("a promise beyond seven days was taken")
+	}
+	if _, ok := ps.Add(now, Promise{Why: "no time"}); ok {
+		t.Fatal("a promise without a time was taken")
+	}
+	var full Promises
+	for i := 0; i < MaxPromises; i++ {
+		full, _ = full.Add(now, Promise{At: now.Add(time.Duration(i+1) * time.Minute), Why: "x"})
+	}
+	if len(full) != MaxPromises {
+		t.Fatalf("held %d", len(full))
+	}
+	if _, ok := full.Add(now, Promise{At: now.Add(time.Hour), Why: "one more"}); ok {
+		t.Fatal("a promise past the cap was taken")
+	}
+	if got := ps.Fired(now.Add(24 * time.Hour)); len(got) != 2 || got[0].At != now.Add(72*time.Hour) {
+		t.Fatalf("a fired promise is removed, the others stay: %+v", got)
+	}
+	if !ps.Due(now.Add(24*time.Hour)) || ps.Due(now) {
+		t.Fatal("due")
+	}
+}
+
+func TestAfterShortTurnAddsAPromiseNothingMovesAnother(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	cur := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "5m", "later", nil)
+	if len(cur) != 1 || cur[0].At != now.Add(5*time.Minute) || !cur[0].Human {
 		t.Fatalf("first: %+v", cur)
 	}
-	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "30m", "much later", cur); got != cur {
-		t.Fatalf("a later request moved the promise: %+v", got)
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "30m", "much later", cur); len(got) != 2 || got[0] != cur[0] {
+		t.Fatalf("a later request must be one more entry: %+v", got)
 	}
-	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "2m", "sooner", cur); got.At != now.Add(2*time.Minute) {
-		t.Fatalf("an earlier request was not taken: %+v", got)
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "2m", "sooner", cur); len(got) != 2 || got[0].At != now.Add(2*time.Minute) {
+		t.Fatalf("an earlier request goes first: %+v", got)
 	}
-	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, false, "", "", cur); got != cur {
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, false, "", "", cur); len(got) != 1 {
 		t.Fatalf("no request changed it: %+v", got)
+	}
+	if got := AfterShortTurn(now, 10*time.Minute, 2*time.Hour, true, "9h", "idle", cur); len(got) != 1 {
+		t.Fatalf("an idle request is no promise: %+v", got)
 	}
 }

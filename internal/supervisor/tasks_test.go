@@ -59,7 +59,7 @@ func TestATaskRunsBesideTheTurnThatStartedItAndItsResultIsInTheDigest(t *testing
 	h.waitFor("its line of activity", func() bool {
 		for _, w := range trig.wakeLines() {
 			if w.Lane == "task" {
-				return w.Outcome == "turn" && w.Key != "" && w.Title == "check checkout" && w.Next == 0 && w.Promise == nil
+				return w.Outcome == "turn" && w.Key != "" && w.Title == "check checkout" && w.Next == 0 && len(w.Promises) == 0
 			}
 		}
 		return false

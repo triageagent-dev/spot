@@ -68,11 +68,11 @@ type Wake struct {
 	Next       int64  `json:"next,omitempty"`
 	NextSource string `json:"nextSource,omitempty"`
 	// NextWhy is the spot's own words for the wake at Next, which the core hands
-	// back with the tick. Promise is the wake the agent promised, as it stands
+	// back with the tick. Promises are the wakes the spot owes, as they stand
 	// when this wake ends; absent = none. A wake of the long or the short lane
 	// replaces the core's record of both, so each carries the schedule as it is.
-	NextWhy string   `json:"nextWhy,omitempty"`
-	Promise *Promise `json:"promise,omitempty"`
+	NextWhy  string    `json:"nextWhy,omitempty"`
+	Promises []Promise `json:"promises,omitempty"`
 	// Trace is one line per model request and tool call of the wake, 40 at most
 	// (the first 39, then a "cut" line saying how many were left out): names and
 	// numbers, never arguments or results.
@@ -93,12 +93,17 @@ type Step struct {
 	Tokens int64  `json:"tokens,omitempty"`
 }
 
-// Promise is the wake the agent promised for later, as the core is told it: At
-// in ms; Human says it answers a person's request.
+// Promise is a wake the spot owes, as the core is told it: At in ms; Human says
+// it answers a person's request; Task names the request message a promise made
+// from a due answers. For and Room are Tria's and are only carried back. The
+// list is sorted by At, 20 at most, each at most seven days out.
 type Promise struct {
 	At    int64  `json:"at"`
 	Why   string `json:"why,omitempty"`
 	Human bool   `json:"human,omitempty"`
+	For   string `json:"for,omitempty"`
+	Room  string `json:"room,omitempty"`
+	Task  string `json:"task,omitempty"`
 }
 
 // Schedule is what the spot has planned, sent once after the core's hello so a
@@ -107,12 +112,12 @@ type Promise struct {
 // the promise is due. BackoffMs is the wait a failed wake left, 0 = none;
 // MaxWakeMs is the longest the spot sleeps without a word from the core.
 type Schedule struct {
-	Next       int64    `json:"next,omitempty"`
-	NextWhy    string   `json:"nextWhy,omitempty"`
-	NextSource string   `json:"nextSource,omitempty"`
-	Promise    *Promise `json:"promise,omitempty"`
-	BackoffMs  int64    `json:"backoffMs,omitempty"`
-	MaxWakeMs  int64    `json:"maxWakeMs,omitempty"`
+	Next       int64     `json:"next,omitempty"`
+	NextWhy    string    `json:"nextWhy,omitempty"`
+	NextSource string    `json:"nextSource,omitempty"`
+	Promises   []Promise `json:"promises,omitempty"`
+	BackoffMs  int64     `json:"backoffMs,omitempty"`
+	MaxWakeMs  int64     `json:"maxWakeMs,omitempty"`
 }
 
 // Order is a wake the core asks for: Reason is "tick" (the planned wake is due)

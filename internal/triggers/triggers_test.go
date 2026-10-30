@@ -357,7 +357,7 @@ func TestTheScheduleIsSentOnceAfterTheHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.SetSchedule(Schedule{Next: 1000, NextWhy: "look again", NextSource: "agent", Promise: &Promise{At: 900, Why: "the note", Human: true}, BackoffMs: 5, MaxWakeMs: 7200000})
+	c.SetSchedule(Schedule{Next: 1000, NextWhy: "look again", NextSource: "agent", Promises: []Promise{{At: 900, Why: "the note", Human: true}, {At: 950, Why: "later", Task: "$req"}}, BackoffMs: 5, MaxWakeMs: 7200000})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -366,7 +366,7 @@ func TestTheScheduleIsSentOnceAfterTheHello(t *testing.T) {
 		select {
 		case m := <-frames:
 			var sc Schedule
-			if err := json.Unmarshal(m["schedule"], &sc); err != nil || sc.Next != 1000 || sc.NextWhy != "look again" || sc.Promise == nil || sc.Promise.At != 900 || !sc.Promise.Human || sc.BackoffMs != 5 || sc.MaxWakeMs != 7200000 {
+			if err := json.Unmarshal(m["schedule"], &sc); err != nil || sc.Next != 1000 || sc.NextWhy != "look again" || len(sc.Promises) != 2 || sc.Promises[0].At != 900 || !sc.Promises[0].Human || sc.Promises[1].Task != "$req" || sc.BackoffMs != 5 || sc.MaxWakeMs != 7200000 {
 				t.Fatalf("connection %d: %v %+v", i+1, err, string(m["schedule"]))
 			}
 		case <-time.After(10 * time.Second):
@@ -374,11 +374,11 @@ func TestTheScheduleIsSentOnceAfterTheHello(t *testing.T) {
 		}
 	}
 	wait(t, "the second hello", c.Connected)
-	c.ReportWake(Wake{TS: 1, Reason: "tick", Outcome: "turn", Next: 2000, NextWhy: "why", Promise: &Promise{At: 1500, Why: "p"}})
+	c.ReportWake(Wake{TS: 1, Reason: "tick", Outcome: "turn", Next: 2000, NextWhy: "why", Promises: []Promise{{At: 1500, Why: "p"}}})
 	select {
 	case m := <-frames:
 		var w Wake
-		if err := json.Unmarshal(m["wake"], &w); err != nil || w.NextWhy != "why" || w.Promise == nil || w.Promise.At != 1500 {
+		if err := json.Unmarshal(m["wake"], &w); err != nil || w.NextWhy != "why" || len(w.Promises) != 1 || w.Promises[0].At != 1500 {
 			t.Fatalf("wake: %v %s", err, m["wake"])
 		}
 	case <-time.After(10 * time.Second):
