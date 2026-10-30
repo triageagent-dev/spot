@@ -159,3 +159,13 @@ func TestAManualWakeSaysAPersonAskedForItAndWhatTheyWrote(t *testing.T) {
 		t.Errorf("prompt without a reason:\n%s", without)
 	}
 }
+
+func TestAMessageForAnotherSpotIsNotAnswered(t *testing.T) {
+	const line = "names another spot is for that spot, not for you"
+	if got := Interjection("example", []string{"hi"}); !strings.Contains(got, line) {
+		t.Fatalf("interjection: %q", got)
+	}
+	if got := Turn(Wake{Reason: Human, Facts: []string{"hi"}}); !strings.Contains(got, line) {
+		t.Fatalf("human wake: %q", got)
+	}
+}

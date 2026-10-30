@@ -110,7 +110,7 @@ func Turn(w Wake) string {
 	case Edge:
 		b.WriteString("The core changed while you slept:\n")
 	case Human:
-		b.WriteString("Someone wrote to you:\n")
+		b.WriteString("Someone wrote to you. A message whose @mention names another spot is for that spot, not for you: do not answer it.\n")
 	case Manual:
 		if w.ScheduledBy != "" {
 			fmt.Fprintf(&b, "A person asked for this wake from the console, outside your schedule. What they wrote, as text: %q\n", w.ScheduledBy)
@@ -167,7 +167,7 @@ func Interjection(chatName string, facts []string) string {
 	if chatName != "" {
 		fmt.Fprintf(&b, " (in the messenger you appear as %s)", chatName)
 	}
-	b.WriteString(":\n")
+	b.WriteString(". A message whose @mention names another spot is for that spot, not for you: do not answer it.\n")
 	for _, f := range facts {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}

@@ -214,6 +214,25 @@ func TestParseRoomCoreShape(t *testing.T) {
 	}
 }
 
+func TestParseRoomCarriesTheCoresAddressee(t *testing.T) {
+	m, _, err := ParseRoom(`{"messages":[`+
+		`{"id":"$a","sender":"@u.alice:s","body":"@other hi","ts":1,"mentions":["other"],"forYou":false},`+
+		`{"id":"$b","sender":"@u.alice:s","body":"hi all","ts":2,"mentions":[],"forYou":true},`+
+		`{"id":"$c","sender":"@u.alice:s","body":"old core","ts":3}]}`, "")
+	if err != nil || len(m) != 3 {
+		t.Fatalf("%+v %v", m, err)
+	}
+	if len(m[0].Mentions) != 1 || m[0].Mentions[0] != "other" || m[0].ForYou == nil || *m[0].ForYou {
+		t.Fatalf("addressed to another spot: %+v", m[0])
+	}
+	if len(m[1].Mentions) != 0 || m[1].ForYou == nil || !*m[1].ForYou {
+		t.Fatalf("for nobody, this spot answers: %+v", m[1])
+	}
+	if m[2].ForYou != nil || m[2].Mentions != nil {
+		t.Fatalf("a core without the fields must leave them unset: %+v", m[2])
+	}
+}
+
 func TestParseRoomShowsAnAttachment(t *testing.T) {
 	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.alice:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.alice:s","body":"hi","ts":6}]}`, "")
 	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {
