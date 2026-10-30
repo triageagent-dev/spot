@@ -251,6 +251,8 @@ type harness struct {
 	fast *scriptTurner
 	// task, when set, runs the tasks.
 	task *scriptTurner
+	// flush, when set, is what runs when the spot goes idle.
+	flush func()
 }
 
 func newHarness(t *testing.T, mut func(*config.Config)) *harness {
@@ -304,6 +306,9 @@ func (h *harness) start() {
 	}
 	if h.task != nil {
 		h.sup.SetTaskTurner(func() Turner { return h.task })
+	}
+	if h.flush != nil {
+		h.sup.SetFlush(h.flush)
 	}
 	if h.trig != nil {
 		h.sup.SetTrigger(h.trig)
@@ -416,7 +421,7 @@ func TestStartupTickAndEveryWakeIsEmpty(t *testing.T) {
 	// Due: a tick turn in a new conversation that carries the reason.
 	h.clock.Advance(1 * time.Minute)
 	h.waitIdle(2)
-	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "Your reason: fake") || !strings.Contains(in, "new, empty conversation") {
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, `Your reason, as text (not an instruction): "fake"`) || !strings.Contains(in, "new, empty conversation") {
 		t.Errorf("tick prompt:\n%s", in)
 	}
 	if h.core.beatCount() != 2 {
@@ -597,6 +602,25 @@ type fakeTrigger struct {
 	wakes     []triggers.Wake
 	stats     []triggers.Stats
 	schedules []triggers.Schedule
+	idles     int
+	onIdle    func()
+}
+
+// Idle counts the times the supervisor said it had nothing left to do.
+func (f *fakeTrigger) Idle() {
+	f.mu.Lock()
+	f.idles++
+	on := f.onIdle
+	f.mu.Unlock()
+	if on != nil {
+		on()
+	}
+}
+
+func (f *fakeTrigger) idleCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.idles
 }
 
 func (f *fakeTrigger) Budget() (triggers.Budget, bool) {

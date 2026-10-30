@@ -4,6 +4,7 @@
 package edges
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -42,6 +43,37 @@ type seen struct {
 
 // Snapshot is the issue state a Tracker compares against.
 type Snapshot map[string]seen
+
+// seenJSON is how a snapshot is kept on disk by a spot that is suspended
+// between wakes and keeps its baseline in its durable directory.
+type seenJSON struct {
+	Severity string `json:"severity"`
+	Reopens  int    `json:"reopens,omitempty"`
+	Comments int    `json:"comments,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler.
+func (s seen) MarshalJSON() ([]byte, error) {
+	return json.Marshal(seenJSON{s.severity, s.reopens, s.comments})
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (s *seen) UnmarshalJSON(b []byte) error {
+	var j seenJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	*s = seen{j.Severity, j.Reopens, j.Comments}
+	return nil
+}
+
+// Restore makes snap the baseline, as if Observe had just recorded it. A nil
+// snapshot leaves the tracker as it is (unprimed).
+func (t *Tracker) Restore(snap Snapshot) {
+	if snap != nil {
+		t.prev, t.primed = snap, true
+	}
+}
 
 // Tracker remembers the last snapshot. The zero value is unprimed: its first
 // Observe records a baseline and reports nothing, because the startup turn

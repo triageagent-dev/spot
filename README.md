@@ -54,6 +54,17 @@ the tasks, and wakes itself only when the core has sent nothing for `--max-wake`
 The Temporal engine is gone: a release whose values still set `engine.type:
 temporal` fails to render. See the specification.
 
+## Run as an actor of Agent Substrate
+
+`--runtime substrate` (the core's ADR-107) runs the spot as an actor: it is
+suspended while it is idle and holds no credential of any kind. The model auth
+is `injected` (the spot sends a placeholder key and the egress policy puts the real one on the request from a Secret), the core identity is the
+certificate, and the install is the two manifests in `deploy/substrate/` (an
+ActorTemplate and an EgressPolicy) applied with the substrate CLI; the Helm
+chart installs the deployment runtime only. The spot serves `/readyz` and
+`/frame` on port 80, talks to the core in requests and reports when it is idle.
+See the specification.
+
 ## Read more
 
 - [Specification](https://triageagent.dev/spot/spec.html): the loop, tools, credentials, spans, spend, flags.

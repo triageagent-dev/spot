@@ -1,0 +1,37 @@
+# The egress policy of the spot's actor. The actor sends the placeholder
+# "replaced-by-egress" in each header below; the platform puts the value of the
+# Secret there, so the actor never holds a credential:
+#   kubectl ate create egress-policy <actor-name> -a <atespace> -f egress-policy.yaml
+# In-cluster names are fully qualified (<svc>.<ns>.svc.cluster.local): the
+# platform's DNS relay does not expand short names.
+# A rule applies to every request to its hostname and ports, and replaces a
+# header only on a request that carries it. Give the core and ego different
+# hostnames (or ports): on a shared one the core would get ego's bearer.
+rules:
+# The core: the one-time key of the first join (the Secret may be dropped from
+# the rule once the spot has joined; a spent key left in place is harmless).
+- http:
+    hostnames: [<core host>]
+    ports: {numbers: [<core port>]}
+    effects:
+      replaceHeaders:
+      - header: X-Triage-Enroll-Key
+        credentialUri: ate-secret://k8s.io/default/<namespace>/<enroll key Secret>/key
+# The model API.
+- https:
+    hostnames: [api.anthropic.com]
+    effects:
+      replaceHeaders:
+      - header: x-api-key
+        credentialUri: ate-secret://k8s.io/default/<namespace>/<model key Secret>/<key>
+# ego (drop with the ego lines of the template): the sender token.
+- http:
+    hostnames: [<ego host>]
+    ports: {numbers: [<otlp port>, <ego mcp port>]}
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: 'Bearer '
+        credentialUri: ate-secret://k8s.io/default/<namespace>/<ego token Secret>/<key>
+# Each connector the spot uses (--connectors-json) needs a rule of its own with
+# its hostname and port, http or https.

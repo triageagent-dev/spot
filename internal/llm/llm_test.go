@@ -319,3 +319,63 @@ func TestFakeRecordsAndScripts(t *testing.T) {
 		t.Errorf("seen %d left %d", len(f.Requests()), f.Left())
 	}
 }
+
+func TestInjectedAuthSendsAPlaceholderKeyAndNothingFromTheEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-from-env")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-from-env")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://elsewhere.invalid")
+	var hdr http.Header
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hdr, path = r.Header.Clone(), r.URL.Path
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"test-model","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	a, err := NewAnthropic(context.Background(), Options{Auth: AuthInjected, Model: "test-model", BaseURL: srv.URL + "/anthropic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Complete(context.Background(), Request{Messages: []Message{UserText("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/anthropic/v1/messages" {
+		t.Errorf("the request went to %q, not under the base URL", path)
+	}
+	// The egress replaces the header only when the request carries it.
+	if got := hdr.Get("X-Api-Key"); got != injectedKey {
+		t.Errorf("x-api-key = %q, want the placeholder", got)
+	}
+	for _, v := range hdr.Values("X-Api-Key") {
+		if strings.Contains(v, "from-env") {
+			t.Error("a key from the environment was sent")
+		}
+	}
+	if v := hdr.Get("Authorization"); v != "" {
+		t.Errorf("an Authorization header was sent: %q", v)
+	}
+}
+
+// hostRecorder is a transport that answers every request and notes where it went.
+type hostRecorder struct{ host, scheme string }
+
+func (h *hostRecorder) Do(r *http.Request) (*http.Response, error) {
+	h.host, h.scheme = r.URL.Host, r.URL.Scheme
+	body := `{"id":"m","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+func TestInjectedAuthPinsTheAPIHostWhenNoBaseURLIsGiven(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://elsewhere.invalid")
+	rec := &hostRecorder{}
+	a, err := NewAnthropic(context.Background(), Options{Auth: AuthInjected, Model: "m", HTTPClient: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Complete(context.Background(), Request{Messages: []Message{UserText("hi")}}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.host != "api.anthropic.com" || rec.scheme != "https" {
+		t.Errorf("the request went to %s://%s", rec.scheme, rec.host)
+	}
+}

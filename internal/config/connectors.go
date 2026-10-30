@@ -43,9 +43,23 @@ func LoadConnectors(path string) ([]Connector, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--connectors-file: %w", err)
 	}
+	cs, err := parseConnectors(b, "--connectors-file")
+	return cs, err
+}
+
+// ParseConnectors reads and validates connectors given as the JSON itself
+// (--connectors-json), for a runtime that has no file to read one from.
+func ParseConnectors(js string) ([]Connector, error) {
+	if strings.TrimSpace(js) == "" {
+		return nil, nil
+	}
+	return parseConnectors([]byte(js), "--connectors-json")
+}
+
+func parseConnectors(b []byte, flagName string) ([]Connector, error) {
 	var cs []Connector
 	if err := json.Unmarshal(b, &cs); err != nil {
-		return nil, fmt.Errorf("--connectors-file: %w", err)
+		return nil, fmt.Errorf("%s: %w", flagName, err)
 	}
 	seen := map[string]bool{}
 	var errs []error

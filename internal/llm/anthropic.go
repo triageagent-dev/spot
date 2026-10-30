@@ -25,6 +25,11 @@ const (
 	// AuthVertex is Claude on Google Vertex AI through Application Default
 	// Credentials, the pod's Workload Identity.
 	AuthVertex = "vertex"
+	// AuthInjected sends a placeholder API key and holds no credential: something
+	// between the spot and the API (the egress gateway of a substrate actor, the
+	// core's ADR-107) replaces the header with the real key. The header must be
+	// there for it to be replaced.
+	AuthInjected = "injected"
 )
 
 // DefaultMaxTokens is the output cap of one request when the request names none.
@@ -44,6 +49,11 @@ type Federation struct {
 // anthropicAPIURL is the API host used when none is given, so no
 // environment variable can choose it.
 const anthropicAPIURL = "https://api.anthropic.com"
+
+// injectedKey is what the spot sends as its API key with AuthInjected. It is not a
+// credential: the egress that injects the real one replaces the header only when
+// the request carries it.
+const injectedKey = "replaced-by-egress"
 
 type Options struct {
 	Auth  string
@@ -120,8 +130,16 @@ func NewAnthropic(ctx context.Context, o Options) (*Anthropic, error) {
 			region = "global"
 		}
 		opts = append(opts, vertex.WithGoogleAuth(ctx, region, o.VertexProject))
+	case AuthInjected:
+		// A placeholder, never a real key, and nothing from the environment: a
+		// stray ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL must neither be sent nor
+		// choose the host. The host is pinned unless a base URL is given.
+		opts = append(opts, option.WithoutEnvironmentDefaults(), option.WithAPIKey(injectedKey))
+		if o.BaseURL == "" {
+			opts = append(opts, option.WithBaseURL(anthropicAPIURL))
+		}
 	default:
-		return nil, fmt.Errorf("llm: auth %q is not one of key, federation, vertex", o.Auth)
+		return nil, fmt.Errorf("llm: auth %q is not one of key, federation, vertex, injected", o.Auth)
 	}
 	if o.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(o.BaseURL))

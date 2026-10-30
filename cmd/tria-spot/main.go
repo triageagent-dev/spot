@@ -8,10 +8,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -124,17 +127,31 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		log.Info("core tools: all of them; the core's Role is the bound")
 	}
 
-	// The core's stream opens before anything is read from the core: with a
+	// The core's link opens before anything is read from the core: with a
 	// certificate identity the access token comes over it, and the spot joins (and
-	// waits for a person to approve it) first.
-	var stream *triggers.Client
+	// waits for a person to approve it) first. A deployment holds a stream; an
+	// actor of Agent Substrate holds requests and answers the core on its port.
+	var stream coreLink
 	if cfg.CoreAPIURL != "" {
-		tc, err := newStream(cfg, log)
+		tc, err := newLink(cfg, log)
 		if err != nil {
-			log.Error("trigger stream", "err", err)
+			log.Error("core link", "err", err)
 			return 1
 		}
-		go tc.Run(ctx)
+		if l, ok := tc.(*triggers.Link); ok {
+			// The server listens at once and the link starts with the core's first
+			// request, which the process then waits for.
+			shutdown, err := serve(cfg.Listen, l.Handler(), log)
+			if err != nil {
+				log.Error("listen", "addr", cfg.Listen, "err", err)
+				return 1
+			}
+			defer shutdown()
+			l.Serve(ctx)
+			log.Info("waiting for the core's first request")
+		} else {
+			go tc.Run(ctx)
+		}
 		stream = tc
 		if cfg.CertificateIdentity() {
 			log.Info("identity: certificate; waiting for the core to accept the spot", "stateDir", cfg.IdentityDir)
@@ -183,6 +200,15 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		sup.SetFastTurner(fast)
 		log.Info("short lane on", "maxToolCalls", cfg.FastMaxToolCalls, "maxTurnTokens", cfg.FastMaxTurnTokens)
 	}
+	if tel != nil && cfg.Substrate() {
+		sup.SetFlush(func() {
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tel.Flush(fctx); err != nil {
+				log.Warn("flushing spans", "err", err)
+			}
+		})
+	}
 	if stream != nil {
 		sup.SetTrigger(stream)
 		stream.SetControl(sup.Control)
@@ -225,6 +251,9 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Cli
 	case config.AuthVertex:
 		o.VertexProject, o.VertexRegion = cfg.VertexProject, cfg.VertexRegion
 		log.Info("model auth: Google Vertex AI with application default credentials", "project", cfg.VertexProject, "region", cfg.VertexRegion)
+	case config.AuthInjected:
+		o.BaseURL = cfg.LLMBaseURL
+		log.Info("model auth: a placeholder key; the egress puts the real one on the request", "baseURL", cfg.LLMBaseURL)
 	default:
 		log.Info("model auth: API key from a file")
 	}
@@ -305,17 +334,64 @@ func loadInstruction(ctx context.Context, core *corecli.Client, id string, log *
 	}
 }
 
-// newStream builds the client of the core's trigger stream: with the bearer token
-// of --core-token-file, or, with --core-ca-fingerprint, by certificate.
-func newStream(cfg config.Config, log *slog.Logger) (*triggers.Client, error) {
+// coreLink is the core's channel to the supervisor: the websocket stream of a
+// deployment, or the HTTP link of an actor.
+type coreLink interface {
+	supervisor.Trigger
+	SetControl(triggers.ControlFunc)
+	Run(context.Context)
+	WaitReady(context.Context) error
+}
+
+// newLink builds the client of the core's channel: the HTTP link for a substrate
+// actor; otherwise the trigger stream, with the bearer token of
+// --core-token-file, or, with --core-ca-fingerprint, by certificate.
+func newLink(cfg config.Config, log *slog.Logger) (coreLink, error) {
 	if !cfg.CertificateIdentity() {
 		return triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
 	}
-	id, err := identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)
+	cert := triggers.Cert{
+		Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile, EnrollKeyInjected: cfg.EnrollKeyInjected,
+	}
+	open := func() (*identity.Identity, error) {
+		return identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)
+	}
+	if cfg.Substrate() {
+		// The key is made when the core first asks, not when the process starts: an
+		// actor is booted to be snapshotted too, and a key made then would be in
+		// every actor made from the snapshot.
+		cert.Open = open
+		return triggers.NewLink(cfg.CoreAPIURL, cert, log)
+	}
+	id, err := open()
 	if err != nil {
 		return nil, err
 	}
-	return triggers.NewCert(cfg.CoreAPIURL, triggers.Cert{
-		ID: id, Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile,
-	}, log)
+	cert.ID = id
+	return triggers.NewCert(cfg.CoreAPIURL, cert, log)
+}
+
+// serve answers the core's requests and the wake-up probe on addr until the
+// returned function is called. It listens before it returns, so a port in use
+// fails the start instead of the probe.
+func serve(addr string, h http.Handler, log *slog.Logger) (func(), error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	srv := &http.Server{
+		Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
+	}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("http server", "err", err)
+		}
+	}()
+	log.Info("listening for the core", "addr", ln.Addr().String())
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, nil
 }

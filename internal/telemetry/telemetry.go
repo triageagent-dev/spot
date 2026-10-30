@@ -29,6 +29,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/triageagent-dev/spot/internal/injected"
 	"github.com/triageagent-dev/spot/internal/llm"
 )
 
@@ -133,7 +134,10 @@ type bearer struct {
 }
 
 func (b *bearer) RoundTrip(r *http.Request) (*http.Response, error) {
-	if b.file != "" {
+	if tok, ok := injected.Read(b.file); ok {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer "+tok)
+	} else if b.file != "" {
 		if raw, err := os.ReadFile(b.file); err == nil {
 			if tok := strings.TrimSpace(string(raw)); tok != "" {
 				r = r.Clone(r.Context())

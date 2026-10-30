@@ -92,6 +92,22 @@ The core keeps the spot’s schedule (the core’s ADR-106): the spot decides wh
 | Restart | A restart resumes at the next wake; a turn it cuts is reported on the next start and redone from its first step. The caps bound what a redo costs, and the spot’s writes to the core are upserts and comments, so repeating one is safe. A task a restart cuts is not resumed. The record of what each model step did is the span ego holds. |
 | Failures | A turn that fails, or runs past `--turn-timeout`, is a failed wake with a backoff of `--min-wake`, doubling to `--max-wake`; the backoff is in the `schedule` frame. A tool server that is down is left out of the turn. |
 
+### Runtimes
+
+`--runtime deployment` (the default) is a pod with a websocket to the core. `--runtime substrate` runs the spot as an actor of Agent Substrate (the core’s ADR-107): the platform suspends an idle actor to a snapshot and resumes it on a request, so the spot holds nothing between wakes but what is on `/state`. The supervisor, the lanes, the tools and the prompt are the same.
+
+| Part | Rule |
+|---|---|
+| The process | One binary, one image. It serves HTTP on `--listen` (`:80`): `GET /readyz`, which answers 200 as soon as the server listens (the actor’s wake-up probe; the join and the hello are done inside the core’s first request, which waits for them), and `POST /frame`. The snapshot keeps only the volumes, so every wake starts a new process. There is no startup wake and no timer of its own: the core’s schedule (ADR-106) is the only clock, and an order from the core is taken as it is, because a new process holds neither the plan nor the promise. |
+| Link to the core | Requests, no websocket (the egress gateway refuses every upgrade). `POST /v2/messenger/spot/link` carries `challenge`, `join`, `renew` and `hello` (the certificate join of section 9, with `runtime: substrate` in the hello); `POST /v2/messenger/spot/link/report` carries the reports, with the bearer token hello returned. The core does not renew that token (30 minutes): the spot says hello again when under 3 minutes are left, and after any 401 on a report. |
+| The core’s requests | `POST /frame`, one frame per request, the shapes of the stream. `wake` (`tick` or `promise`), `rooms`, `name` and `budget` are answered 202 at once; `control` is answered 200 with `{"controlResult"}` within 8 s, and the `wake` control asks for a manual wake. The core sends an actor no `issues` frame, so a change of the issues waits for the next tick. Anyone who can reach the port can send a request, so a frame counts only with `Authorization: Bearer <the access token of the last hello>`, which the core puts on every request it sends (compared in constant time; the token is also kept on `/state`, so a process started for a wake knows it). Before the link is up a request without it is a bare poke: nothing in it is read, it starts the join and the hello, and the first poke of a process asks for one plain tick wake (no words of its own). With the link up a request without the token is refused, 401. One request is answered at a time (429 for another), the body is 64 KiB at most, and the server has read, write and idle timeouts. A budget with a negative or absurd figure, and a name with a control character, are dropped; the words of a wake order are cut to 200 characters and shown to the model as quoted text, not an instruction; a refused control answers with no task list. |
+| Reports | Kept until the supervisor is idle (no turn, no task, nothing waiting), then sent in this order: turns, stats, the wake reports last. The core may suspend the actor once it has the wake report, so nothing follows it. A frame that made no wake (the rooms had nothing new) is answered with `{"wake":{"reason":"rooms","lane":"long","outcome":"idle"}}`, which ends the outstanding wake and leaves the stored plan. The `schedule` frame follows hello only when the process holds a plan, because one without would replace the core’s. |
+| What survives | `/state`, the actor’s durable directory: the usage ledger, the room cursors and read marks, the digest, a promise a person asked for, the identity, and `window.json`: the tokens of the last hour (the hourly ceiling), the early wakes of the last hour (their cap) and the issue state edges are told against. Held edges do not survive a suspension, so `--edge-cooldown` and `--chat-batch` are 0 in this runtime and the next tick reads whatever a cap left. |
+| Model | `--llm-auth injected`: the Anthropic client sends a fixed placeholder `x-api-key` to `https://api.anthropic.com` (or `--llm-base-url`) and the environment is not read. The egress policy of the actor has a rule for that host whose effect replaces the header with the key of a Secret (`ate-secret://…`), and only a request that carries the header is changed; the spot never holds the key. Anthropic provider only. The other auth modes stay for the deployment runtime. |
+| TLS | An `https` rule is intercepted by the egress gateway, which mints its certificates from its own CA. The template mounts a `systemInfo` volume with the trust bundle (`egress-mitm.ate.dev` and `system-roots.ate.dev`) at `/run/ate/egress-trust-bundle` and sets `SSL_CERT_FILE` to it, the one environment variable of the container and no credential. In-cluster names must be fully qualified (`….svc.cluster.local`): the DNS relay forwards the name as asked, and no search domain completes it. |
+| No credential | The actor holds no model key, no token file and no enrollment key, and mounts no Secret or ConfigMap: connectors are given inline (`--connectors-json`), what ego checks on a request is put there by the egress policy, and the one-time enrollment key a spot needs for its first join (the core refuses a spot without one) is put on the join request by the egress too: the spot sends `X-Triage-Enroll-Key` with a placeholder (`--enroll-key-injected`) and the policy replaces it from a Secret. The one thing the actor keeps is its own key and certificate on `/state`. |
+| Install | The manifests in `deploy/substrate/` (one ActorTemplate and one EgressPolicy, with `<placeholders>`) are applied with the substrate CLI: `kubectl ate create actor-template -f`, `create actor <actor-name> -a <atespace> --template <atespace>/<template-name>`, `create egress-policy <actor-name> -a <atespace> -f`. The actor name is the core’s (it returns it with the spot key). The template names the image by digest, the flags, `/state` as a durable directory, the wake-up probe, the volume snapshot and the limits. The policy has one rule per destination the spot uses, the one for the model API replacing `x-api-key` with the key of a Secret (http for in-cluster names, https for the rest, hostnames only). The Helm chart installs the deployment runtime only. |
+
 ## The model
 
 All model traffic goes through `internal/llm`; this section is the Anthropic provider. The request is built for a prefix cache: sorted tools, then the system prompt with a one-hour `cache_control` breakpoint on its last block, and a short breakpoint on the latest message.
@@ -117,7 +133,7 @@ The loop talks to `llm.Client`, with two implementations: Anthropic (`internal/l
 
 |  | `anthropic` | `gemini` |
 |---|---|---|
-| Auth modes (`--llm-auth`) | `key`, `federation`, `vertex` | `key`, `vertex`; `federation` is refused |
+| Auth modes (`--llm-auth`) | `key`, `federation`, `vertex`, `injected` | `key`, `vertex`; `federation` and `injected` are refused |
 | Vertex AI location | `--vertex-region` | `--vertex-region` (one flag for both; `global` by default) |
 | Retries | SDK, twice (429, 5xx) | SDK, three tries (408, 429, 5xx) |
 | Caching | Explicit breakpoints | Implicit on 2.5 and later; explicit `CachedContent` is a follow-up |
@@ -194,9 +210,13 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | `--core-token-file` | required without `--core-ca-fingerprint` | core bearer token file; refused with `--core-ca-fingerprint`, where the token file is the spot’s own |
 | `--core-ca-fingerprint` | empty | `SHA256:<64 lowercase hex>` of the core’s CA. Set, the spot joins the core by certificate (section 9); needs `--core-api-url` |
 | `--enroll-key-file` | empty | file holding the one-time enrollment key the core minted for this spot; only with `--core-ca-fingerprint` |
+| `--enroll-key-injected` | false | substrate: the first join carries `X-Triage-Enroll-Key` with a placeholder and the egress puts the key there from a Secret; not with `--enroll-key-file` |
 | `--identity-dir` | `<state-dir>/identity` | the spot’s key, certificate and access token; only with `--core-ca-fingerprint` |
 | `--core-tools` | `curated` | `curated` or `all` (section 4) |
 | `--connectors-file` | none | JSON list of connectors (section 17) |
+| `--connectors-json` | none | the same list inline, for a runtime with no file to read (the substrate actor); not with `--connectors-file` |
+| `--runtime` | `deployment` | `deployment` or `substrate` (Runtimes, in section 1) |
+| `--listen` | `:80` | substrate: the address of `/readyz` and the core’s requests |
 | `--ego-mcp-url` | empty | ego’s MCP endpoint; uses the `--otel-token-file` token |
 
 ### Model
@@ -204,7 +224,8 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | Flag | Default | Meaning |
 |---|---|---|
 | `--llm-provider` | `anthropic` | `anthropic` or `gemini` (section 3) |
-| `--llm-auth` | `key` | `key`, `federation` (anthropic only) or `vertex` (section 8) |
+| `--llm-auth` | `key` | `key`, `federation` (anthropic only), `vertex` or `injected` (anthropic only; section 8) |
+| `--llm-base-url` | empty | injected: the API’s URL when it is not `https://api.anthropic.com`; only with `--llm-auth=injected` |
 | `--anthropic-key-file` | required with anthropic and key | Anthropic API key file; rejected with the others |
 | `--gemini-key-file` | required with gemini and key | Gemini API key file; rejected with the others |
 | `--anthropic-identity-token-file` | required with federation | projected identity token (JWT) |
@@ -265,7 +286,7 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 
 ## Credentials
 
-`--llm-auth` picks the model auth mode; `federation` is Anthropic only. Federation ids are not secrets, but they are flags.
+`--llm-auth` picks the model auth mode; `federation` and `injected` are Anthropic only. With `injected` the spot holds no key: it sends a placeholder, and the egress in front of the API replaces it with the real one. Federation ids are not secrets, but they are flags.
 
 *Diagram: Credentials: each Secret or projected token becomes a file in the pod or an identity binding, and one client reads each; connector credentials are not in the pod at all.*
 

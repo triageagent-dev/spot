@@ -33,7 +33,10 @@ const JoinPath = "/v2/messenger/spot/join"
 // Cert is how the spot proves who it is: its identity, and where the token the
 // core hands it is written.
 type Cert struct {
-	ID        *identity.Identity
+	ID *identity.Identity
+	// Open loads the identity when it is first needed, for a link that starts with
+	// the core's first request (Link); ID is then nil.
+	Open      func() (*identity.Identity, error)
 	Name      string // the spot's name, as in its certificate
 	Workspace string
 	Version   string
@@ -41,7 +44,18 @@ type Cert struct {
 	// EnrollKeyFile holds the one-time key that makes the core approve the join
 	// at once; empty = none. It is sent only while the spot has no certificate.
 	EnrollKeyFile string
+	// EnrollKeyInjected makes the join carry the header EnrollKeyHeader with a
+	// placeholder, which the egress in front of the core replaces with the key
+	// of a Secret (Link only); the actor then holds no key.
+	EnrollKeyInjected bool
 }
+
+// EnrollKeyHeader is the header of a join whose enrollment key is put there by
+// the egress; EnrollKeyPlaceholder is its value from the spot, which is no key.
+const (
+	EnrollKeyHeader      = "X-Triage-Enroll-Key"
+	EnrollKeyPlaceholder = "replaced-by-egress"
+)
 
 // joinWait is how long the core may take to answer a join or a renew, and the
 // longest it waits for the challenge.
@@ -213,13 +227,15 @@ func (c *Client) join(conn *websocket.Conn, nonce []byte) (bool, error) {
 }
 
 // enrollKey is the one-time key in the spot's key file, or "".
-func (c *Client) enrollKey() string {
-	if c.cert.EnrollKeyFile == "" {
+func (c *Client) enrollKey() string { return readEnrollKey(c.cert, c.log) }
+
+func readEnrollKey(cert *Cert, log *slog.Logger) string {
+	if cert.EnrollKeyFile == "" {
 		return ""
 	}
-	b, err := os.ReadFile(c.cert.EnrollKeyFile)
+	b, err := os.ReadFile(cert.EnrollKeyFile)
 	if err != nil {
-		c.log.Warn("the enrollment key cannot be read; joining without it", "err", err)
+		log.Warn("the enrollment key cannot be read; joining without it", "err", err)
 		return ""
 	}
 	return strings.TrimSpace(string(b))

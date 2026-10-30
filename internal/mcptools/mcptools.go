@@ -19,6 +19,8 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 // Tool is one tool a server offers.
@@ -74,6 +76,9 @@ func Connect(ctx context.Context, url, tokenFile string, httpTimeout time.Durati
 }
 
 func readToken(path string) string {
+	if tok, ok := injected.Read(path); ok {
+		return tok
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return ""

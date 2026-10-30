@@ -88,6 +88,7 @@ type Supervisor struct {
 	// not (selfWakeAt).
 	nextTick     time.Time
 	scheduledWhy string
+	flush        func()          // runs when the spot goes idle (SetFlush)
 	order        *triggers.Order // a wake the core asked for, not yet taken
 	manual       *triggers.Order // a wake a person asked for from the console, not yet taken
 	// promise is the earliest wake the agent itself asked for that has not
@@ -219,6 +220,9 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 		}
 	}
 	s.digest = led.LoadDigest()
+	if cfg.Substrate() {
+		s.loadWindow()
+	}
 	if pr := led.LoadPromise(); !pr.At.IsZero() {
 		s.promise, s.promiseWhy, s.promiseHuman = pr.At, pr.Why, true
 	}
@@ -283,6 +287,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.refreshIdentity(ctx, true, 0)
 	s.publishSchedule()
 	pend := &pending{reason: prompt.Startup}
+	if s.cfg.Substrate() {
+		// An actor starts cold on every wake, and the core's request is the wake:
+		// a startup wake would report a quiet plan over the one the core holds.
+		pend = nil
+	}
 	for ctx.Err() == nil {
 		s.drainTasks(ctx)
 		if pend == nil {
@@ -365,6 +374,17 @@ func (s *Supervisor) ordered() *pending {
 	}
 	now := s.now()
 	why := o.Why
+	if s.cfg.Substrate() {
+		// The core is the only clock of an actor, and a process that was started
+		// for this wake holds neither the plan nor the promise: the core's order
+		// is taken as it is.
+		if o.Reason != "tick" && o.Reason != "promise" {
+			s.log.Debug("a wake of a reason the spot does not know is dropped", "reason", o.Reason)
+			return nil
+		}
+		s.log.Info("the core asks for a wake", "reason", o.Reason)
+		return &pending{reason: prompt.Tick, scheduledBy: why}
+	}
 	switch o.Reason {
 	case "promise":
 		if s.promise.IsZero() || s.promise.After(now.Add(orderSkew)) {
@@ -397,8 +417,8 @@ func (s *Supervisor) ordered() *pending {
 // its last wake, so a core that sends none never leaves it asleep for ever. A
 // wake planned later than that (a ceiling) is not hurried.
 func (s *Supervisor) selfWakeAt() time.Time {
-	if s.nextTick.IsZero() {
-		return time.Time{}
+	if s.nextTick.IsZero() || s.cfg.Substrate() {
+		return time.Time{} // an actor has no timer: it is suspended when idle
 	}
 	if s.trig == nil || !s.trig.Connected() {
 		return s.nextTick
@@ -518,6 +538,7 @@ func (s *Supervisor) wait(ctx context.Context) (read, alive bool) {
 	}
 	// A spot that sleeps for hours still shows signs of life.
 	s.reportStats(false)
+	s.idle()
 	if d > statsEvery {
 		d = statsEvery
 	}

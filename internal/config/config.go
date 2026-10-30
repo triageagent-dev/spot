@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 // Config is the supervisor's complete configuration.
@@ -44,9 +46,16 @@ type Config struct {
 	// core's ADR-090 keys): sent with the first join, which the core then
 	// approves at once. A spent key left in place is harmless.
 	EnrollKeyFile string
+	// EnrollKeyInjected sends the join with a placeholder in a header that the
+	// egress in front of the core replaces with the key of a Secret (substrate
+	// runtime): no file, no key in the actor.
+	EnrollKeyInjected bool
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
+	// ConnectorsJSON is the same list given inline, for a runtime with no file to
+	// read it from (a substrate actor mounts no ConfigMap).
+	ConnectorsJSON string
 	Connectors     []Connector
 	// LLMProvider is the model provider: "anthropic" or "gemini". Both sit
 	// behind llm.Client.
@@ -67,6 +76,19 @@ type Config struct {
 	VertexProject          string
 	// VertexRegion is the Vertex AI region or global, for either provider.
 	VertexRegion string
+	// LLMBaseURL is the API host of --llm-auth=injected, when it is not
+	// api.anthropic.com (Anthropic only).
+	LLMBaseURL string
+	// Runtime is where the spot runs: "deployment" (a pod that holds a
+	// websocket to the core, the default) or "substrate" (an Agent Substrate
+	// actor: no stream, the core's wake arrives as a request on Listen; the
+	// core's ADR-107). Substrate is the one place the process holds no model
+	// credential.
+	Runtime string
+	// Listen is the address of the HTTP server of the substrate runtime: GET
+	// /readyz (the actor's wake-up probe) and POST /frame (the core's wake and
+	// controls).
+	Listen string
 	// Model is the model id (empty = the provider's default, applied by Parse);
 	// Effort is low, medium, high, xhigh or max.
 	Model  string
@@ -124,12 +146,16 @@ type Config struct {
 
 	// Telemetry: the spot's own OpenTelemetry spans go to an OTLP/HTTP
 	// endpoint (ego). The sender token is a file, never an environment value.
-	OtelEndpoint   string
-	OtelTokenFile  string
-	OtelContent    bool   // put the turn's messages, tool arguments and results on the spans (the receiver evaluates from them)
-	OtelTenant     string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
-	OtelTenantAttr string // the attribute ego reads the label from (ego's --usage-tenant-attr)
-	OtelTenantName string // the display name ego shows for that tenant (default: the label)
+	OtelEndpoint  string
+	OtelTokenFile string
+	// OtelTokenInjected sends a placeholder bearer to the OTLP endpoint and ego's
+	// MCP, and the egress in front of them puts the sender token there from a
+	// Secret (substrate runtime): no file, no token in the actor.
+	OtelTokenInjected bool
+	OtelContent       bool   // put the turn's messages, tool arguments and results on the spans (the receiver evaluates from them)
+	OtelTenant        string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
+	OtelTenantAttr    string // the attribute ego reads the label from (ego's --usage-tenant-attr)
+	OtelTenantName    string // the display name ego shows for that tenant (default: the label)
 	// EgoMCPURL is ego's MCP endpoint; the spot reads its sessions, usage and
 	// findings there with the same sender token (--otel-token-file).
 	EgoMCPURL string
@@ -145,6 +171,9 @@ const (
 	AuthKey        = "key"
 	AuthFederation = "federation"
 	AuthVertex     = "vertex"
+	// AuthInjected sends a placeholder key: the egress in front of the API replaces
+	// it with the real one, so the spot holds no model credential (Anthropic only).
+	AuthInjected = "injected"
 )
 
 // Model providers.
@@ -158,6 +187,9 @@ const (
 	DefaultStateDir       = "/state"
 	DefaultAnthropicModel = "claude-opus-5-5"
 	DefaultGeminiModel    = "gemini-3-flash-preview"
+	RuntimeDeployment     = "deployment"
+	RuntimeSubstrate      = "substrate"
+	DefaultListen         = ":80"
 	DefaultEffort         = "medium"
 )
 
@@ -180,10 +212,15 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required, unless --core-ca-fingerprint is set)")
 	fs.StringVar(&c.CoreCAFingerprint, "core-ca-fingerprint", "", "the SHA-256 fingerprint of the core's CA (SHA256:<hex>): the spot then joins the core by certificate, and needs --core-api-url; no --core-token-file")
 	fs.StringVar(&c.EnrollKeyFile, "enroll-key-file", "", "file holding the one-time enrollment key the core minted for this spot; with --core-ca-fingerprint")
+	fs.BoolVar(&c.EnrollKeyInjected, "enroll-key-injected", false, "substrate: the first join carries the header X-Triage-Enroll-Key with a placeholder, and the egress in front of the core puts the one-time key there from a Secret; not with --enroll-key-file")
 	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
+	fs.StringVar(&c.ConnectorsJSON, "connectors-json", "", "the connectors as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --connectors-file")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
-	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only) or vertex")
+	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or injected (anthropic only: the spot sends a placeholder key and the egress in front of the API puts the real one on the request)")
+	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "injected: the API's URL when it is not https://api.anthropic.com (for example an in-cluster proxy); only with --llm-auth=injected")
+	fs.StringVar(&c.Runtime, "runtime", RuntimeDeployment, "where the spot runs: deployment (a pod with a websocket to the core) or substrate (an Agent Substrate actor, woken by the core over HTTP; the core's ADR-107)")
+	fs.StringVar(&c.Listen, "listen", DefaultListen, "substrate: the address the actor listens on, for /readyz and the core's requests")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-provider=anthropic --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.GeminiKeyFile, "gemini-key-file", "", "file holding the Gemini API key, re-read on every request (required with --llm-provider=gemini --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.IdentityTokenFile, "anthropic-identity-token-file", "", "federation: file holding the projected identity token (JWT), re-read on every exchange")
@@ -223,6 +260,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the spot's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
+	fs.BoolVar(&c.OtelTokenInjected, "otel-token-injected", false, "substrate: send a placeholder bearer to --otel-endpoint and --ego-mcp-url, which the egress in front of them replaces with the sender token from a Secret; not with --otel-token-file")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
 	fs.StringVar(&c.CoreTools, "core-tools", "curated", "curated: the core tools the loop names, destructive ones refused by name; all: every core tool the core offers, bounded by the core Role")
 	fs.StringVar(&c.EgoMCPURL, "ego-mcp-url", "", "ego's MCP endpoint (for example http://ego.<ns>.svc:8001/mcp), read with the --otel-token-file token; empty = no ego tools")
@@ -240,7 +278,15 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	}
 	c.applyDefaults()
 	var cerr error
-	if c.Connectors, cerr = LoadConnectors(c.ConnectorsFile); cerr != nil {
+	if c.ConnectorsFile != "" && c.ConnectorsJSON != "" {
+		return c, errors.Join(errors.New("--connectors-file and --connectors-json cannot both be given"), c.Validate())
+	}
+	if c.ConnectorsJSON != "" {
+		c.Connectors, cerr = ParseConnectors(c.ConnectorsJSON)
+	} else {
+		c.Connectors, cerr = LoadConnectors(c.ConnectorsFile)
+	}
+	if cerr != nil {
 		return c, errors.Join(cerr, c.Validate())
 	}
 	return c, c.Validate()
@@ -272,6 +318,39 @@ func (c Config) validateCertificateIdentity() []error {
 	return errs
 }
 
+// validateRuntime checks the runtime. A substrate actor holds no credential
+// for the model (the egress does), joins the core by certificate, and listens
+// for the core's requests instead of holding a stream.
+func (c Config) validateRuntime() []error {
+	switch c.Runtime {
+	case RuntimeDeployment:
+		if c.LLMAuth == AuthInjected && c.LLMBaseURL == "" {
+			// Nothing in front of api.anthropic.com would replace the placeholder.
+			return []error{errors.New("--llm-auth=injected outside --runtime=substrate needs --llm-base-url: the proxy that puts the key on the request")}
+		}
+		return nil
+	case RuntimeSubstrate:
+		var errs []error
+		if c.LLMAuth != AuthInjected {
+			errs = append(errs, errors.New("--runtime=substrate needs --llm-auth=injected: an actor holds no model credential"))
+		}
+		if c.CoreCAFingerprint == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --core-ca-fingerprint: an actor joins the core by certificate"))
+		}
+		if c.CoreAPIURL == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --core-api-url: the actor's link to the core is HTTP requests to it"))
+		}
+		if strings.TrimSpace(c.Listen) == "" {
+			errs = append(errs, errors.New("--runtime=substrate needs --listen"))
+		}
+		return errs
+	}
+	return []error{fmt.Errorf("--runtime %q is not one of deployment, substrate", c.Runtime)}
+}
+
+// Substrate reports whether the spot runs as a substrate actor.
+func (c Config) Substrate() bool { return c.Runtime == RuntimeSubstrate }
+
 // CertificateIdentity reports whether the spot joins the core by certificate.
 func (c Config) CertificateIdentity() bool { return c.CoreCAFingerprint != "" }
 
@@ -291,6 +370,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HeartbeatID == "" && c.Tenant != "" {
 		c.HeartbeatID = "system2-heartbeat-" + c.Tenant
+	}
+	if c.Runtime == RuntimeSubstrate {
+		// An actor is suspended when it is idle, and nothing it holds in memory
+		// or waits for in a timer survives: an edge or a message is acted on at
+		// once, the core's next wake reads whatever the cap left.
+		c.EdgeCooldown, c.ChatBatch = 0, 0
+	}
+	if c.OtelTokenInjected && c.OtelTokenFile == "" {
+		c.OtelTokenFile = injected.File
 	}
 	if c.OtelTenant == "" {
 		c.OtelTenant = c.Name
@@ -316,7 +404,13 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("--core-tools is curated or all"))
 	}
 	if c.EgoMCPURL != "" && c.OtelTokenFile == "" {
-		errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))
+		// An actor holds no token file: it sends a placeholder bearer and the
+		// egress policy replaces it, which it does only on a header that is there.
+		if c.Substrate() {
+			errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-injected in --runtime=substrate: the egress replaces a bearer the spot sends, it adds none"))
+		} else {
+			errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))
+		}
 	}
 	if c.EgoMCPURL != "" && !strings.HasPrefix(c.EgoMCPURL, "http://") && !strings.HasPrefix(c.EgoMCPURL, "https://") {
 		errs = append(errs, errors.New("--ego-mcp-url must be an http:// or https:// URL"))
@@ -324,12 +418,18 @@ func (c *Config) Validate() error {
 	if c.OtelEndpoint == "" && c.OtelTokenFile != "" {
 		errs = append(errs, errors.New("--otel-token-file needs --otel-endpoint"))
 	}
+	if c.OtelTokenInjected && (!c.Substrate() || c.OtelTokenFile != injected.File) {
+		errs = append(errs, errors.New("--otel-token-injected needs --runtime=substrate and not --otel-token-file"))
+	}
 	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))
 	}
 	req(c.CoreMCPURL, "core-mcp-url")
 	if c.EnrollKeyFile != "" && c.CoreCAFingerprint == "" {
 		errs = append(errs, errors.New("--enroll-key-file needs --core-ca-fingerprint"))
+	}
+	if c.EnrollKeyInjected && (!c.Substrate() || c.EnrollKeyFile != "") {
+		errs = append(errs, errors.New("--enroll-key-injected needs --runtime=substrate and not --enroll-key-file"))
 	}
 	if c.CoreCAFingerprint != "" {
 		errs = append(errs, c.validateCertificateIdentity()...)
@@ -386,8 +486,14 @@ func (c *Config) Validate() error {
 			only(AuthFederation, federation)
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
+		case AuthInjected:
+			if c.AnthropicKeyFile != "" {
+				errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=injected: the spot holds no key"))
+			}
+			only(AuthFederation, federation)
+			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
 		default:
-			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex", c.LLMAuth))
+			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex, injected", c.LLMAuth))
 		}
 	case ProviderGemini:
 		anthropic := map[string]string{"anthropic-key-file": c.AnthropicKeyFile}
@@ -409,14 +515,22 @@ func (c *Config) Validate() error {
 			}
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
-		case AuthFederation:
-			errs = append(errs, errors.New("--llm-auth=federation is an Anthropic auth mode: use key or vertex with --llm-provider=gemini"))
+		case AuthFederation, AuthInjected:
+			errs = append(errs, fmt.Errorf("--llm-auth=%s is an Anthropic auth mode: use key or vertex with --llm-provider=gemini", c.LLMAuth))
 		default:
 			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, vertex", c.LLMAuth))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("--llm-provider %q is not one of anthropic, gemini", c.LLMProvider))
 	}
+	if c.LLMBaseURL != "" {
+		if c.LLMAuth != AuthInjected {
+			errs = append(errs, errors.New("--llm-base-url only applies with --llm-auth=injected"))
+		} else if !strings.HasPrefix(c.LLMBaseURL, "http://") && !strings.HasPrefix(c.LLMBaseURL, "https://") {
+			errs = append(errs, errors.New("--llm-base-url must be an http:// or https:// URL"))
+		}
+	}
+	errs = append(errs, c.validateRuntime()...)
 	req(c.Model, "model")
 	switch c.Effort {
 	case "low", "medium", "high", "xhigh", "max":

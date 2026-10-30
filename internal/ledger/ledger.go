@@ -29,6 +29,7 @@ const (
 	RoomsFile    = "rooms.json"
 	DigestFile   = "digest.json"
 	PromiseFile  = "promise.json"
+	WindowFile   = "window.json"
 	RoomReadFile = "roomread.json"
 )
 
@@ -260,6 +261,39 @@ func (l *Ledger) SavePromise(p Promise) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return writeJSON(l.Path(PromiseFile), p, 0o600)
+}
+
+// Window is the state a spot that is suspended between wakes would lose: the
+// tokens each turn billed in the last hour (the hourly ceiling), when the early
+// wakes ran (their cap), and the issue state the edges are told against. It is
+// written when the spot goes idle.
+type Window struct {
+	Recent    []WindowSample `json:"recent,omitempty"`
+	EdgeWakes []time.Time    `json:"edgeWakes,omitempty"`
+	// Edges is the tracker's baseline, kept as the edges package writes it.
+	Edges json.RawMessage `json:"edges,omitempty"`
+}
+
+// WindowSample is the tokens a turn billed, and when.
+type WindowSample struct {
+	At     time.Time `json:"at"`
+	Tokens int64     `json:"tokens"`
+}
+
+// LoadWindow returns the saved window; a missing file is an empty one.
+func (l *Ledger) LoadWindow() Window {
+	var w Window
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = readJSON(l.Path(WindowFile), &w)
+	return w
+}
+
+// SaveWindow persists the window.
+func (l *Ledger) SaveWindow(w Window) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return writeJSON(l.Path(WindowFile), w, 0o600)
 }
 
 func readJSON(path string, v any) error {

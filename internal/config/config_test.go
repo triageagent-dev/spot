@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 var required = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
@@ -376,5 +378,113 @@ func TestEnrollKeyFileNeedsTheCertificateIdentity(t *testing.T) {
 	}
 	if _, err := Parse(with(required, "--enroll-key-file", "/s/enroll/key"), io.Discard); err == nil {
 		t.Fatal("an enrollment key was accepted without the certificate identity")
+	}
+}
+
+var substrateArgs = []string{"--tenant", "example", "--core-mcp-url", "http://core.invalid/mcp",
+	"--core-api-url", "http://core.invalid:8080", "--core-ca-fingerprint", "SHA256:" + strings.Repeat("ab", 32),
+	"--runtime", "substrate", "--llm-auth", "injected"}
+
+func TestSubstrateRuntimeHoldsNoCredentialAndWaitsForNothing(t *testing.T) {
+	c, err := Parse(with(substrateArgs, "--edge-cooldown", "5m", "--chat-batch", "10m"), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Substrate() || c.Listen != ":80" || c.LLMAuth != AuthInjected || c.LLMBaseURL != "" {
+		t.Fatalf("%+v", c)
+	}
+	if c.EdgeCooldown != 0 || c.ChatBatch != 0 {
+		t.Errorf("an actor is suspended when idle, so nothing waits: cooldown %s batch %s", c.EdgeCooldown, c.ChatBatch)
+	}
+	if c.CoreTokenFile != "/state/identity/token" {
+		t.Errorf("the token is the identity's own: %q", c.CoreTokenFile)
+	}
+}
+
+func TestSubstrateRuntimeRefusesWhatDoesNotFit(t *testing.T) {
+	for name, args := range map[string][]string{
+		"a model key":            with(substrateArgs, "--anthropic-key-file", "/s/key"),
+		"key auth":               with(substrateArgs, "--llm-auth", "key", "--llm-base-url", ""),
+		"a base URL that is not": with(substrateArgs, "--llm-base-url", "proxy.invalid"),
+		"no core API URL":        with(substrateArgs, "--core-api-url", ""),
+		"no certificate":         with(substrateArgs, "--core-ca-fingerprint", ""),
+		"no listen address":      with(substrateArgs, "--listen", ""),
+		"an unknown runtime":     with(substrateArgs, "--runtime", "lambda"),
+		"gemini with injection":  with(substrateArgs, "--llm-provider", "gemini"),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+func TestInjectionIsAnAuthModeNotARuntime(t *testing.T) {
+	c, err := Parse(with(required[:6], "--llm-auth", "injected", "--llm-base-url", "http://proxy.invalid"), io.Discard)
+	if err != nil || c.Runtime != RuntimeDeployment || c.LLMAuth != AuthInjected {
+		t.Fatalf("a deployment may use injection too: %+v %v", c, err)
+	}
+	if _, err := Parse(with(required, "--llm-base-url", "http://proxy.invalid"), io.Discard); err == nil {
+		t.Error("--llm-base-url was accepted without --llm-auth=injected")
+	}
+	if _, err := Parse(with(required[:6], "--llm-auth", "injected"), io.Discard); err == nil {
+		t.Error("injected auth with nothing to replace the placeholder was accepted in a deployment")
+	}
+}
+
+func TestConnectorsCanBeGivenInlineForARuntimeWithNoFile(t *testing.T) {
+	js := `[{"name":"example-kube","url":"http://example.invalid/mcp","tools":["get_pods"],"hint":"read only"}]`
+	c, err := Parse(with(substrateArgs, "--connectors-json", js), io.Discard)
+	if err != nil || len(c.Connectors) != 1 || c.Connectors[0].Name != "example-kube" {
+		t.Fatalf("%+v %v", c.Connectors, err)
+	}
+	if _, err := Parse(with(substrateArgs, "--connectors-json", js, "--connectors-file", "/x"), io.Discard); err == nil {
+		t.Error("both forms were accepted")
+	}
+	if _, err := Parse(with(substrateArgs, "--connectors-json", `[{"name":"Bad Name","url":"x","tools":[]}]`), io.Discard); err == nil {
+		t.Error("an invalid inline connector was accepted")
+	}
+}
+
+func TestAnActorReachesEgoOnlyWithAnInjectedToken(t *testing.T) {
+	// No token file, but the egress replaces a bearer only if the spot sends one.
+	ok := with(substrateArgs, "--otel-endpoint", "http://ego.invalid:4318", "--ego-mcp-url", "http://ego.invalid:8001/mcp", "--otel-token-injected")
+	if _, err := Parse(ok, io.Discard); err != nil {
+		t.Fatalf("the egress policy puts ego's token on the request: %v", err)
+	}
+	bare := with(substrateArgs, "--ego-mcp-url", "http://ego.invalid/mcp")
+	if _, err := Parse(bare, io.Discard); err == nil {
+		t.Error("ego tools with no bearer to replace were accepted: the request would go out with no token")
+	}
+	dep := with(required, "--ego-mcp-url", "http://ego.invalid/mcp")
+	if _, err := Parse(dep, io.Discard); err == nil {
+		t.Error("a deployment must still name the token file")
+	}
+}
+
+func TestAnInjectedEnrollmentKeyIsForTheSubstrateRuntimeAndNotWithAKeyFile(t *testing.T) {
+	c, err := Parse(with(substrateArgs, "--enroll-key-injected"), io.Discard)
+	if err != nil || !c.EnrollKeyInjected {
+		t.Fatalf("%+v %v", c.EnrollKeyInjected, err)
+	}
+	if _, err := Parse(with(substrateArgs, "--enroll-key-injected", "--enroll-key-file", "/k"), io.Discard); err == nil {
+		t.Error("both ways to give the key were accepted")
+	}
+	if _, err := Parse(with(certArgs, "--enroll-key-injected"), io.Discard); err == nil {
+		t.Error("a deployment cannot have its key injected")
+	}
+}
+
+func TestAnInjectedTelemetryTokenIsForTheSubstrateRuntimeAndNeedsNoFile(t *testing.T) {
+	args := with(substrateArgs, "--otel-endpoint", "http://ego.invalid:4318", "--ego-mcp-url", "http://ego.invalid:8001/mcp", "--otel-token-injected")
+	c, err := Parse(args, io.Discard)
+	if err != nil || !c.OtelTokenInjected || c.OtelTokenFile != injected.File {
+		t.Fatalf("%+v %v", c.OtelTokenFile, err)
+	}
+	if _, err := Parse(with(args, "--otel-token-file", "/t"), io.Discard); err == nil {
+		t.Error("both ways to give the token were accepted")
+	}
+	dep := with(required, "--otel-endpoint", "http://ego.invalid:4318", "--otel-token-injected")
+	if _, err := Parse(dep, io.Discard); err == nil {
+		t.Error("a deployment cannot have its token injected")
 	}
 }
