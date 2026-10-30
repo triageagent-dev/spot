@@ -29,6 +29,16 @@
 {{- end }}
 {{- range .Values.connectors }}{{ $urls = append $urls .url }}{{ end }}
 {{- $ek := $sub.enrollKey }}
+{{- $ti := dict }}
+{{- if .Values.telemetry.enabled }}{{ $ti = .Values.telemetry.tokenInject | default (dict) }}{{ end }}
+{{- if $ti.name }}{{ $_ := required "telemetry.tokenInject.namespace is required with telemetry.tokenInject.name" $ti.namespace }}{{ end }}
+{{- /* The destinations whose Authorization header the egress fills with the sender token: the OTLP endpoint and ego's MCP. */}}
+{{- $telKeys := list }}
+{{- if and .Values.telemetry.enabled $ti.name }}
+{{- range (list .Values.telemetry.endpoint .Values.telemetry.mcpUrl) }}
+{{- if . }}{{ $d := include "tria-spot.destination" . | fromJson }}{{ $telKeys = append $telKeys (printf "%s %s" $d.scheme $d.host) }}{{ end }}
+{{- end }}
+{{- end }}
 {{- if $ek.name }}{{ $_ := required "substrate.enrollKey.namespace is required with substrate.enrollKey.name" $ek.namespace }}{{ end }}
 {{- $cd := include "tria-spot.destination" .Values.core.apiUrl | fromJson }}
 {{- $coreKey := printf "%s %s" $cd.scheme $cd.host }}
@@ -58,6 +68,9 @@
 {{- if and $ek.name (eq $key $coreKey) }}
 {{- $headers = append $headers (dict "header" "X-Triage-Enroll-Key" "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $ek.namespace $ek.name (default "key" $ek.key))) }}
 {{- end }}
+{{- if has $key $telKeys }}
+{{- $headers = append $headers (dict "header" "Authorization" "prefix" "Bearer " "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $ti.namespace $ti.name (default "token" $ti.key))) }}
+{{- end }}
 {{- if $headers }}{{ $_ := set $rule "effects" (dict "replaceHeaders" $headers) }}{{ end }}
 {{- $rules = append $rules (dict $scheme $rule) }}
 {{- end }}
@@ -77,6 +90,7 @@
 {{- if $llm.baseUrl }}{{ $args = append $args (printf "--llm-base-url=%s" $llm.baseUrl) }}{{ end }}
 {{- if .Values.spot.chatName }}{{ $args = append $args (printf "--chat-name=%s" .Values.spot.chatName) }}{{ end }}
 {{- if $ek.name }}{{ $args = append $args "--enroll-key-injected" }}{{ end }}
+{{- if $telKeys }}{{ $args = append $args "--otel-token-injected" }}{{ end }}
 {{- if $conns }}{{ $args = append $args (printf "--connectors-json=%s" (toJson $conns)) }}{{ end }}
 {{- $args = concat $args (include "tria-spot.agentArgs" . | fromYamlArray) }}
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 // Config is the supervisor's complete configuration.
@@ -144,12 +146,16 @@ type Config struct {
 
 	// Telemetry: the spot's own OpenTelemetry spans go to an OTLP/HTTP
 	// endpoint (ego). The sender token is a file, never an environment value.
-	OtelEndpoint   string
-	OtelTokenFile  string
-	OtelContent    bool   // put the turn's messages, tool arguments and results on the spans (the receiver evaluates from them)
-	OtelTenant     string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
-	OtelTenantAttr string // the attribute ego reads the label from (ego's --usage-tenant-attr)
-	OtelTenantName string // the display name ego shows for that tenant (default: the label)
+	OtelEndpoint  string
+	OtelTokenFile string
+	// OtelTokenInjected sends a placeholder bearer to the OTLP endpoint and ego's
+	// MCP, and the egress in front of them puts the sender token there from a
+	// Secret (substrate runtime): no file, no token in the actor.
+	OtelTokenInjected bool
+	OtelContent       bool   // put the turn's messages, tool arguments and results on the spans (the receiver evaluates from them)
+	OtelTenant        string // the tenant label of the spans (default: the spot's name, so each spot is its own tenant in ego)
+	OtelTenantAttr    string // the attribute ego reads the label from (ego's --usage-tenant-attr)
+	OtelTenantName    string // the display name ego shows for that tenant (default: the label)
 	// EgoMCPURL is ego's MCP endpoint; the spot reads its sessions, usage and
 	// findings there with the same sender token (--otel-token-file).
 	EgoMCPURL string
@@ -254,6 +260,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.IntVar(&c.MaxEdgeWakesHr, "max-edge-wakes-per-hour", 12, "cap on early wakes (edges, messages) per hour; past it edges wait for the scheduled wake; 0 = no cap")
 	fs.StringVar(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	fs.StringVar(&c.OtelEndpoint, "otel-endpoint", "", "OTLP/HTTP endpoint for the spot's traces (for example http://ego.<ns>.svc:4318); empty turns telemetry off")
+	fs.BoolVar(&c.OtelTokenInjected, "otel-token-injected", false, "substrate: send a placeholder bearer to --otel-endpoint and --ego-mcp-url, which the egress in front of them replaces with the sender token from a Secret; not with --otel-token-file")
 	fs.StringVar(&c.OtelTokenFile, "otel-token-file", "", "file holding the sender's bearer token for --otel-endpoint")
 	fs.StringVar(&c.CoreTools, "core-tools", "curated", "curated: the core tools the loop names, destructive ones refused by name; all: every core tool the core offers, bounded by the core Role")
 	fs.StringVar(&c.EgoMCPURL, "ego-mcp-url", "", "ego's MCP endpoint (for example http://ego.<ns>.svc:8001/mcp), read with the --otel-token-file token; empty = no ego tools")
@@ -366,6 +373,9 @@ func (c *Config) applyDefaults() {
 		// once, the core's next wake reads whatever the cap left.
 		c.EdgeCooldown, c.ChatBatch = 0, 0
 	}
+	if c.OtelTokenInjected && c.OtelTokenFile == "" {
+		c.OtelTokenFile = injected.File
+	}
 	if c.OtelTenant == "" {
 		c.OtelTenant = c.Name
 	}
@@ -398,6 +408,9 @@ func (c *Config) Validate() error {
 	}
 	if c.OtelEndpoint == "" && c.OtelTokenFile != "" {
 		errs = append(errs, errors.New("--otel-token-file needs --otel-endpoint"))
+	}
+	if c.OtelTokenInjected && (!c.Substrate() || c.OtelTokenFile != injected.File) {
+		errs = append(errs, errors.New("--otel-token-injected needs --runtime=substrate and not --otel-token-file"))
 	}
 	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))

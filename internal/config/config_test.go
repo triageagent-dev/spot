@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 var required = []string{"--tenant", "example", "--core-mcp-url", "https://core.invalid/mcp",
@@ -461,5 +463,20 @@ func TestAnInjectedEnrollmentKeyIsForTheSubstrateRuntimeAndNotWithAKeyFile(t *te
 	}
 	if _, err := Parse(with(certArgs, "--enroll-key-injected"), io.Discard); err == nil {
 		t.Error("a deployment cannot have its key injected")
+	}
+}
+
+func TestAnInjectedTelemetryTokenIsForTheSubstrateRuntimeAndNeedsNoFile(t *testing.T) {
+	args := with(substrateArgs, "--otel-endpoint", "http://ego.invalid:4318", "--ego-mcp-url", "http://ego.invalid:8001/mcp", "--otel-token-injected")
+	c, err := Parse(args, io.Discard)
+	if err != nil || !c.OtelTokenInjected || c.OtelTokenFile != injected.File {
+		t.Fatalf("%+v %v", c.OtelTokenFile, err)
+	}
+	if _, err := Parse(with(args, "--otel-token-file", "/t"), io.Discard); err == nil {
+		t.Error("both ways to give the token were accepted")
+	}
+	dep := with(required, "--otel-endpoint", "http://ego.invalid:4318", "--otel-token-injected")
+	if _, err := Parse(dep, io.Discard); err == nil {
+		t.Error("a deployment cannot have its token injected")
 	}
 }

@@ -24,6 +24,10 @@ telemetry:
   enabled: true
   endpoint: http://ego.example-ego.svc:4318
   mcpUrl: http://ego.example-ego.svc:8001/mcp
+  tokenInject:
+    namespace: example-spots
+    name: example-ego-token
+    key: token
 connectors:
   - name: example-kube
     url: http://example-connector.example-ns.svc:8080/mcp

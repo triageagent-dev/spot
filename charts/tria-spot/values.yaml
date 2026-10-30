@@ -198,6 +198,14 @@ telemetry:
   tokenSecret:
     name: ""
     key: token
+  # runtime: substrate. An actor mounts no Secret: the sender token is put in the
+  # Authorization header of requests to the OTLP endpoint and ego's MCP by the
+  # egress policy, from this Secret (the actor sends a placeholder). Set name to
+  # turn it on.
+  tokenInject:
+    namespace: ""
+    name: ""
+    key: token
   content: true
 
 # Supervisor settings (see docs/spec.html for each flag).

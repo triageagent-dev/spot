@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/triageagent-dev/spot/internal/injected"
 	"github.com/triageagent-dev/spot/internal/llm"
 )
 
@@ -444,3 +445,22 @@ func TestProviderNameFollowsTheOption(t *testing.T) {
 		t.Errorf("provider = %q", got)
 	}
 }
+
+func TestAnInjectedTokenIsSentAsAPlaceholderBearer(t *testing.T) {
+	var got string
+	rt := &bearer{file: injected.File, next: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Get("Authorization")
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: r}, nil
+	})}
+	req, _ := http.NewRequest(http.MethodPost, "http://ego.invalid/v1/traces", nil)
+	if _, err := rt.RoundTrip(req); err != nil {
+		t.Fatal(err)
+	}
+	if got != "Bearer "+injected.Token {
+		t.Errorf("Authorization = %q", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
