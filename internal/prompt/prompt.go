@@ -63,6 +63,7 @@ type Wake struct {
 	Note        string   // supervisor note, e.g. the schedule was defaulted
 	Side        bool     // a long turn of the spot is still working; this one is the short lane
 	Title, Goal string   // the task of a task turn
+	Asked       bool     // a person's message came with a wake of another reason (a tick that read the rooms)
 	Limited     bool     // a hold rule is active and a person wrote: notes, room and post tools only
 	NotesOnly   bool     // the model has one tool, search_memory: no schedule_next, no finish
 	TokensUsed  int64
@@ -120,6 +121,9 @@ func Turn(w Wake) string {
 	case Task:
 		fmt.Fprintf(&b, "Another turn of yours started this task and carries on without you. Task: %s\nGoal:\n%s\n", w.Title, w.Goal)
 	}
+	if w.Asked && w.Reason != Human {
+		b.WriteString("Someone wrote to you in a room, and what they wrote is among the lines below: answer them there. A message whose @mention names another spot is for that spot, not for you: do not answer it.\n")
+	}
 	for _, f := range w.Facts {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}
@@ -138,7 +142,7 @@ func Turn(w Wake) string {
 	} else {
 		fmt.Fprintf(&b, "Tokens today: %d used (no ceiling set).\n", w.TokensUsed)
 	}
-	if w.Reason == Edge || w.Reason == Tick {
+	if (w.Reason == Edge || w.Reason == Tick) && !w.Asked {
 		b.WriteString("Be brief: look only at what changed since your last wake, read the least that settles it, and stop as soon as you know. A wake that finds nothing new ends after a few calls.\n")
 	}
 	if w.Side && w.Reason != Task {
