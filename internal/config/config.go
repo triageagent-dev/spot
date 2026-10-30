@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -89,6 +90,11 @@ type Config struct {
 	// /readyz (the actor's wake-up probe) and POST /frame (the core's wake and
 	// controls).
 	Listen string
+	// TaskVerifierFile makes this process a task actor (the core's ADR-109): an
+	// actor the core made for one piece of work. The file holds the SHA-256, in
+	// hex, of the access token of that task; the actor takes the first request
+	// whose bearer hashes to it, runs the goal in it and never joins the core.
+	TaskVerifierFile string
 	// Model is the model id (empty = the provider's default, applied by Parse);
 	// Effort is low, medium, high, xhigh or max.
 	Model  string
@@ -220,6 +226,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or injected (anthropic only: the spot sends a placeholder key and the egress in front of the API puts the real one on the request)")
 	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "injected: the API's URL when it is not https://api.anthropic.com (for example an in-cluster proxy); only with --llm-auth=injected")
 	fs.StringVar(&c.Runtime, "runtime", RuntimeDeployment, "where the spot runs: deployment (a pod with a websocket to the core) or substrate (an Agent Substrate actor, woken by the core over HTTP; the core's ADR-107)")
+	fs.StringVar(&c.TaskVerifierFile, "task-verifier-file", "", "substrate: makes this a task actor; the file holds the SHA-256 (hex) of the access token of its one task. The actor takes the first request whose bearer hashes to it and never joins the core")
 	fs.StringVar(&c.Listen, "listen", DefaultListen, "substrate: the address the actor listens on, for /readyz and the core's requests")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-provider=anthropic --llm-auth=key, rejected otherwise)")
 	fs.StringVar(&c.GeminiKeyFile, "gemini-key-file", "", "file holding the Gemini API key, re-read on every request (required with --llm-provider=gemini --llm-auth=key, rejected otherwise)")
@@ -334,7 +341,7 @@ func (c Config) validateRuntime() []error {
 		if c.LLMAuth != AuthInjected {
 			errs = append(errs, errors.New("--runtime=substrate needs --llm-auth=injected: an actor holds no model credential"))
 		}
-		if c.CoreCAFingerprint == "" {
+		if c.CoreCAFingerprint == "" && !c.TaskActor() {
 			errs = append(errs, errors.New("--runtime=substrate needs --core-ca-fingerprint: an actor joins the core by certificate"))
 		}
 		if c.CoreAPIURL == "" {
@@ -347,6 +354,9 @@ func (c Config) validateRuntime() []error {
 	}
 	return []error{fmt.Errorf("--runtime %q is not one of deployment, substrate", c.Runtime)}
 }
+
+// TaskActor reports whether this process is an actor made for one task.
+func (c Config) TaskActor() bool { return c.TaskVerifierFile != "" }
 
 // Substrate reports whether the spot runs as a substrate actor.
 func (c Config) Substrate() bool { return c.Runtime == RuntimeSubstrate }
@@ -431,13 +441,26 @@ func (c *Config) Validate() error {
 	if c.EnrollKeyInjected && (!c.Substrate() || c.EnrollKeyFile != "") {
 		errs = append(errs, errors.New("--enroll-key-injected needs --runtime=substrate and not --enroll-key-file"))
 	}
-	if c.CoreCAFingerprint != "" {
+	switch {
+	case c.TaskActor():
+		// A task actor does not join: its token comes with its one request and is
+		// kept in a file of its own, outside the state directory.
+		if !c.Substrate() {
+			errs = append(errs, errors.New("--task-verifier-file needs --runtime=substrate"))
+		}
+		if c.CoreAPIURL == "" {
+			errs = append(errs, errors.New("--task-verifier-file needs --core-api-url: the task's report goes there"))
+		}
+		if c.CoreTokenFile == "" {
+			c.CoreTokenFile = filepath.Join(os.TempDir(), "tria-spot-task-token")
+		}
+	case c.CoreCAFingerprint != "":
 		errs = append(errs, c.validateCertificateIdentity()...)
 		if c.IdentityDir == "" {
 			c.IdentityDir = filepath.Join(c.StateDir, "identity")
 		}
 		c.CoreTokenFile = filepath.Join(c.IdentityDir, "token")
-	} else {
+	default:
 		req(c.CoreTokenFile, "core-token-file")
 	}
 	federation := map[string]string{

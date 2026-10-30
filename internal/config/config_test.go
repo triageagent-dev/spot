@@ -418,6 +418,30 @@ func TestSubstrateRuntimeRefusesWhatDoesNotFit(t *testing.T) {
 	}
 }
 
+func TestATaskActorDoesNotJoinAndKeepsItsTokenOutsideTheState(t *testing.T) {
+	task := with(substrateArgs[:6], "--runtime", "substrate", "--llm-auth", "injected", "--task-verifier-file", "/run/task/verifier")
+	c, err := Parse(task, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.TaskActor() || c.CoreCAFingerprint != "" || c.CoreTokenFile == "" || strings.HasPrefix(c.CoreTokenFile, c.StateDir) {
+		t.Fatalf("%+v", c)
+	}
+	// With the persona's flags too (a template may be shared), it still does not join.
+	c, err = Parse(with(substrateArgs, "--task-verifier-file", "/run/task/verifier"), io.Discard)
+	if err != nil || !c.TaskActor() || strings.HasSuffix(c.CoreTokenFile, "identity/token") {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for name, args := range map[string][]string{
+		"a deployment":    with(required, "--task-verifier-file", "/run/task/verifier"),
+		"no core API URL": with(task, "--core-api-url", ""),
+	} {
+		if _, err := Parse(args, io.Discard); err == nil {
+			t.Errorf("a task actor with %s was accepted", name)
+		}
+	}
+}
+
 func TestInjectionIsAnAuthModeNotARuntime(t *testing.T) {
 	c, err := Parse(with(required[:6], "--llm-auth", "injected", "--llm-base-url", "http://proxy.invalid"), io.Discard)
 	if err != nil || c.Runtime != RuntimeDeployment || c.LLMAuth != AuthInjected {

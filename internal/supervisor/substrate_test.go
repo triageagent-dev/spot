@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,7 +141,7 @@ func TestWhatASuspensionWouldLoseIsOnTheDurableDirectory(t *testing.T) {
 	// The next process starts cold, and a new issue is news against that baseline.
 	h.core.setIssues(issue("a", "warning", 0), issue("b", "critical", 0))
 	h.start()
-	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	trig.say(triggers.Pending{Rooms: []string{"bus"}})
 	h.waitFor("an edge wake for the issue that came meanwhile", func() bool { return h.turns() >= 2 })
 	if in := h.file("stdin", 2); !strings.Contains(in, "new issue") {
 		t.Fatalf("the restored baseline did not tell the new issue:\n%s", in)
@@ -166,5 +167,49 @@ func TestTheSpansAreFlushedBeforeTheReportsLeave(t *testing.T) {
 		if s == "idle" && (i == 0 || order[i-1] != "flush") {
 			t.Fatalf("the reports left before the spans were flushed: %v", order)
 		}
+	}
+}
+
+func TestASubstrateSpotAsksTheCoreToMakeAnActorForATask(t *testing.T) {
+	h, trig := substrateHarness(t)
+	h.task = newScriptTurner(time.Minute)
+	h.set("tasks", `[{"title":"check the cart","goal":"look at the cart pods and report"}]`)
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	h.waitFor("the core to be asked", func() bool { trig.mu.Lock(); defer trig.mu.Unlock(); return len(trig.started) == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if h.task.turnCount() != 0 {
+		t.Fatal("the task ran in the spot: it is the core's actor to run")
+	}
+	trig.mu.Lock()
+	got := trig.started[0]
+	trig.mu.Unlock()
+	if got != "check the cart|look at the cart pods and report" {
+		t.Fatalf("%q", got)
+	}
+	// The next wake knows it was asked, and that Tria reads the result.
+	h.set("tasks", "")
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "Tria reads its result") {
+		t.Fatalf("the digest must say so:\n%s", in)
+	}
+}
+
+func TestATaskTheCoreWillNotMakeIsInTheDigest(t *testing.T) {
+	h, trig := substrateHarness(t)
+	trig.startErr = errors.New("the core did not start the task (status 403)")
+	h.set("tasks", `[{"title":"check the cart","goal":"g"}]`)
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	h.set("tasks", "")
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "not started: the core did not start the task") {
+		t.Fatalf("a refused task is in the digest:\n%s", in)
 	}
 }

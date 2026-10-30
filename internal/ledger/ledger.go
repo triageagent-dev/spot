@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -28,7 +29,8 @@ const (
 	StatusFile   = "status.json"
 	RoomsFile    = "rooms.json"
 	DigestFile   = "digest.json"
-	PromiseFile  = "promise.json"
+	PromiseFile  = "promise.json" // an earlier layout's one promise, read as a list of one
+	PromisesFile = "promises.json"
 	WindowFile   = "window.json"
 	RoomReadFile = "roomread.json"
 )
@@ -239,28 +241,58 @@ func (l *Ledger) SaveDigest(d []DigestEntry) error {
 	return writeJSON(l.Path(DigestFile), d, 0o600)
 }
 
-// Promise is a wake the agent asked for on a person's request ("in 3
-// minutes"): it must come even when the pod restarts or a hold rule is active.
+// Promise is a wake the spot owes on a person's request ("in 3 minutes") or on
+// a request's due: it must come even when the pod restarts or a hold rule is
+// active. For and Room belong to the promises of Tria and are only carried;
+// Task is the request message a promise made from a due answers.
 type Promise struct {
-	At  time.Time `json:"at"`
-	Why string    `json:"why"`
+	At    time.Time `json:"at"`
+	Why   string    `json:"why"`
+	Human bool      `json:"human,omitempty"`
+	For   string    `json:"for,omitempty"`
+	Room  string    `json:"room,omitempty"`
+	Task  string    `json:"task,omitempty"`
 }
 
-// LoadPromise returns the saved promised wake; a missing file is the zero
-// Promise.
-func (l *Ledger) LoadPromise() Promise {
-	var p Promise
+// LoadPromises returns the saved promises, earliest first. A ledger of an
+// earlier layout holds one promise in promise.json: it is a list of one.
+func (l *Ledger) LoadPromises() []Promise {
+	var ps []Promise
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_ = readJSON(l.Path(PromiseFile), &p)
-	return p
+	if err := readJSON(l.Path(PromisesFile), &ps); err != nil || ps == nil {
+		var old Promise
+		if readJSON(l.Path(PromiseFile), &old) == nil && !old.At.IsZero() {
+			old.Human = true
+			ps = []Promise{old}
+		}
+	}
+	var out []Promise
+	for _, p := range ps {
+		if !p.At.IsZero() {
+			out = append(out, p)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out
 }
 
-// SavePromise persists the promised wake; the zero Promise clears it.
-func (l *Ledger) SavePromise(p Promise) error {
+// SavePromises persists the promises; an empty list clears them.
+func (l *Ledger) SavePromises(ps []Promise) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return writeJSON(l.Path(PromiseFile), p, 0o600)
+	if ps == nil {
+		ps = []Promise{}
+	}
+	if err := writeJSON(l.Path(PromisesFile), ps, 0o600); err != nil {
+		return err
+	}
+	// The list is the truth once it is written: an old single promise must not
+	// come back from the file of the earlier layout.
+	if err := os.Remove(l.Path(PromiseFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Window is the state a spot that is suspended between wakes would lose: the
@@ -272,6 +304,11 @@ type Window struct {
 	EdgeWakes []time.Time    `json:"edgeWakes,omitempty"`
 	// Edges is the tracker's baseline, kept as the edges package writes it.
 	Edges json.RawMessage `json:"edges,omitempty"`
+	// Next, NextWhy and NextSource are the plan the last wake left. The core holds
+	// it; an actor that reports a promise without having run a wake says it back.
+	Next       time.Time `json:"next,omitzero"`
+	NextWhy    string    `json:"nextWhy,omitempty"`
+	NextSource string    `json:"nextSource,omitempty"`
 }
 
 // WindowSample is the tokens a turn billed, and when.

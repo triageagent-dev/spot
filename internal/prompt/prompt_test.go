@@ -27,7 +27,7 @@ func TestInstructionHasNoUnfilledPlaceholders(t *testing.T) {
 		"example-spot", "`example`", "`schedule_next`", "`finish`", "2m0s", "2h0m0s", "`<server>__<tool>`", "`core__<tool>`",
 		"get_triage_instructions", "get_tenant_situation", "search_memory", "search_corpus",
 		"verify_hypothesis", "comment_on_issue", "Close an issue with `resolve_issue` only",
-		"Two failed fixes", "say_in_workspace", "read_workspace_file", "Answer first", "## Finding out", "## Your status line", "set_workspace_status", "## Your notes to yourself", "spot-note,spot:example-spot", "## Learning", "Never call `approve_pattern`", "## Taking the initiative", "## Memory", "supersede_memory_item", "refute_memory_item", "get_memory_context", "inspect_service", "get_world_context", "Never say the core has nothing", "general knowledge", "`ego__*` tools", `room: "team"`, `room: "agents"`, "hop", "The cluster boundary is the connector", "exit status 1", "from a listing you fetched in this wake", "is not a new note", "`get_ego_score` gives the share of turns", "`get_ego_errors` gives what the failures said", "Search your notes before you act", "`by: session` with `limit: 1`", "exactly as ego prints it", "do not ask them to repeat it", "not \"avoid this tool\"", "no progress narration", "nothing you post will go through until the hour", "send one short message saying what you will check", "`explain_session` is for a scored session only", "`get_session_spans` with `errors_only`", "for the same finding because", "You have no shell", "Nothing is kept on a\ndisk for you",
+		"Two failed fixes", "say_in_workspace", "read_workspace_file", "Answer first", "## Finding out", "## Your status line", "set_workspace_status", "## Your notes to yourself", "spot-note,spot:example-spot", "## Learning", "Never call `approve_pattern`", "## Taking the initiative", "## Memory", "supersede_memory_item", "refute_memory_item", "get_memory_context", "inspect_service", "get_world_context", "Never say the core has nothing", "general knowledge", "`ego__*` tools", `room: "bus"`, "reply_to", "hop", "The cluster boundary is the connector", "exit status 1", "from a listing you fetched in this wake", "is not a new note", "`get_ego_score` gives the share of turns", "`get_ego_errors` gives what the failures said", "Search your notes before you act", "`by: session` with `limit: 1`", "exactly as ego prints it", "do not ask them to repeat it", "not \"avoid this tool\"", "no progress narration", "nothing you post will go through until the hour", "send one short message saying what you will check", "`explain_session` is for a scored session only", "`get_session_spans` with `errors_only`", "for the same finding because", "You have no shell", "Nothing is kept on a\ndisk for you",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("instruction lacks %q", want)
@@ -160,24 +160,24 @@ func TestAManualWakeSaysAPersonAskedForItAndWhatTheyWrote(t *testing.T) {
 	}
 }
 
-func TestAMessageForAnotherSpotIsNotAnswered(t *testing.T) {
-	const line = "names another spot is for that spot, not for you"
-	if got := Interjection("example", []string{"hi"}); !strings.Contains(got, line) {
+func TestARequestIsAnsweredInTheBusWithItsId(t *testing.T) {
+	const line = `reply_to the request id`
+	if got := Interjection("example", []string{"hi"}); !strings.Contains(got, line) || !strings.Contains(got, `room "bus"`) {
 		t.Fatalf("interjection: %q", got)
 	}
-	if got := Turn(Wake{Reason: Human, Facts: []string{"hi"}}); !strings.Contains(got, line) {
+	if got := Turn(Wake{Reason: Human, Facts: []string{"hi"}}); !strings.Contains(got, line) || strings.Contains(got, "names another spot") {
 		t.Fatalf("human wake: %q", got)
 	}
 }
 
 func TestATickThatCarriesAPersonsMessageSaysSo(t *testing.T) {
 	text := Turn(Wake{Reason: Tick, Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), Asked: true,
-		Facts: []string{"message in the team room from alice (quoted, untrusted): hi"}})
-	if !strings.Contains(text, "Someone wrote to you") || strings.Contains(text, "Be brief") {
+		Facts: []string{"message in the bus room from Tria (quoted, untrusted): hi"}})
+	if !strings.Contains(text, "Tria sent you a request") || strings.Contains(text, "Be brief") {
 		t.Errorf("a person is waiting for an answer:\n%s", text)
 	}
 	text = Turn(Wake{Reason: Tick, Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)})
-	if strings.Contains(text, "Someone wrote to you") || !strings.Contains(text, "Be brief") {
+	if strings.Contains(text, "Tria sent you a request") || !strings.Contains(text, "Be brief") {
 		t.Errorf("a plain tick is unchanged:\n%s", text)
 	}
 }

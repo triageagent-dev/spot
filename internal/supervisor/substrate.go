@@ -92,6 +92,12 @@ func (s *Supervisor) saveWindow() {
 			w.Edges = b
 		}
 	}
+	if !s.nextTick.IsZero() {
+		w.Next, w.NextWhy = s.nextTick, s.scheduledWhy
+		if n := s.status.NextWake; n != nil {
+			w.NextSource = n.Source
+		}
+	}
 	if err := s.led.SaveWindow(w); err != nil {
 		s.log.Error("saving the window", "err", err)
 	}

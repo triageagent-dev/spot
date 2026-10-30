@@ -310,7 +310,7 @@ func TestScheduleNextAndFinish(t *testing.T) {
 }
 
 func TestBuiltinsAreAlwaysListed(t *testing.T) {
-	defs := builtinDefs(false)
+	defs := builtinDefs(false, false)
 	if len(defs) != 2 {
 		t.Fatalf("%v", names(defs))
 	}
@@ -901,5 +901,86 @@ func TestTheNotesTheSupervisorReadCountAsTheSearch(t *testing.T) {
 	r.Begin()
 	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
 		t.Error("the next turn starts held again")
+	}
+}
+
+func TestTheBusIsTheOnlyRoomAToolReachesAndATaskStaysInItsWorkspace(t *testing.T) {
+	// A workspace tool goes to the bus, whether or not the model named it, and
+	// never to another room; a spot is not named, the core takes the token's.
+	for _, tool := range []string{"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_workspace_typing"} {
+		out, refusal := busArgs(tool, json.RawMessage(`{"text":"hi","spot":"another-spot"}`), "")
+		if refusal != "" || !strings.Contains(string(out), `"room":"bus"`) || strings.Contains(string(out), "another-spot") {
+			t.Errorf("%s with no room: %s / %q", tool, out, refusal)
+		}
+		for _, room := range []string{"team", "agents", "!abc:server", "private"} {
+			if _, refusal := busArgs(tool, json.RawMessage(`{"room":"`+room+`"}`), ""); refusal == "" {
+				t.Errorf("%s reached the room %q", tool, room)
+			}
+		}
+		if _, refusal := busArgs(tool, json.RawMessage(`{"room":"bus"}`), ""); refusal != "" {
+			t.Errorf("%s refused the bus: %q", tool, refusal)
+		}
+	}
+	// A spot's own call keeps the tenant it names; a task's goes with its own.
+	out, _ := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "")
+	if !strings.Contains(string(out), "other-workspace") {
+		t.Errorf("a spot's own search lost its tenant: %s", out)
+	}
+	out, refusal := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "mine")
+	if refusal != "" || strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) {
+		t.Errorf("a task reached another workspace: %s / %q", out, refusal)
+	}
+	for _, tool := range []string{"upsert_memory_item", "say_in_workspace", "read_workspace_room"} {
+		out, _ = busArgs(tool, json.RawMessage(`{"tenant":"other-workspace","title":"t"}`), "mine")
+		if strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) {
+			t.Errorf("%s of a task went to another workspace: %s", tool, out)
+		}
+		out, _ = busArgs(tool, json.RawMessage(`{"title":"t"}`), "mine")
+		if !strings.Contains(string(out), `"tenant":"mine"`) {
+			t.Errorf("%s of a task named no workspace: %s", tool, out)
+		}
+	}
+	if got, refusal := busArgs("say_in_workspace", json.RawMessage(`nope`), "mine"); string(got) != "nope" || refusal != "" {
+		t.Errorf("unreadable arguments are the core's to refuse: %s %q", got, refusal)
+	}
+}
+
+func TestAReplyInTheBusCarriesTheNextHopAndTheModelCannotSetIt(t *testing.T) {
+	hops := map[string]int{"$one": 1, "$deep": 3}
+	r := New(Options{RequestHop: func(id string) (int, bool) { h, ok := hops[id]; return h, ok }})
+	hopOf := func(in string) (int, string) {
+		out, refusal := r.withHop(json.RawMessage(in))
+		var m struct {
+			Hop int `json:"hop"`
+		}
+		_ = json.Unmarshal(out, &m)
+		return m.Hop, refusal
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$one"}`); h != 2 || ref != "" {
+		t.Errorf("a reply to a request at hop 1: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$one","hop":99}`); h != 2 || ref != "" {
+		t.Errorf("the model's own hop stood: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$unknown"}`); h != 2 || ref != "" {
+		t.Errorf("a request the spot did not read: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x"}`); h != 1 || ref != "" {
+		t.Errorf("a message that answers nothing: %d %q", h, ref)
+	}
+	if h, ref := hopOf(`{"text":"x","reply_to":"$deep"}`); ref == "" || !strings.Contains(ref, "exchange is over") || h != 0 {
+		t.Errorf("a reply to a request at hop 3 was sent: %d %q", h, ref)
+	}
+	// What the turn read itself counts too.
+	r.noteHops(`{"messages":[{"id":"$read","hop":2},{"id":"$deep2","hop":3}]}`)
+	if h, _ := hopOf(`{"reply_to":"$read"}`); h != 3 {
+		t.Errorf("a request read by the model: %d", h)
+	}
+	if _, ref := hopOf(`{"reply_to":"$deep2"}`); ref == "" {
+		t.Error("a reply to a request the model read at hop 3 was sent")
+	}
+	r.Begin()
+	if h, _ := hopOf(`{"reply_to":"$read"}`); h != 2 {
+		t.Errorf("a new turn remembers the last turn's reads: %d", h)
 	}
 }

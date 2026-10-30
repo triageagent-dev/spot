@@ -41,6 +41,9 @@ type linkCore struct {
 	bodyKeys []string
 	// refuseHello is how many hellos are refused 403, as for a certificate the core does not take.
 	refuseHello int
+	// tasks are the bodies of the task requests the core took; noTasks refuses them 403.
+	tasks   []map[string]any
+	noTasks bool
 }
 
 func newLinkCore(t *testing.T) *linkCore {
@@ -76,6 +79,21 @@ func (c *linkCore) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = io.WriteString(w, `{"budget":{"spent":5,"cap":100,"remaining":95}}`)
+	case LinkTasksPath:
+		if r.Header.Get("Authorization") != "Bearer spt1.token-example-spot" {
+			http.Error(w, `{"error":"token"}`, http.StatusUnauthorized)
+			return
+		}
+		c.lmu.Lock()
+		defer c.lmu.Unlock()
+		if c.noTasks {
+			http.Error(w, `{"error":"no"}`, http.StatusForbidden)
+			return
+		}
+		var m map[string]any
+		_ = json.Unmarshal(body, &m)
+		c.tasks = append(c.tasks, m)
+		_, _ = io.WriteString(w, `{"key":"task-key-1"}`)
 	case LinkPath:
 		c.lmu.Lock()
 		c.enrollHeaders = append(c.enrollHeaders, r.Header.Get(EnrollKeyHeader))
@@ -715,5 +733,26 @@ func TestOnlyTheFirstPokeOfAProcessAsksForATick(t *testing.T) {
 	}
 	if p := l.Take(); p.Order != nil {
 		t.Errorf("a later poke asked for a wake: %+v", p)
+	}
+}
+
+func TestASpotAsksTheCoreForATaskActorWithItsAccessToken(t *testing.T) {
+	c := newLinkCore(t)
+	l, _, _ := upLink(t, c)
+	key, err := l.StartTask(context.Background(), "check the cart", "look at the cart pods and report")
+	if err != nil || key != "task-key-1" {
+		t.Fatalf("%q %v", key, err)
+	}
+	c.lmu.Lock()
+	got := c.tasks
+	c.lmu.Unlock()
+	if len(got) != 1 || got[0]["title"] != "check the cart" || got[0]["goal"] != "look at the cart pods and report" {
+		t.Fatalf("%v", got)
+	}
+	c.lmu.Lock()
+	c.noTasks = true
+	c.lmu.Unlock()
+	if _, err := l.StartTask(context.Background(), "t", "g"); err == nil {
+		t.Fatal("a task the core refused was reported as started")
 	}
 }
