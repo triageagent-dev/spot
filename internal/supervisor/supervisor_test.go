@@ -2115,3 +2115,52 @@ func TestEachWakeReportsOneLineOfActivity(t *testing.T) {
 		t.Fatalf("turn line: %+v", w)
 	}
 }
+
+// A substrate spot is a new process on every wake and does not poll while the
+// core's stream is up. The cursors must be in /state after the first process,
+// or the message that wakes the next one is read as history and dropped.
+func TestSubstrateStartSavesTheRoomCursors(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.start() // the next wake: a new process over the same /state
+	defer h.stop()
+	h.post("team", say("alice", "alice", "@example-spot ping"))
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitIdle(1)
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "ping") {
+		t.Fatalf("the message that woke the process must reach the agent:\n%s", in)
+	}
+}
+
+// emptyRoomCore answers like the core for a room with nothing in it: no
+// messages and no cursor.
+type emptyRoomCore struct{ Core }
+
+func (emptyRoomCore) RoomMessages(_ context.Context, _, since string) ([]corecli.RoomMessage, string, error) {
+	return nil, since, nil
+}
+
+func TestAnEmptyRoomGetsACursorToo(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.Runtime = config.RuntimeSubstrate })
+	led, err := ledger.New(h.state)
+	must(t, err)
+	s := New(h.cfg, led, emptyRoomCore{h.core}, h.script, slog.New(slog.NewTextHandler(&safeBuf{}, nil)))
+	s.primeRooms(context.Background())
+	for _, room := range []string{"team", "agents"} {
+		if led.LoadRoomCursors()[room] == "" {
+			t.Errorf("%s: an empty room left without a cursor is read as history by the next process", room)
+		}
+	}
+}

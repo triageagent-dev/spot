@@ -291,6 +291,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		// An actor starts cold on every wake, and the core's request is the wake:
 		// a startup wake would report a quiet plan over the one the core holds.
 		pend = nil
+		s.primeRooms(ctx)
 	}
 	for ctx.Err() == nil {
 		s.drainTasks(ctx)
@@ -332,6 +333,27 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.drainTasks(ctx)
 	s.setState("stopped")
 	return nil
+}
+
+// primeRooms reads the rooms the process has no saved cursor for, so what is
+// there now is history and the cursor is in /state before the actor is
+// suspended. An actor lives a few seconds per wake and its poll runs every
+// poll interval: without this a room is first read by the wake after the one
+// that should have answered, and that read drops the message as history.
+func (s *Supervisor) primeRooms(ctx context.Context) {
+	var cold []string
+	for room, rs := range s.rooms {
+		if !rs.primed {
+			cold = append(cold, room)
+		}
+	}
+	if len(cold) == 0 {
+		return
+	}
+	sort.Strings(cold)
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	s.pollRooms(pctx, cold...)
 }
 
 // manualWake turns a wake a person asked for from the console into a wake of the
@@ -1184,6 +1206,11 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		return nil, false
 	}
 	first := !rs.primed
+	if first && next == "" {
+		// An empty room has no cursor to save, and a room that is not saved is
+		// read as history again by the next process. "0" reads from the start.
+		next = "0"
+	}
 	moved := next != rs.cursor
 	rs.primed, rs.cursor = true, next
 	for _, m := range msgs {
