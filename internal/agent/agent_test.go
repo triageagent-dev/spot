@@ -26,6 +26,8 @@ type fakeTools struct {
 	calls   []string
 	inputs  []string
 	onCall  func(name string)
+
+	notesRead bool
 }
 
 func newFakeTools() *fakeTools {
@@ -38,6 +40,9 @@ func newFakeTools() *fakeTools {
 
 func (f *fakeTools) Begin() { f.reg.Begin() }
 func (f *fakeTools) End()   { f.reg.End() }
+
+// NotesRead is the toolbox's hook for a turn whose notes the supervisor read.
+func (f *fakeTools) NotesRead() { f.notesRead = true }
 func (f *fakeTools) List(context.Context) ([]llm.ToolDef, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -573,5 +578,16 @@ func TestATraceOfMoreThanFortyLinesKeepsTheFirstThirtyNineAndSaysHowManyWereCut(
 	}
 	if res.Trace[0].Kind != "model" || res.Trace[MaxTrace-2].Kind == "cut" {
 		t.Errorf("the first 39 are kept: %+v", res.Trace[:3])
+	}
+}
+
+func TestATurnWhoseNotesWereReadTellsTheToolbox(t *testing.T) {
+	for _, read := range []bool{true, false} {
+		ft := newFakeTools()
+		f := llm.NewFake(llm.EndTurn("nothing to do", u))
+		newAgent(f, ft, nil).Run(context.Background(), Turn{Prompt: "p", NotesRead: read})
+		if ft.notesRead != read {
+			t.Errorf("NotesRead %v reached the toolbox as %v", read, ft.notesRead)
+		}
 	}
 }

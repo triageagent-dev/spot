@@ -1502,7 +1502,7 @@ func (s *Supervisor) startSide(ctx context.Context, reason prompt.Reason, facts 
 	s.wakes["side-"+string(reason)]++
 	s.log.Info("short turn start", "reason", reason, "facts", len(facts))
 	go func() {
-		st.done <- s.fast.Run(jctx, agent.Turn{Reason: string(reason), Prompt: text, Limited: limited})
+		st.done <- s.fast.Run(jctx, agent.Turn{Reason: string(reason), Prompt: text, Limited: limited, NotesRead: rerr == nil})
 	}()
 	return true
 }
@@ -1693,7 +1693,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	pre := s.tracker.Snapshot()
 	stopTyping := s.showWorking(ctx, p.room)
 	wk, wctx := s.begin(ctx, LaneLong, string(p.reason), tools.TaskRequest{})
-	res := s.run(wctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room, Limited: limited})
+	res := s.run(wctx, agent.Turn{Reason: string(p.reason), Prompt: text, Room: p.room, Limited: limited, NotesRead: rerr == nil})
 	stopTyping()
 	if stopped, _ := s.end(wk); stopped && ctx.Err() == nil {
 		res.Canceled = false // an operator ended it; the supervisor is not stopping

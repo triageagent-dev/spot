@@ -194,6 +194,15 @@ func (r *Registry) Begin() {
 	r.mu.Unlock()
 }
 
+// NotesRead records that the supervisor read the standing notes for this turn
+// and showed them to the model: the search the recall gate waits for has been
+// made for it. The gate for a post still wants the memory read and a note.
+func (r *Registry) NotesRead() {
+	r.mu.Lock()
+	r.recalled = true
+	r.mu.Unlock()
+}
+
 // End closes the turn's connections. What the built-ins recorded stays
 // readable until the next Begin.
 func (r *Registry) End() {
@@ -442,7 +451,8 @@ func (r *Registry) fence(rt route, text string) string {
 // recallFirstText is the result of a call held back until the notes are searched.
 const recallFirstText = "not run: search your notes first. Call search_memory with `spot-note` and the subject " +
 	"you are about to work on (and with what a person told you about it), read what comes back, " +
-	"then call this again. A note from a person (skip, never, stop, always) is a rule."
+	"then call this again. A note from a person (skip, never, stop, always) is a rule. " +
+	"The order is: search_memory, then upsert_memory_item (your note), then the post."
 
 // heldForRecall reports whether a call to rt waits for a search_memory. The
 // caller holds r.mu.
