@@ -354,6 +354,21 @@ The spot holds no cluster RBAC; a cluster is reached through a connector, whose 
 | access token | After a good hello the core sends `{"token":{"value","exp"}}`: a CA-signed token (`spt1.…`) valid 10 minutes, sent again at half its life. The spot writes it to `<identity-dir>/token`; the core client reads that file on every request and the model never sees it. It is accepted by the core’s MCP endpoint only, as the caller `spot:<workspace>/<name>` with read and write on its workspace and never execute, ingest or voice. `control_spot_task` is refused to it. |
 | start | The stream starts before the system prompt is read. The spot waits for its first access token (“identity: the core accepted the spot”), then reads the `spot-instruction` cell (section 7), then opens its tools. |
 
+### Enrolment of a substrate spot
+
+The steps from the key to the certificate, for a spot on Agent Substrate; a Deployment spot differs where the table says so.
+
+| Part | Rule |
+|---|---|
+| mint | A person with write and execute rights on the workspace mints a one-time key in the TUI for the spot's name. The label of the key is the spot's name. The core keeps only a hash of the key. |
+| Secret | The key is stored in a Secret of the spots namespace, under the data key `key`, named `<spot>-enroll-key` for a Deployment spot and `<spot>-ate-enroll-key` for a spot on Agent Substrate. An operator creates it, never the spot. |
+| the key on the request | The first join of a substrate spot sends the header `X-Triage-Enroll-Key: replaced-by-egress` (`--enroll-key-injected`), and the egress rule for the core's host replaces its value from that Secret (`credentialUri` of the form `ate-secret://k8s.io/default/<namespace>/<secret>/key`), so the actor never holds the key. A Deployment spot reads the key from `--enroll-key-file`. |
+| the join | The core checks the key against the hash, marks it spent and issues the certificate. The spot keeps the certificate on `/state` (substrate spot) or on its PVC (Deployment spot). Every later join, renewal and hello is by certificate and the header is not sent again. |
+| after the join | The Secret holds a spent key. Keeping it is harmless, and it is the Secret to overwrite for a re-key. |
+| re-key | A new key for the same name is needed when `/state` is lost (a change of the template's volumes recreates the actor) and to revoke the spot. Mint a key for the same name, overwrite the Secret, restart the actor. The join issues a new certificate and revokes the old one. |
+| the name | The label of the key, the spot's name in the actor's arguments (`--name`) and the actor's name must be one name, or the join is refused. The core derives the actor's name from the workspace and the spot: `s` followed by the first 40 hex digits of the SHA-256 of `<workspace>/<spot>`. |
+| a Deployment of the same name | When a Deployment spot of the same name exists, scale it to 0 before the actor's first hello: the join replaces the certificate and revokes the Deployment's. |
+
 ## Kill switches
 
 Any one is enough.
