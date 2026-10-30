@@ -55,10 +55,13 @@ type Interjector interface {
 
 // Supervisor owns the loop. Create it with New and call Run once.
 type Supervisor struct {
-	cfg    config.Config
-	led    *ledger.Ledger
-	core   Core
-	turner Turner
+	// startedAt is when Run began: a substrate process with no room cursor counts
+	// what was said just before it as news (startGrace).
+	startedAt time.Time
+	cfg       config.Config
+	led       *ledger.Ledger
+	core      Core
+	turner    Turner
 	// fast is the second, short lane: while the turner runs a long turn, a
 	// person's message and a wake the spot promised run on it, in a turn of
 	// their own with its own tool state, instead of waiting or interrupting.
@@ -219,6 +222,7 @@ func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *s
 			rs.cursor, rs.primed = cur, true
 		}
 	}
+	s.startedAt = s.now()
 	s.digest = led.LoadDigest()
 	if cfg.Substrate() {
 		s.loadWindow()
@@ -281,7 +285,8 @@ const maxHeld = 20
 // ledger and the room cursors are in /state when it survives, and the rest is
 // the core's.
 func (s *Supervisor) Run(ctx context.Context) error {
-	s.status.StartedAt = s.now().UTC().Format(time.RFC3339)
+	s.startedAt = s.now()
+	s.status.StartedAt = s.startedAt.UTC().Format(time.RFC3339)
 	s.setState("starting")
 
 	s.refreshIdentity(ctx, true, 0)
@@ -298,8 +303,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if pend == nil {
 			pend = s.manualWake()
 		}
+		orderedWake := false
 		if pend == nil {
 			pend = s.ordered()
+			orderedWake = pend != nil && s.cfg.Substrate()
 		}
 		if pend == nil && s.selfWakeDue() {
 			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
@@ -309,6 +316,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 				s.pauseForCeiling()
 				s.reportWake(string(pend.reason), LaneLong, "ceiling", agent.Result{}, s.nextTick, "ceiling")
 			} else {
+				if orderedWake {
+					s.withRooms(ctx, pend)
+				}
 				s.turn(ctx, pend)
 				pend = nil
 				continue
@@ -335,9 +345,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return nil
 }
 
-// primeRooms reads the rooms the process has no saved cursor for, so what is
-// there now is history and the cursor is in /state before the actor is
-// suspended. An actor lives a few seconds per wake and its poll runs every
+// startGrace is how long before its start a substrate process still counts a
+// message as news when it has no cursor: the message that wakes it is a few
+// seconds old by the time the platform has resumed the actor.
+const startGrace = 30 * time.Second
+
+// primeRooms reads the rooms the process has no saved cursor for, so the cursor
+// is in /state before the actor is suspended. What was said before the
+// process started is history; what was said just before it is the wake. An actor lives a few seconds per wake and its poll runs every
 // poll interval: without this a room is first read by the wake after the one
 // that should have answered, and that read drops the message as history.
 func (s *Supervisor) primeRooms(ctx context.Context) {
@@ -353,7 +368,25 @@ func (s *Supervisor) primeRooms(ctx context.Context) {
 	sort.Strings(cold)
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	s.pollRooms(pctx, cold...)
+	s.hold(s.pollRooms(pctx, cold...))
+}
+
+// withRooms reads the rooms for a wake the core ordered from an actor and adds
+// what it finds to that wake. The core's request may have come with no usable
+// token, which the actor answers with a plain tick that reads nothing of it:
+// what was said in the rooms is then a fact of this wake, not of a wake that may
+// never come. The wake keeps its reason and the words it was ordered with.
+func (s *Supervisor) withRooms(ctx context.Context, p *pending) {
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	now := s.now()
+	for _, e := range s.pollRooms(pctx, "team", "agents") {
+		p.facts = append(p.facts, e.Fact)
+		p.edges = append(p.edges, heldEdge{Edge: e, at: now})
+		if e.Human {
+			p.room = "team"
+		}
+	}
 }
 
 // manualWake turns a wake a person asked for from the console into a wake of the
@@ -1208,7 +1241,8 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 	first := !rs.primed
 	if first && next == "" {
 		// An empty room has no cursor to save, and a room that is not saved is
-		// read as history again by the next process. "0" reads from the start.
+		// read as history again by the next process. "0" sends no since_ts, so
+		// the next read is the core's default page, all of it newer than this.
 		next = "0"
 	}
 	moved := next != rs.cursor
@@ -1217,6 +1251,18 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		if m.TS > rs.seenTS {
 			rs.seenTS = m.TS
 		}
+	}
+	if first && s.cfg.Substrate() {
+		// An actor starts for a wake, and the message that wakes a process with
+		// no cursor is already in the room.
+		cut := s.startedAt.Add(-startGrace).UnixMilli()
+		recent := msgs[:0:0]
+		for _, m := range msgs {
+			if m.TS >= cut {
+				recent = append(recent, m)
+			}
+		}
+		msgs, first = recent, false
 	}
 	if first {
 		return nil, moved // history at startup is not news
@@ -1605,7 +1651,12 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	if rerr != nil && ctx.Err() == nil {
 		s.log.Warn("standing notes not read; the wake goes on without them", "err", rerr)
 	}
-	if hold && p.reason != prompt.Human && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
+	// A person's message the wake carries (a tick that read the rooms) is a person asking.
+	asked := p.reason == prompt.Human
+	for _, e := range p.edges {
+		asked = asked || e.Human
+	}
+	if hold && !asked && p.reason != prompt.Manual && (p.reason != prompt.Tick || !s.promiseHuman) {
 		// A person said to check nothing until they ask: no model call at all.
 		s.holdWake(p)
 		return
@@ -1622,7 +1673,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// A person writes while a rule says to check nothing until asked: the turn
 	// has the notes, the room and the post tools only. A check they ask for is a
 	// wake the spot schedules, and that one has every tool.
-	limited := hold && p.reason == prompt.Human
+	limited := hold && asked
 	text := prompt.Turn(prompt.Wake{
 		Limited: limited,
 		Reason:  p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,

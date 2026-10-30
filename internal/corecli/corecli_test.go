@@ -194,6 +194,18 @@ func TestUnreachableCoreErrors(t *testing.T) {
 	}
 }
 
+// A core that cannot be reached is not a core without the room tool: the
+// spot disables a room for ten minutes on the second, never on the first.
+func TestUnreachableCoreIsNotAMissingRoomTool(t *testing.T) {
+	c := New("http://127.0.0.1:1/mcp", tokenFile(t, "t"), "example")
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, _, err := c.RoomMessages(ctx, "team", ""); err == nil || errors.Is(err, ErrNoRoomTool) {
+		t.Fatalf("want a transport error, got %v", err)
+	}
+}
+
 // The shape the core's read_workspace_room really returns (ts is a number in
 // milliseconds, the cursor is the newest ts, and it is sent back as since_ts).
 func TestParseRoomCoreShape(t *testing.T) {

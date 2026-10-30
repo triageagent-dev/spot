@@ -242,12 +242,19 @@ func (c *Client) Close() {
 
 // HasTool reports whether the core offers a tool, as of the last connection.
 func (c *Client) HasTool(ctx context.Context, name string) bool {
+	ok, _ := c.offers(ctx, name)
+	return ok
+}
+
+// offers is HasTool with the reason a core that cannot be reached gives: a core
+// that is down offers no tool, which is not the same as one that has none.
+func (c *Client) offers(ctx context.Context, name string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.open(ctx); err != nil {
-		return false
+		return false, err
 	}
-	return c.tools[name]
+	return c.tools[name], nil
 }
 
 // call invokes a tool and returns its text. A dropped connection is rebuilt
@@ -357,7 +364,11 @@ var ErrNoRoomTool = errors.New("core has no read_workspace_room tool")
 // array; each message with id, sender|from|author, text|body|message and
 // ts|time|created_at.
 func (c *Client) RoomMessages(ctx context.Context, room, since string) ([]RoomMessage, string, error) {
-	if !c.HasTool(ctx, "read_workspace_room") {
+	ok, err := c.offers(ctx, "read_workspace_room")
+	if err != nil {
+		return nil, since, err
+	}
+	if !ok {
 		return nil, since, ErrNoRoomTool
 	}
 	args := map[string]any{"tenant": c.tenant, "room": room}

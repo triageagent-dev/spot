@@ -2191,3 +2191,111 @@ func TestAnEmptyRoomGetsACursorToo(t *testing.T) {
 		}
 	}
 }
+
+// A frame the actor takes for a poke (no usable token) becomes a plain tick that
+// reads nothing of it. The message the core meant must still reach that wake.
+func TestATickOfAnActorReadsTheRooms(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.post("team", say("alice", "alice", "@example-spot are you there?"))
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "are you there?") {
+		t.Fatalf("a tick must carry the message waiting in the room:\n%s", in)
+	}
+}
+
+// What a wake was ordered for is not lost to what was said in a room: the
+// promise is still the reason, and the line in the room comes with it.
+func TestAPromisedWakeKeepsItsWordsWhenARoomHasNews(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["agents"] = []corecli.RoomMessage{say("@tria:srv", "Tria", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.post("agents", corecli.RoomMessage{Sender: "@tria:srv", Name: "Tria", Text: "a line from Tria", Tria: true})
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "promise", Why: "check the checkout pods at 15:00"}})
+	h.waitIdle(1)
+	in := h.file("stdin", 1)
+	if !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "check the checkout pods at 15:00") || !strings.Contains(in, "a line from Tria") {
+		t.Fatalf("the promise and the line in the room must both reach the wake:\n%s", in)
+	}
+}
+
+// The first thing a person says to a spot with no cursor is the message that
+// wakes it. It is in the room when the process starts, and it is news.
+func TestTheMessageThatWakesACursorlessProcessIsNews(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	old := say("alice", "alice", "welcome")
+	old.TS = h.clock.Now().Add(-time.Hour).UnixMilli()
+	waking := say("alice", "alice", "@example-spot hello")
+	waking.TS = h.clock.Now().Add(-3 * time.Second).UnixMilli()
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{old, waking}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	h.waitIdle(1)
+	in := h.file("stdin", 1)
+	if !strings.Contains(in, "hello") || strings.Contains(in, "welcome") {
+		t.Fatalf("the waking message is news and the hour-old one is history:\n%s", in)
+	}
+}
+
+// A person who writes under a "check nothing until asked" rule is asking, also
+// when the wake that carries the message is a tick the core ordered.
+func TestAPersonsMessageOnAnOrderedWakeIsNotHeld(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["team"] = []corecli.RoomMessage{say("alice", "alice", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.core.hold = true
+	h.post("team", say("alice", "alice", "@example-spot please look at the checkout pods"))
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	if in := h.file("stdin", 1); !strings.Contains(in, "checkout pods") {
+		t.Fatalf("the person's message must reach a turn under a hold rule:\n%s", in)
+	}
+}
