@@ -88,11 +88,12 @@
         "command" $sub.command
         "args" $args
         "wakeupProbe" (dict "httpGet" (dict "path" "/readyz" "port" 80) "timeoutSeconds" (int $sub.wakeupTimeoutSeconds))
-        "volumeMounts" (list (dict "name" "state" "mountPath" "/state"))
+        "env" (list (dict "name" "SSL_CERT_FILE" "value" "/run/ate/egress-trust-bundle/trust-bundle.pem"))
+        "volumeMounts" (list (dict "name" "state" "mountPath" "/state") (dict "name" "system-info" "mountPath" "/run/ate/egress-trust-bundle"))
         "securityContext" (dict "capabilities" (dict "add" (list "NET_BIND_SERVICE")))))
       "resources" (dict "limits" (dict "cpuMillicores" (int64 $sub.cpuMillicores) "memoryBytes" (int64 $sub.memoryBytes)))
       "snapshotConfig" (dict "preferredFidelity" "SNAPSHOT_FIDELITY_VOLUMES")
-      "volumes" (list (dict "name" "state" "durableDir" (dict))) }}
+      "volumes" (list (dict "name" "state" "durableDir" (dict)) (dict "name" "system-info" "systemInfo" (dict "dataSources" (list (dict "trustBundle" (dict "names" (list "egress-mitm.ate.dev" "system-roots.ate.dev") "path" "trust-bundle.pem")))))) }}
 {{- if not $sub.goldenSnapshot }}{{ $_ := set (get $template "snapshotConfig") "goldenSnapshotConfig" (dict "mode" "GOLDEN_SNAPSHOT_MODE_DISABLED") }}{{ end }}
 {{- if $sub.workerSelector }}{{ $_ := set $template "workerSelector" (dict "matchLabels" $sub.workerSelector) }}{{ end }}
 # ActorTemplate: kubectl ate create actor-template -f -
