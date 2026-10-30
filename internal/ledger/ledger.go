@@ -304,6 +304,11 @@ type Window struct {
 	EdgeWakes []time.Time    `json:"edgeWakes,omitempty"`
 	// Edges is the tracker's baseline, kept as the edges package writes it.
 	Edges json.RawMessage `json:"edges,omitempty"`
+	// Next, NextWhy and NextSource are the plan the last wake left. The core holds
+	// it; an actor that reports a promise without having run a wake says it back.
+	Next       time.Time `json:"next,omitzero"`
+	NextWhy    string    `json:"nextWhy,omitempty"`
+	NextSource string    `json:"nextSource,omitempty"`
 }
 
 // WindowSample is the tokens a turn billed, and when.

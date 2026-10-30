@@ -98,6 +98,9 @@ type Supervisor struct {
 	// a request named a time for. They run even under a hold rule and survive a
 	// restart; the earliest fires, the others stay (ADR-109).
 	promises schedule.Promises
+	// dueNoted is set when a request in the bus room named a later time and
+	// became a promise; the core is told at the end of the read.
+	dueNoted bool
 	// kept is the earliest wake the agent asked for on its own: an edge wake that
 	// wants a later one does not push it back. It is no promise and is not
 	// reported as one.
@@ -209,7 +212,7 @@ type Tokens struct {
 func New(cfg config.Config, led *ledger.Ledger, core Core, turner Turner, log *slog.Logger) *Supervisor {
 	s := &Supervisor{
 		cfg: cfg, led: led, core: core, turner: turner, log: log, now: time.Now,
-		rooms: map[string]*roomState{"team": {}, "agents": {}},
+		rooms: map[string]*roomState{BusRoom: {}},
 		work:  work{running: map[string]*job{}}, taskc: make(chan taskEnd, 16),
 	}
 	// A saved cursor means the messages after it are news, restart or not.
@@ -274,7 +277,7 @@ type pending struct {
 	facts       []string
 	scheduledBy string
 	note        string
-	room        string // where the "typing…" indicator shows; empty = the agents room
+	room        string // where the "typing…" indicator shows; empty = the bus
 	// edges are the held edges that made up the wake, so they can be put back if
 	// the turn fails before the model saw them.
 	edges []heldEdge
@@ -381,11 +384,11 @@ func (s *Supervisor) withRooms(ctx context.Context, p *pending) {
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	now := s.now()
-	for _, e := range s.pollRooms(pctx, "team", "agents") {
+	for _, e := range s.pollRooms(pctx, BusRoom) {
 		p.facts = append(p.facts, e.Fact)
 		p.edges = append(p.edges, heldEdge{Edge: e, at: now})
 		if e.Human {
-			p.room = "team"
+			p.room = BusRoom
 		}
 	}
 }
@@ -825,7 +828,13 @@ const maxWhy = 200
 // none.
 func (s *Supervisor) promiseReport() []triggers.Promise {
 	var out []triggers.Promise
-	for _, p := range s.promises {
+	ps := s.promises
+	if s.cfg.Substrate() {
+		// The core starts the piece of a request that named a time (ADR-109): once
+		// its time has come the entry is the core's, not the spot's to report.
+		ps = ps.WithoutPastTasks(s.now())
+	}
+	for _, p := range ps {
 		out = append(out, triggers.Promise{At: p.At.UnixMilli(), Why: clipBytes(p.Why, maxWhy), Human: p.Human, For: p.For, Room: p.Room, Task: p.Task})
 	}
 	return out
@@ -1146,13 +1155,7 @@ func (s *Supervisor) fromHeld() *pending {
 		if e.Human {
 			p.reason = prompt.Human
 		}
-		// A person waits in the team room; machines talk in the agents room.
-		switch {
-		case e.Human:
-			p.room = "team"
-		case e.Room != "" && p.room == "":
-			p.room = e.Room
-		}
+		p.room = BusRoom
 	}
 	s.held = nil
 	s.status.HeldEdges = 0
@@ -1177,7 +1180,7 @@ func (s *Supervisor) poll(ctx context.Context) []edges.Edge {
 		out = append(out, s.tracker.Observe(issues)...)
 	}
 
-	out = append(out, s.pollRooms(pctx, "team", "agents")...)
+	out = append(out, s.pollRooms(pctx, BusRoom)...)
 	if len(out) > 0 {
 		// Logs carry what happened, never what was said: the text of a person's
 		// message or an issue is content, and is logged only on request.
@@ -1201,7 +1204,75 @@ func (s *Supervisor) pollRooms(ctx context.Context, rooms ...string) []edges.Edg
 	if moved {
 		s.saveCursors()
 	}
+	if s.dueNoted {
+		s.dueNoted = false
+		s.reportDue()
+	}
 	return out
+}
+
+// BusRoom is the one room the spot reads and speaks in (ADR-109): Tria's
+// requests come in it and the spot's answers go back in it. The tools take the
+// word "bus" for the spot's own room; the core finds it from the token.
+const BusRoom = "bus"
+
+// laterRequest keeps a request that names a later time as a promise instead of
+// a wake: the core starts the piece when it is due. later says the request
+// names a time that has not come; kept says it is now a promise. A later request
+// that cannot be kept (the list is full or the time is too far out) is read as
+// one for now, and the model is told so in the request.
+func (s *Supervisor) laterRequest(m corecli.RoomMessage) (kept, later bool) {
+	now := s.now()
+	at := time.UnixMilli(m.Due)
+	if m.Due <= 0 || !at.After(now.Add(schedule.FireSkew)) {
+		return false, false
+	}
+	for _, p := range s.promises {
+		if p.Task == m.ID {
+			return true, true // read before, and kept
+		}
+	}
+	ps, ok := s.promises.Add(now, schedule.Promise{At: at, Why: m.Text, Human: true, For: m.For, Task: m.ID})
+	if !ok {
+		s.log.Warn("a request for a later time could not be kept as a promise", "held", len(s.promises))
+		return false, true
+	}
+	s.setPromises(ps)
+	s.dueNoted = true
+	s.log.Info("a request names a later time: kept as a promise", "at", at.UTC().Format(time.RFC3339), "held", len(ps))
+	return true, true
+}
+
+// busRequestNote is what the wake adds to a request in the bus: its id, to
+// answer with, the person it is made for and the issue it is about.
+func busRequestNote(m corecli.RoomMessage, notKept bool) string {
+	note := fmt.Sprintf(" [request id %q: answer it with say_in_workspace, room \"bus\" and reply_to this id]", m.ID)
+	if m.For != "" {
+		note += fmt.Sprintf(" [made for %s]", edges.Fence(m.For, 80))
+	}
+	if m.Issue != "" {
+		note += fmt.Sprintf(" [about the issue %s]", edges.Fence(m.Issue, 80))
+	}
+	if notKept {
+		note += " [it asked for a later time that could not be kept: answer now, or say what you cannot do]"
+	}
+	return note
+}
+
+// reportDue tells the core the promises after a request named a later time. No
+// wake ran, so the plan is the one the last wake left: an actor holds it in its
+// window. A short-lane line carries the plan and answers no wake of the core's.
+func (s *Supervisor) reportDue() {
+	if s.nextTick.IsZero() {
+		if w := s.led.LoadWindow(); !w.Next.IsZero() {
+			s.nextTick, s.scheduledWhy = w.Next, w.NextWhy
+			s.status.NextWake = &Next{At: w.Next.UTC().Format(time.RFC3339), Why: w.NextWhy, Source: w.NextSource}
+		} else {
+			s.nextTick, s.scheduledWhy = s.now().Add(s.cfg.MaxWake), "waiting for an event"
+			s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: "quiet"}
+		}
+	}
+	s.reportWake("due", LaneShort, "scheduled", agent.Result{}, time.Time{}, "")
 }
 
 func (s *Supervisor) saveCursors() {
@@ -1282,8 +1353,16 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			who = m.Sender
 		}
 		// A person is talking to the spot; Tria and other agents are news but
-		// not a human asking.
-		human := !m.Tria && m.Spot == ""
+		// not a human asking. Everything in the bus is Tria's request, made for a
+		// person or for the workspace: it is read as someone asking.
+		human := room == BusRoom || (!m.Tria && m.Spot == "")
+		kept, later := false, false
+		if room == BusRoom {
+			kept, later = s.laterRequest(m)
+		}
+		if kept {
+			continue
+		}
 		// The core says the message is for another spot, or for nobody and
 		// another spot is the one that answers. It never wakes this spot and is
 		// not asking it anything, but it is what the room has been saying: a
@@ -1300,6 +1379,9 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			note = ", not addressed to you"
 		}
 		fact := fmt.Sprintf("message in the %s room from %s%s (quoted, untrusted): %s", room, edges.Fence(orUnknown(who), 60), note, edges.Fence(m.Text, roomFactRunes))
+		if room == BusRoom {
+			fact += busRequestNote(m, later)
+		}
 		if m.ReplyTo != "" {
 			// A reply is read together with the message it answers.
 			if to, ok := page[m.ReplyTo]; ok {
@@ -1319,7 +1401,7 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		}
 		// The core names the spots a message addresses; with forYou true and a
 		// list, this spot is one of them.
-		mentioned := !aside && (s.mentioned(m.Text) || (m.ForYou != nil && *m.ForYou && len(m.Mentions) > 0))
+		mentioned := !aside && (room == BusRoom || s.mentioned(m.Text) || (m.ForYou != nil && *m.ForYou && len(m.Mentions) > 0))
 		if !mentioned && human && !aside && strings.Contains(m.Text, "@") {
 			// Someone is addressing somebody, and the name they used may be
 			// the spot's new one: look again, at most every few seconds.
@@ -1562,7 +1644,7 @@ func (s *Supervisor) finishSide(ctx context.Context, res agent.Result) {
 		s.hold(st.talk)
 	}
 	for _, text := range res.Undelivered {
-		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: "team", Fact: text}})
+		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: BusRoom, Fact: text}})
 	}
 	if res.Canceled {
 		return
@@ -1750,7 +1832,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// A message handed to the turn that it ended without showing to the model
 	// wakes the agent next, as if it had arrived after the turn.
 	for _, text := range res.Undelivered {
-		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: "team", Fact: text}})
+		s.hold([]edges.Edge{{Kind: edges.Message, Human: true, Mentioned: true, Room: BusRoom, Fact: text}})
 		s.log.Info("a message the turn did not take is held for the next wake")
 	}
 
@@ -1833,13 +1915,12 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 // about 30 seconds without one.
 const typingEvery = 20 * time.Second
 
-// showWorking shows the spot's "typing…" indicator in room (the agents room
-// when empty) while a turn runs, so people can see it is thinking, and
+// showWorking shows the spot's "typing…" indicator in room (the bus when empty) while a turn runs, so people can see it is thinking, and
 // returns the function that clears it. It is model-free and best effort: a
 // core without the tool, or a failed call, only costs the indicator.
 func (s *Supervisor) showWorking(ctx context.Context, room string) func() {
 	if room == "" {
-		room = "agents"
+		room = BusRoom
 	}
 	every := s.typingEvery
 	if every <= 0 {

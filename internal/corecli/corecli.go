@@ -61,6 +61,13 @@ type RoomMessage struct {
 	// ReplyTo is the id of the message this one answers, empty when it is not a
 	// reply or the core does not say.
 	ReplyTo string
+	// Issue is the issue a request in the bus room is about, empty when none.
+	Issue string
+	// For is the RBAC subject of the person a request in the bus room is made
+	// for; the core sets it and leaves it out for a workspace's own ask.
+	For string
+	// Due is when (ms) a request in the bus room asks to be worked on; 0 = now.
+	Due int64
 }
 
 // ErrCredentialRejected is what a call returns while the core has refused the
@@ -459,6 +466,10 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 			Spot:   str(m, "spot"),
 		}
 		rm.ReplyTo = str(m, "replyTo", "reply_to")
+		rm.Issue, rm.For = str(m, "issue"), str(m, "for")
+		if d, ok := m["due"].(float64); ok && d > 0 {
+			rm.Due = int64(d)
+		}
 		if t, ok := m["tria"].(bool); ok {
 			rm.Tria = t
 		}

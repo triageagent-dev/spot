@@ -155,6 +155,19 @@ func (ps Promises) Fired(now time.Time) Promises {
 	return out
 }
 
+// WithoutPastTasks returns the list without the promises that name a request
+// and whose time has come: the core starts that piece itself, and a report that
+// still carried it would put back what the core has taken out.
+func (ps Promises) WithoutPastTasks(now time.Time) Promises {
+	var out Promises
+	for _, p := range ps {
+		if p.Task == "" || p.At.After(now) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Without returns the list without its earliest promise.
 func (ps Promises) Without() Promises {
 	if len(ps) == 0 {

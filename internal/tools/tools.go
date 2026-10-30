@@ -646,7 +646,7 @@ func withRoomSince(args json.RawMessage, since func(room string) int64) json.Raw
 	if _, ok := m["since_ts"]; ok {
 		return args
 	}
-	room := "team"
+	room := "bus"
 	if raw, ok := m["room"]; ok {
 		var v string
 		if json.Unmarshal(raw, &v) == nil && v != "" {

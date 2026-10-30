@@ -252,6 +252,19 @@ func TestParseRoomKeepsWhatAReplyAnswers(t *testing.T) {
 	}
 }
 
+func TestParseRoomKeepsWhatARequestInTheBusCarries(t *testing.T) {
+	m, _, err := ParseRoom(`{"messages":[{"id":"$r","sender":"@tria:s","body":"check","ts":3,"tria":true,"hop":1,"issue":"ISS-7","for":"user:alice","due":1793400000000},{"id":"$w","sender":"@tria:s","body":"now","ts":4,"tria":true}]}`, "")
+	if err != nil || len(m) != 2 {
+		t.Fatalf("%+v %v", m, err)
+	}
+	if m[0].Issue != "ISS-7" || m[0].For != "user:alice" || m[0].Due != 1793400000000 || m[0].Hop != 1 {
+		t.Fatalf("%+v", m[0])
+	}
+	if m[1].Issue != "" || m[1].For != "" || m[1].Due != 0 {
+		t.Fatalf("a workspace ask for now carries none: %+v", m[1])
+	}
+}
+
 func TestParseRoomShowsAnAttachment(t *testing.T) {
 	m, _, err := ParseRoom(`{"messages":[{"id":"$i","sender":"@u.alice:s","body":"shot.png","ts":5,"file":{"name":"shot.png","mime":"image/png","size":9}},{"id":"$t","sender":"@u.alice:s","body":"hi","ts":6}]}`, "")
 	if err != nil || len(m) != 2 || m[0].File != "image/png" || m[0].FileName != "shot.png" || m[1].File != "" {

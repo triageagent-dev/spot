@@ -140,7 +140,7 @@ func TestWhatASuspensionWouldLoseIsOnTheDurableDirectory(t *testing.T) {
 	// The next process starts cold, and a new issue is news against that baseline.
 	h.core.setIssues(issue("a", "warning", 0), issue("b", "critical", 0))
 	h.start()
-	trig.say(triggers.Pending{Rooms: []string{"team"}})
+	trig.say(triggers.Pending{Rooms: []string{"bus"}})
 	h.waitFor("an edge wake for the issue that came meanwhile", func() bool { return h.turns() >= 2 })
 	if in := h.file("stdin", 2); !strings.Contains(in, "new issue") {
 		t.Fatalf("the restored baseline did not tell the new issue:\n%s", in)
