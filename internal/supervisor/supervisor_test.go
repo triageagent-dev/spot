@@ -1254,6 +1254,33 @@ func TestUnmentionedMessageWaitsForChatBatch(t *testing.T) {
 	}
 }
 
+func TestMessageForAnotherSpotDoesNotWake(t *testing.T) {
+	h := roomHarness(t, nil) // chat batching off: a person's message wakes at once
+	defer h.stop()
+	no, yes := false, true
+	other := say("alice", "alice", "@other-spot hey")
+	other.Mentions, other.ForYou = []string{"other-spot"}, &no
+	h.post("team", other)
+	time.Sleep(150 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("a message the core addressed to another spot woke this one")
+	}
+	elder := say("alice", "alice", "anyone around?")
+	elder.Mentions, elder.ForYou = []string{}, &no
+	h.post("team", elder)
+	time.Sleep(150 * time.Millisecond)
+	if h.turns() != 1 {
+		t.Fatalf("an unaddressed message woke a spot that is not the oldest")
+	}
+	mine := say("alice", "alice", "checkout pods look odd")
+	mine.ForYou = &yes
+	h.post("team", mine)
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "checkout pods") || strings.Contains(in, "@other-spot") || strings.Contains(in, "anyone around") {
+		t.Fatalf("only the message for this spot may reach the agent:\n%s", in)
+	}
+}
+
 func TestMachineMessagesDoNotWakeAndHopTwoIsDropped(t *testing.T) {
 	h := roomHarness(t, func(c *config.Config) { c.ChatBatch = time.Hour })
 	defer h.stop()

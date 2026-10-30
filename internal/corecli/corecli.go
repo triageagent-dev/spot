@@ -51,6 +51,13 @@ type RoomMessage struct {
 	File     string
 	FileName string
 	Hop      int // machine-to-machine hop count the core carries; 0 when absent
+	// Mentions are the spots the core found named in the message.
+	Mentions []string
+	// ForYou is the core's answer for this spot: the message names it, or
+	// names no spot and this spot is the workspace's oldest or only one. Nil
+	// when the core does not say (an older core, or a spot its roster does
+	// not know yet): the spot then reads the message as before.
+	ForYou *bool
 }
 
 // ErrCredentialRejected is what a call returns while the core has refused the
@@ -448,6 +455,16 @@ func ParseRoom(text, since string) ([]RoomMessage, string, error) {
 		}
 		if h, ok := m["hop"].(float64); ok {
 			rm.Hop = int(h)
+		}
+		if ms, ok := m["mentions"].([]any); ok {
+			for _, v := range ms {
+				if n, ok := v.(string); ok && n != "" {
+					rm.Mentions = append(rm.Mentions, n)
+				}
+			}
+		}
+		if f, ok := m["forYou"].(bool); ok {
+			rm.ForYou = &f
 		}
 		// ts is a JSON number in milliseconds; fmt.Sprint of a float64 would
 		// give scientific notation and lose the cursor.

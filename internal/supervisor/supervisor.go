@@ -1206,6 +1206,12 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		// A person is talking to the spot; Tria and other agents are news but
 		// not a human asking.
 		human := !m.Tria && m.Spot == ""
+		if human && m.ForYou != nil && !*m.ForYou {
+			// The core says the message is for another spot, or for nobody and
+			// another spot is the one that answers: not news for this one.
+			s.log.Debug("a person's message for another spot dropped", "room", room)
+			continue
+		}
 		if !human && m.Hop >= 2 {
 			// A machine conversation two hops deep: not answered, not even
 			// shown, so two agents cannot keep each other awake.
@@ -1222,7 +1228,9 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			// read_workspace_file if it matters.
 			fact += fmt.Sprintf(" [attached file, %s: read_workspace_file with message_id %q]", m.File, m.ID)
 		}
-		mentioned := s.mentioned(m.Text)
+		// The core names the spots a message addresses; with forYou true and a
+		// list, this spot is one of them.
+		mentioned := s.mentioned(m.Text) || (m.ForYou != nil && *m.ForYou && len(m.Mentions) > 0)
 		if !mentioned && human && strings.Contains(m.Text, "@") {
 			// Someone is addressing somebody, and the name they used may be
 			// the spot's new one: look again, at most every few seconds.
