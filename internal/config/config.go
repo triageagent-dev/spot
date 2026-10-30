@@ -44,6 +44,10 @@ type Config struct {
 	// core's ADR-090 keys): sent with the first join, which the core then
 	// approves at once. A spent key left in place is harmless.
 	EnrollKeyFile string
+	// EnrollKeyInjected sends the join with a placeholder in a header that the
+	// egress in front of the core replaces with the key of a Secret (substrate
+	// runtime): no file, no key in the actor.
+	EnrollKeyInjected bool
 	// ConnectorsFile is a JSON array of Connector: more MCP servers, with the
 	// tools the spot may call on each. Connectors is what it holds, loaded by Parse.
 	ConnectorsFile string
@@ -202,6 +206,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.CoreTokenFile, "core-token-file", "", "file holding the core bearer token (required, unless --core-ca-fingerprint is set)")
 	fs.StringVar(&c.CoreCAFingerprint, "core-ca-fingerprint", "", "the SHA-256 fingerprint of the core's CA (SHA256:<hex>): the spot then joins the core by certificate, and needs --core-api-url; no --core-token-file")
 	fs.StringVar(&c.EnrollKeyFile, "enroll-key-file", "", "file holding the one-time enrollment key the core minted for this spot; with --core-ca-fingerprint")
+	fs.BoolVar(&c.EnrollKeyInjected, "enroll-key-injected", false, "substrate: the first join carries the header X-Triage-Enroll-Key with a placeholder, and the egress in front of the core puts the one-time key there from a Secret; not with --enroll-key-file")
 	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.ConnectorsJSON, "connectors-json", "", "the connectors as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --connectors-file")
@@ -400,6 +405,9 @@ func (c *Config) Validate() error {
 	req(c.CoreMCPURL, "core-mcp-url")
 	if c.EnrollKeyFile != "" && c.CoreCAFingerprint == "" {
 		errs = append(errs, errors.New("--enroll-key-file needs --core-ca-fingerprint"))
+	}
+	if c.EnrollKeyInjected && (!c.Substrate() || c.EnrollKeyFile != "") {
+		errs = append(errs, errors.New("--enroll-key-injected needs --runtime=substrate and not --enroll-key-file"))
 	}
 	if c.CoreCAFingerprint != "" {
 		errs = append(errs, c.validateCertificateIdentity()...)

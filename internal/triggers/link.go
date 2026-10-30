@@ -252,6 +252,11 @@ func (l *Link) report(ctx context.Context, body map[string]any) error {
 // set for a transport failure, an unreadable answer or a status that is neither
 // 2xx nor one the caller reads (401).
 func (l *Link) post(ctx context.Context, path, bearer string, in, out any) (int, error) {
+	return l.postH(ctx, path, bearer, nil, in, out)
+}
+
+// postH is post with more headers.
+func (l *Link) postH(ctx context.Context, path, bearer string, hdr map[string]string, in, out any) (int, error) {
 	b, err := json.Marshal(in)
 	if err != nil {
 		return 0, err
@@ -261,6 +266,9 @@ func (l *Link) post(ctx context.Context, path, bearer string, in, out any) (int,
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -524,10 +532,14 @@ func (l *Link) join(ctx context.Context, coreNonce []byte) error {
 		return err
 	}
 	body := map[string]any{"csr": csr, "proof": id.Sign(identity.ProofMessage("join", coreNonce, identity.CSRHash(csr)))}
+	if l.cert.EnrollKeyInjected {
+		// The key is not here: the egress puts it in this header from a Secret.
+		return l.joinExchange(ctx, "join", coreNonce, body, map[string]string{EnrollKeyHeader: EnrollKeyPlaceholder})
+	}
 	if k := l.enrollKey(); k != "" {
 		body["enrollKey"] = k
 	}
-	return l.joinExchange(ctx, "join", coreNonce, body)
+	return l.joinExchange(ctx, "join", coreNonce, body, nil)
 }
 
 func (l *Link) renew(ctx context.Context, coreNonce, cert []byte) error {
@@ -538,17 +550,17 @@ func (l *Link) renew(ctx context.Context, coreNonce, cert []byte) error {
 	}
 	return l.joinExchange(ctx, "renew", coreNonce, map[string]any{
 		"cert": cert, "csr": csr, "proof": id.Sign(identity.ProofMessage("renew", coreNonce, identity.CSRHash(csr))),
-	})
+	}, nil)
 }
 
 // joinExchange sends a join or a renew and keeps an issued certificate once it
 // checks out. errJoinIssued says the certificate was issued; errJoinPending that
 // a person must approve the spot.
-func (l *Link) joinExchange(ctx context.Context, kind string, coreNonce []byte, body map[string]any) error {
+func (l *Link) joinExchange(ctx context.Context, kind string, coreNonce []byte, body map[string]any, hdr map[string]string) error {
 	var out linkIn
 	ctxc, cancel := context.WithTimeout(ctx, joinWait)
 	defer cancel()
-	status, err := l.post(ctxc, LinkPath, "", map[string]any{"kind": kind, "coreNonce": coreNonce, "join": body}, &out)
+	status, err := l.postH(ctxc, LinkPath, "", hdr, map[string]any{"kind": kind, "coreNonce": coreNonce, "join": body}, &out)
 	if err != nil && out.JoinResult == nil {
 		return fmt.Errorf("the core's answer to the %s: %w", kind, err)
 	}

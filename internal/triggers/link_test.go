@@ -34,6 +34,10 @@ type linkCore struct {
 	hellos  []map[string]any
 	unauth  bool // reports are refused 401
 	life    time.Duration
+	// enrollHeaders is the enrollment header of each post to the link route, in order.
+	enrollHeaders []string
+	// bodyKeys is the enrollKey each join carried in its body.
+	bodyKeys []string
 	// refuseHello is how many hellos are refused 403, as for a certificate the core does not take.
 	refuseHello int
 }
@@ -72,6 +76,9 @@ func (c *linkCore) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = io.WriteString(w, `{"budget":{"spent":5,"cap":100,"remaining":95}}`)
 	case LinkPath:
+		c.lmu.Lock()
+		c.enrollHeaders = append(c.enrollHeaders, r.Header.Get(EnrollKeyHeader))
+		c.lmu.Unlock()
 		c.link(w, body)
 	default:
 		http.NotFound(w, r)
@@ -117,6 +124,9 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 			c.t.Errorf("%s proof does not verify", in.Kind)
 			return
 		}
+		c.lmu.Lock()
+		c.bodyKeys = append(c.bodyKeys, in.Join.EnrollKey)
+		c.lmu.Unlock()
 		c.mu.Lock()
 		c.joins++
 		pend := in.Kind == "join" && c.joins <= c.pending
@@ -534,5 +544,52 @@ func TestABadFrameIsRefused(t *testing.T) {
 	}
 	if r := frameReq(t, l, "/frame", `{"wake":{"reason":"tick","why":"`+strings.Repeat("x", maxFrameBody)+`"}}`); r.StatusCode != http.StatusBadRequest {
 		t.Errorf("a frame over the limit: %d", r.StatusCode)
+	}
+}
+
+func TestAnActorWithAnInjectedKeySendsAPlaceholderHeaderOnTheJoinOnly(t *testing.T) {
+	c := newLinkCore(t)
+	srv := httptest.NewServer(http.HandlerFunc(c.handler))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	id, err := identity.Load(dir, "example-spot", "ws-1", identity.Fingerprint(c.caPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewLink(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test",
+		TokenFile: filepath.Join(dir, "token"), EnrollKeyInjected: true}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go l.Run(ctx)
+	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer wcancel()
+	if err := l.WaitReady(wctx); err != nil {
+		t.Fatal(err)
+	}
+	c.lmu.Lock()
+	defer c.lmu.Unlock()
+	if len(c.posts) != len(c.enrollHeaders) {
+		t.Fatalf("posts %v headers %v", c.posts, c.enrollHeaders)
+	}
+	var joins int
+	for i, kind := range c.posts {
+		want := ""
+		if kind == "join" {
+			want, joins = EnrollKeyPlaceholder, joins+1
+		}
+		if c.enrollHeaders[i] != want {
+			t.Errorf("%s carried %q, want %q", kind, c.enrollHeaders[i], want)
+		}
+	}
+	if joins == 0 {
+		t.Fatal("no join was made")
+	}
+	for _, k := range c.bodyKeys {
+		if k != "" {
+			t.Errorf("the join body carried an enrollKey: %q", k)
+		}
 	}
 }

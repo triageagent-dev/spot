@@ -30,6 +30,15 @@ substrate:
     namespace: ""
     name: ""
     key: api-key
+  # The one-time key the core minted for this spot (kind spot, label = the spot's
+  # name), for the first join only. The actor does not hold it: the egress policy
+  # puts it in the header X-Triage-Enroll-Key of the join request from this
+  # Secret. Leave name empty once the spot has joined (a spent key left in place
+  # is harmless).
+  enrollKey:
+    namespace: ""
+    name: ""
+    key: key
   egress:
     # Rules added to the ones the chart derives from the URLs the spot uses (the
     # core, the model API, telemetry, each connector): EgressRule objects as

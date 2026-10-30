@@ -450,3 +450,16 @@ func TestAnActorNeedsNoTokenFileForEgo(t *testing.T) {
 		t.Error("a deployment must still name the token file")
 	}
 }
+
+func TestAnInjectedEnrollmentKeyIsForTheSubstrateRuntimeAndNotWithAKeyFile(t *testing.T) {
+	c, err := Parse(with(substrateArgs, "--enroll-key-injected"), io.Discard)
+	if err != nil || !c.EnrollKeyInjected {
+		t.Fatalf("%+v %v", c.EnrollKeyInjected, err)
+	}
+	if _, err := Parse(with(substrateArgs, "--enroll-key-injected", "--enroll-key-file", "/k"), io.Discard); err == nil {
+		t.Error("both ways to give the key were accepted")
+	}
+	if _, err := Parse(with(certArgs, "--enroll-key-injected"), io.Discard); err == nil {
+		t.Error("a deployment cannot have its key injected")
+	}
+}

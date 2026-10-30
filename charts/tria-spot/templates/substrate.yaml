@@ -28,6 +28,10 @@
 {{- if .Values.telemetry.mcpUrl }}{{ $urls = append $urls .Values.telemetry.mcpUrl }}{{ end }}
 {{- end }}
 {{- range .Values.connectors }}{{ $urls = append $urls .url }}{{ end }}
+{{- $ek := $sub.enrollKey }}
+{{- if $ek.name }}{{ $_ := required "substrate.enrollKey.namespace is required with substrate.enrollKey.name" $ek.namespace }}{{ end }}
+{{- $cd := include "tria-spot.destination" .Values.core.apiUrl | fromJson }}
+{{- $coreKey := printf "%s %s" $cd.scheme $cd.host }}
 {{- $ld := include "tria-spot.destination" $llmURL | fromJson }}
 {{- $llmKey := printf "%s %s" $ld.scheme $ld.host }}
 {{- $order := list }}
@@ -46,9 +50,15 @@
 {{- $list := get $ports $key }}
 {{- /* The default port of the scheme is left out; any other port, or more than one, is named. */}}
 {{- if ne (join "," $list) (ternary "443" "80" (eq $scheme "https")) }}{{ $_ := set $rule "ports" (dict "numbers" $list) }}{{ end }}
+{{- /* Headers the egress fills from a Secret on the way out: the model key to the API, and, for the first join only, the one-time key to the core. */}}
+{{- $headers := list }}
 {{- if eq $key $llmKey }}
-{{- $_ := set $rule "effects" (dict "replaceHeaders" (list (dict "header" "x-api-key" "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $mk.namespace $mk.name $mk.key)))) }}
+{{- $headers = append $headers (dict "header" "x-api-key" "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $mk.namespace $mk.name $mk.key)) }}
 {{- end }}
+{{- if and $ek.name (eq $key $coreKey) }}
+{{- $headers = append $headers (dict "header" "X-Triage-Enroll-Key" "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $ek.namespace $ek.name (default "key" $ek.key))) }}
+{{- end }}
+{{- if $headers }}{{ $_ := set $rule "effects" (dict "replaceHeaders" $headers) }}{{ end }}
 {{- $rules = append $rules (dict $scheme $rule) }}
 {{- end }}
 {{- range $sub.egress.extraRules }}{{ $rules = append $rules . }}{{ end }}
@@ -66,6 +76,7 @@
       "--llm-provider=anthropic" "--llm-auth=injected" }}
 {{- if $llm.baseUrl }}{{ $args = append $args (printf "--llm-base-url=%s" $llm.baseUrl) }}{{ end }}
 {{- if .Values.spot.chatName }}{{ $args = append $args (printf "--chat-name=%s" .Values.spot.chatName) }}{{ end }}
+{{- if $ek.name }}{{ $args = append $args "--enroll-key-injected" }}{{ end }}
 {{- if $conns }}{{ $args = append $args (printf "--connectors-json=%s" (toJson $conns)) }}{{ end }}
 {{- $args = concat $args (include "tria-spot.agentArgs" . | fromYamlArray) }}
 

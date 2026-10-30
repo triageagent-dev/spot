@@ -351,7 +351,7 @@ func newLink(cfg config.Config, log *slog.Logger) (coreLink, error) {
 		return triggers.New(cfg.CoreAPIURL, cfg.Tenant, cfg.CoreTokenFile, log)
 	}
 	cert := triggers.Cert{
-		Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile,
+		Name: cfg.Name, Workspace: cfg.Tenant, Version: cfg.Version, TokenFile: cfg.CoreTokenFile, EnrollKeyFile: cfg.EnrollKeyFile, EnrollKeyInjected: cfg.EnrollKeyInjected,
 	}
 	open := func() (*identity.Identity, error) {
 		return identity.Load(cfg.IdentityDir, cfg.Name, cfg.Tenant, cfg.CoreCAFingerprint)

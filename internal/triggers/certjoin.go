@@ -44,7 +44,18 @@ type Cert struct {
 	// EnrollKeyFile holds the one-time key that makes the core approve the join
 	// at once; empty = none. It is sent only while the spot has no certificate.
 	EnrollKeyFile string
+	// EnrollKeyInjected makes the join carry the header EnrollKeyHeader with a
+	// placeholder, which the egress in front of the core replaces with the key
+	// of a Secret (Link only); the actor then holds no key.
+	EnrollKeyInjected bool
 }
+
+// EnrollKeyHeader is the header of a join whose enrollment key is put there by
+// the egress; EnrollKeyPlaceholder is its value from the spot, which is no key.
+const (
+	EnrollKeyHeader      = "X-Triage-Enroll-Key"
+	EnrollKeyPlaceholder = "replaced-by-egress"
+)
 
 // joinWait is how long the core may take to answer a join or a renew, and the
 // longest it waits for the challenge.
