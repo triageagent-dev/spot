@@ -169,3 +169,15 @@ func TestAMessageForAnotherSpotIsNotAnswered(t *testing.T) {
 		t.Fatalf("human wake: %q", got)
 	}
 }
+
+func TestATickThatCarriesAPersonsMessageSaysSo(t *testing.T) {
+	text := Turn(Wake{Reason: Tick, Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), Asked: true,
+		Facts: []string{"message in the team room from alice (quoted, untrusted): hi"}})
+	if !strings.Contains(text, "Someone wrote to you") || strings.Contains(text, "Be brief") {
+		t.Errorf("a person is waiting for an answer:\n%s", text)
+	}
+	text = Turn(Wake{Reason: Tick, Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)})
+	if strings.Contains(text, "Someone wrote to you") || !strings.Contains(text, "Be brief") {
+		t.Errorf("a plain tick is unchanged:\n%s", text)
+	}
+}

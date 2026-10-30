@@ -2214,7 +2214,7 @@ func TestATickOfAnActorReadsTheRooms(t *testing.T) {
 	defer h.stop()
 	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
 	h.waitIdle(1)
-	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "are you there?") {
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "Someone wrote to you") || !strings.Contains(in, "are you there?") {
 		t.Fatalf("a tick must carry the message waiting in the room:\n%s", in)
 	}
 }
@@ -2297,5 +2297,30 @@ func TestAPersonsMessageOnAnOrderedWakeIsNotHeld(t *testing.T) {
 	h.waitIdle(1)
 	if in := h.file("stdin", 1); !strings.Contains(in, "checkout pods") {
 		t.Fatalf("the person's message must reach a turn under a hold rule:\n%s", in)
+	}
+}
+
+func TestTheSpotKnowsItsOwnPosts(t *testing.T) {
+	h := newHarness(t, nil)
+	led, err := ledger.New(h.state)
+	must(t, err)
+	s := New(h.cfg, led, h.core, h.script, slog.New(slog.NewTextHandler(&safeBuf{}, nil)))
+	for name, m := range map[string]corecli.RoomMessage{
+		"the shared user":             {Sender: "@u.spot.example:srv"},
+		"a user of its own":           {Sender: "@u.spot.example.example-spot:srv"},
+		"marked with the spot's name": {Sender: "@someone:srv", Spot: "Example-Spot"},
+	} {
+		if !s.isOwn(m) {
+			t.Errorf("%s: not taken for the spot's own", name)
+		}
+	}
+	for name, m := range map[string]corecli.RoomMessage{
+		"a person":       {Sender: "@u.alice:srv"},
+		"another spot":   {Sender: "@u.spot.example.other-spot:srv", Spot: "other-spot"},
+		"another tenant": {Sender: "@u.spot.elsewhere.example-spot:srv"},
+	} {
+		if s.isOwn(m) {
+			t.Errorf("%s: taken for the spot's own", name)
+		}
 	}
 }

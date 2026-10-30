@@ -1330,11 +1330,18 @@ func (s *Supervisor) mentioned(text string) bool {
 // badLocal mirrors the core's sanitiser for the spot's Matrix localpart.
 var badLocal = regexp.MustCompile(`[^a-z0-9._=/-]`)
 
-// isOwn reports whether a room message is this spot's own. The core posts the
-// spot as @u.spot.<tenant>:<server>, with the tenant lowercased and sanitised.
+// isOwn reports whether a room message is this spot's own. The core marks it with
+// the spot's name, and posts the spot as @u.spot.<tenant>:<server> or, for a spot
+// with a user of its own, @u.spot.<tenant>.<name>:<server>, lowercased and
+// sanitised.
 func (s *Supervisor) isOwn(m corecli.RoomMessage) bool {
-	prefix := "@u.spot." + badLocal.ReplaceAllString(strings.ToLower(s.cfg.Tenant), "_") + ":"
-	return strings.HasPrefix(m.Sender, prefix)
+	if m.Spot != "" && strings.EqualFold(m.Spot, s.cfg.Name) {
+		return true
+	}
+	user := "@u.spot." + badLocal.ReplaceAllString(strings.ToLower(s.cfg.Tenant), "_")
+	// A spot with a user of its own is posted as @u.spot.<tenant>.<name>.
+	return strings.HasPrefix(m.Sender, user+":") ||
+		strings.HasPrefix(m.Sender, user+"."+badLocal.ReplaceAllString(strings.ToLower(s.cfg.Name), "_")+":")
 }
 
 func orUnknown(s string) string {
@@ -1675,7 +1682,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// wake the spot schedules, and that one has every tool.
 	limited := hold && asked
 	text := prompt.Turn(prompt.Wake{
-		Limited: limited,
+		Limited: limited, Asked: asked,
 		Reason:  p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(), Rules: rules,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
