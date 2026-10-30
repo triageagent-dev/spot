@@ -70,8 +70,8 @@ type Config struct {
 	VertexProject          string
 	// VertexRegion is the Vertex AI region or global, for either provider.
 	VertexRegion string
-	// LLMBaseURL is the model gateway of --llm-auth=gateway: an in-cluster URL
-	// that holds the credential, so the spot sends none (Anthropic only).
+	// LLMBaseURL is the API host of --llm-auth=injected, when it is not
+	// api.anthropic.com (Anthropic only).
 	LLMBaseURL string
 	// Runtime is where the spot runs: "deployment" (a pod that holds a
 	// websocket to the core, the default) or "substrate" (an Agent Substrate
@@ -161,9 +161,9 @@ const (
 	AuthKey        = "key"
 	AuthFederation = "federation"
 	AuthVertex     = "vertex"
-	// AuthGateway sends no credential: the model gateway named by --llm-base-url
-	// holds it (Anthropic only).
-	AuthGateway = "gateway"
+	// AuthInjected sends a placeholder key: the egress in front of the API replaces
+	// it with the real one, so the spot holds no model credential (Anthropic only).
+	AuthInjected = "injected"
 )
 
 // Model providers.
@@ -206,8 +206,8 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.ConnectorsJSON, "connectors-json", "", "the connectors as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --connectors-file")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
-	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or gateway (anthropic only: the spot sends no credential to --llm-base-url, which holds it)")
-	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "gateway: the model gateway's URL (for example http://<gateway>.<namespace>.svc/anthropic); required with --llm-auth=gateway, rejected otherwise")
+	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or injected (anthropic only: the spot sends a placeholder key and the egress in front of the API puts the real one on the request)")
+	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "injected: the API's URL when it is not https://api.anthropic.com (for example an in-cluster proxy); only with --llm-auth=injected")
 	fs.StringVar(&c.Runtime, "runtime", RuntimeDeployment, "where the spot runs: deployment (a pod with a websocket to the core) or substrate (an Agent Substrate actor, woken by the core over HTTP; the core's ADR-107)")
 	fs.StringVar(&c.Listen, "listen", DefaultListen, "substrate: the address the actor listens on, for /readyz and the core's requests")
 	fs.StringVar(&c.AnthropicKeyFile, "anthropic-key-file", "", "file holding the Anthropic API key (required with --llm-provider=anthropic --llm-auth=key, rejected otherwise)")
@@ -307,7 +307,7 @@ func (c Config) validateCertificateIdentity() []error {
 }
 
 // validateRuntime checks the runtime. A substrate actor holds no credential
-// for the model (the gateway does), joins the core by certificate, and listens
+// for the model (the egress does), joins the core by certificate, and listens
 // for the core's requests instead of holding a stream.
 func (c Config) validateRuntime() []error {
 	switch c.Runtime {
@@ -315,8 +315,8 @@ func (c Config) validateRuntime() []error {
 		return nil
 	case RuntimeSubstrate:
 		var errs []error
-		if c.LLMAuth != AuthGateway {
-			errs = append(errs, errors.New("--runtime=substrate needs --llm-auth=gateway: an actor holds no model credential"))
+		if c.LLMAuth != AuthInjected {
+			errs = append(errs, errors.New("--runtime=substrate needs --llm-auth=injected: an actor holds no model credential"))
 		}
 		if c.CoreCAFingerprint == "" {
 			errs = append(errs, errors.New("--runtime=substrate needs --core-ca-fingerprint: an actor joins the core by certificate"))
@@ -456,15 +456,14 @@ func (c *Config) Validate() error {
 			only(AuthFederation, federation)
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
-		case AuthGateway:
+		case AuthInjected:
 			if c.AnthropicKeyFile != "" {
-				errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=gateway: the spot sends no credential"))
+				errs = append(errs, errors.New("--anthropic-key-file must not be given with --llm-auth=injected: the spot holds no key"))
 			}
 			only(AuthFederation, federation)
 			only(AuthVertex, map[string]string{"vertex-project": c.VertexProject})
-			req(c.LLMBaseURL, "llm-base-url")
 		default:
-			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex, gateway", c.LLMAuth))
+			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, federation, vertex, injected", c.LLMAuth))
 		}
 	case ProviderGemini:
 		anthropic := map[string]string{"anthropic-key-file": c.AnthropicKeyFile}
@@ -486,7 +485,7 @@ func (c *Config) Validate() error {
 			}
 			req(c.VertexProject, "vertex-project")
 			req(c.VertexRegion, "vertex-region")
-		case AuthFederation, AuthGateway:
+		case AuthFederation, AuthInjected:
 			errs = append(errs, fmt.Errorf("--llm-auth=%s is an Anthropic auth mode: use key or vertex with --llm-provider=gemini", c.LLMAuth))
 		default:
 			errs = append(errs, fmt.Errorf("--llm-auth %q is not one of key, vertex", c.LLMAuth))
@@ -495,8 +494,8 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("--llm-provider %q is not one of anthropic, gemini", c.LLMProvider))
 	}
 	if c.LLMBaseURL != "" {
-		if c.LLMAuth != AuthGateway {
-			errs = append(errs, errors.New("--llm-base-url only applies with --llm-auth=gateway"))
+		if c.LLMAuth != AuthInjected {
+			errs = append(errs, errors.New("--llm-base-url only applies with --llm-auth=injected"))
 		} else if !strings.HasPrefix(c.LLMBaseURL, "http://") && !strings.HasPrefix(c.LLMBaseURL, "https://") {
 			errs = append(errs, errors.New("--llm-base-url must be an http:// or https:// URL"))
 		}

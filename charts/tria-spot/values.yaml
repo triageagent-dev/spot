@@ -6,7 +6,7 @@
 # core's ADR-107), suspended while it is idle, with no credential of any kind:
 # the chart then renders an ActorTemplate and an EgressPolicy (the substrate
 # API's documents) and none of the Kubernetes objects. The model auth must be
-# gateway and the core identity certificate.
+# injected and the core identity certificate.
 runtime: deployment
 
 substrate:
@@ -22,9 +22,17 @@ substrate:
   cpuMillicores: 1000
   memoryBytes: 536870912       # 512Mi
   wakeupTimeoutSeconds: 30
+  # The Secret that holds the model key, which the platform's egress puts in the
+  # x-api-key header of a request to the API; the actor never holds it. The
+  # atespace must be granted the namespace on the platform side. It is named in
+  # the egress policy as ate-secret://k8s.io/default/<namespace>/<name>/<key>.
+  modelKey:
+    namespace: ""
+    name: ""
+    key: api-key
   egress:
     # Rules added to the ones the chart derives from the URLs the spot uses (the
-    # core, the model gateway, telemetry, each connector): EgressRule objects as
+    # core, the model API, telemetry, each connector): EgressRule objects as
     # the substrate API writes them (http, https or tlsPassthrough, with hostnames,
     # ports and effects). This is where a credential the actor must not hold is put
     # on a request instead, for example the token ego checks.
@@ -116,10 +124,11 @@ llm:
   # vertex: Claude or Gemini on Google Vertex AI through the pod's Workload
   #   Identity (Application Default Credentials). Annotate serviceAccount for
   #   it, and set networkPolicy.google.cidrs.
-  # gateway: Anthropic only. The spot sends no credential at all: gateway.url is
-  #   a model gateway in the cluster that holds it. The only mode of
-  #   runtime: substrate, and a deployment may use it too (add the gateway to
-  #   networkPolicy).
+  # injected: Anthropic only. The spot holds no key and sends a placeholder
+  #   x-api-key; whatever stands between it and the API (the egress gateway of a
+  #   substrate actor) replaces the header with the real key. The only mode of
+  #   runtime: substrate. baseUrl names the API when it is not
+  #   https://api.anthropic.com.
   auth: key
   # The model id, on Vertex AI too, with no prefix. Empty = the provider's
   # default: claude-opus-5-5 for anthropic, gemini-3-flash-preview for gemini.
@@ -134,8 +143,7 @@ llm:
   geminiKeySecret:             # provider gemini, auth: key. Secret name only; mounted as a file at /secrets/gemini/<key>
     name: ""
     key: key
-  gateway:                     # auth: gateway
-    url: ""                    # e.g. http://<gateway>.<namespace>.svc/anthropic
+  baseUrl: ""                  # auth: injected. Empty = https://api.anthropic.com
   federation:                  # auth: federation. None of these ids is a secret
     ruleId: ""                 # fdrl_...
     orgId: ""

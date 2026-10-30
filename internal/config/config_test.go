@@ -381,14 +381,14 @@ func TestEnrollKeyFileNeedsTheCertificateIdentity(t *testing.T) {
 
 var substrateArgs = []string{"--tenant", "example", "--core-mcp-url", "http://core.invalid/mcp",
 	"--core-api-url", "http://core.invalid:8080", "--core-ca-fingerprint", "SHA256:" + strings.Repeat("ab", 32),
-	"--runtime", "substrate", "--llm-auth", "gateway", "--llm-base-url", "http://gateway.invalid/anthropic"}
+	"--runtime", "substrate", "--llm-auth", "injected"}
 
 func TestSubstrateRuntimeHoldsNoCredentialAndWaitsForNothing(t *testing.T) {
 	c, err := Parse(with(substrateArgs, "--edge-cooldown", "5m", "--chat-batch", "10m"), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Substrate() || c.Listen != ":80" || c.LLMAuth != AuthGateway || c.LLMBaseURL != "http://gateway.invalid/anthropic" {
+	if !c.Substrate() || c.Listen != ":80" || c.LLMAuth != AuthInjected || c.LLMBaseURL != "" {
 		t.Fatalf("%+v", c)
 	}
 	if c.EdgeCooldown != 0 || c.ChatBatch != 0 {
@@ -401,15 +401,14 @@ func TestSubstrateRuntimeHoldsNoCredentialAndWaitsForNothing(t *testing.T) {
 
 func TestSubstrateRuntimeRefusesWhatDoesNotFit(t *testing.T) {
 	for name, args := range map[string][]string{
-		"a model key":           with(substrateArgs, "--anthropic-key-file", "/s/key"),
-		"key auth":              with(substrateArgs, "--llm-auth", "key", "--llm-base-url", ""),
-		"no gateway URL":        with(substrateArgs, "--llm-base-url", ""),
-		"a gateway that is not": with(substrateArgs, "--llm-base-url", "gateway.invalid"),
-		"no core API URL":       with(substrateArgs, "--core-api-url", ""),
-		"no certificate":        with(substrateArgs, "--core-ca-fingerprint", ""),
-		"no listen address":     with(substrateArgs, "--listen", ""),
-		"an unknown runtime":    with(substrateArgs, "--runtime", "lambda"),
-		"gemini on the gateway": with(substrateArgs, "--llm-provider", "gemini"),
+		"a model key":            with(substrateArgs, "--anthropic-key-file", "/s/key"),
+		"key auth":               with(substrateArgs, "--llm-auth", "key", "--llm-base-url", ""),
+		"a base URL that is not": with(substrateArgs, "--llm-base-url", "proxy.invalid"),
+		"no core API URL":        with(substrateArgs, "--core-api-url", ""),
+		"no certificate":         with(substrateArgs, "--core-ca-fingerprint", ""),
+		"no listen address":      with(substrateArgs, "--listen", ""),
+		"an unknown runtime":     with(substrateArgs, "--runtime", "lambda"),
+		"gemini with injection":  with(substrateArgs, "--llm-provider", "gemini"),
 	} {
 		if _, err := Parse(args, io.Discard); err == nil {
 			t.Errorf("%s was accepted", name)
@@ -417,13 +416,13 @@ func TestSubstrateRuntimeRefusesWhatDoesNotFit(t *testing.T) {
 	}
 }
 
-func TestTheGatewayIsAnAuthModeNotARuntime(t *testing.T) {
-	c, err := Parse(with(required[:6], "--llm-auth", "gateway", "--llm-base-url", "http://gateway.invalid"), io.Discard)
-	if err != nil || c.Runtime != RuntimeDeployment || c.LLMAuth != AuthGateway {
-		t.Fatalf("a deployment may use the gateway too: %+v %v", c, err)
+func TestInjectionIsAnAuthModeNotARuntime(t *testing.T) {
+	c, err := Parse(with(required[:6], "--llm-auth", "injected", "--llm-base-url", "http://proxy.invalid"), io.Discard)
+	if err != nil || c.Runtime != RuntimeDeployment || c.LLMAuth != AuthInjected {
+		t.Fatalf("a deployment may use injection too: %+v %v", c, err)
 	}
-	if _, err := Parse(with(required, "--llm-base-url", "http://gateway.invalid"), io.Discard); err == nil {
-		t.Error("--llm-base-url was accepted without --llm-auth=gateway")
+	if _, err := Parse(with(required, "--llm-base-url", "http://proxy.invalid"), io.Discard); err == nil {
+		t.Error("--llm-base-url was accepted without --llm-auth=injected")
 	}
 }
 

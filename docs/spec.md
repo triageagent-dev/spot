@@ -103,9 +103,9 @@ The core keeps the spot’s schedule (the core’s ADR-106): the spot decides wh
 | The core’s requests | `POST /frame`, one frame per request, the shapes of the stream. `wake` (`tick` or `promise`), `rooms`, `name` and `budget` are answered 202 at once; `control` is answered 200 with `{"controlResult"}` within 8 s, and the `wake` control asks for a manual wake. The core sends an actor no `issues` frame, so a change of the issues waits for the next tick. |
 | Reports | Kept until the supervisor is idle (no turn, no task, nothing waiting), then sent in this order: turns, stats, the wake reports last. The core may suspend the actor once it has the wake report, so nothing follows it. A frame that made no wake (the rooms had nothing new) is answered with `{"wake":{"reason":"rooms","lane":"long","outcome":"idle"}}`, which ends the outstanding wake and leaves the stored plan. The `schedule` frame follows hello only when the process holds a plan, because one without would replace the core’s. |
 | What survives | `/state`, the actor’s durable directory: the usage ledger, the room cursors and read marks, the digest, a promise a person asked for, the identity, and `window.json`: the tokens of the last hour (the hourly ceiling), the early wakes of the last hour (their cap) and the issue state edges are told against. Held edges do not survive a suspension, so `--edge-cooldown` and `--chat-batch` are 0 in this runtime and the next tick reads whatever a cap left. |
-| Model | `--llm-auth gateway` and `--llm-base-url`: the spot sends no credential at all and the environment is not read; a gateway in the cluster holds it. Anthropic provider only. The other auth modes stay for the deployment runtime. |
+| Model | `--llm-auth injected`: the Anthropic client sends a fixed placeholder `x-api-key` to `https://api.anthropic.com` (or `--llm-base-url`) and the environment is not read. The egress policy of the actor has a rule for that host whose effect replaces the header with the key of a Secret (`ate-secret://…`), and only a request that carries the header is changed; the spot never holds the key. Anthropic provider only. The other auth modes stay for the deployment runtime. |
 | No credential | The actor holds no model key, no token file and no enrollment key, and mounts no Secret or ConfigMap: connectors are given inline (`--connectors-json`), what ego checks on a request is put there by the egress policy, and a first join waits for a person to approve the spot’s fingerprint. The one thing it keeps is its own key and certificate on `/state`. |
-| Chart | `runtime: substrate` renders two documents of the substrate API and no Kubernetes object: an ActorTemplate (the image by digest, the command and flags, `/state` as a durable directory, the wake-up probe, the volume snapshot, the limits) and an EgressPolicy with one rule per destination the spot uses (http for in-cluster names, https for the rest, hostnames only; `substrate.egress.extraRules` adds more). Apply them with the substrate CLI. The chart refuses a model auth other than gateway, a core identity other than certificate and a missing image digest. |
+| Chart | `runtime: substrate` renders two documents of the substrate API and no Kubernetes object: an ActorTemplate (the image by digest, the command and flags, `/state` as a durable directory, the wake-up probe, the volume snapshot, the limits) and an EgressPolicy with one rule per destination the spot uses, the one for the model API replacing `x-api-key` with the key of a Secret (http for in-cluster names, https for the rest, hostnames only; `substrate.egress.extraRules` adds more). Apply them with the substrate CLI. The chart refuses a model auth other than injected, a core identity other than certificate, a missing image digest and a missing model-key Secret. |
 
 ## The model
 
@@ -132,7 +132,7 @@ The loop talks to `llm.Client`, with two implementations: Anthropic (`internal/l
 
 |  | `anthropic` | `gemini` |
 |---|---|---|
-| Auth modes (`--llm-auth`) | `key`, `federation`, `vertex`, `gateway` | `key`, `vertex`; `federation` and `gateway` are refused |
+| Auth modes (`--llm-auth`) | `key`, `federation`, `vertex`, `injected` | `key`, `vertex`; `federation` and `injected` are refused |
 | Vertex AI location | `--vertex-region` | `--vertex-region` (one flag for both; `global` by default) |
 | Retries | SDK, twice (429, 5xx) | SDK, three tries (408, 429, 5xx) |
 | Caching | Explicit breakpoints | Implicit on 2.5 and later; explicit `CachedContent` is a follow-up |
@@ -222,8 +222,8 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 | Flag | Default | Meaning |
 |---|---|---|
 | `--llm-provider` | `anthropic` | `anthropic` or `gemini` (section 3) |
-| `--llm-auth` | `key` | `key`, `federation` (anthropic only), `vertex` or `gateway` (anthropic only; section 8) |
-| `--llm-base-url` | empty | gateway: the model gateway’s URL; required with `--llm-auth=gateway`, refused otherwise |
+| `--llm-auth` | `key` | `key`, `federation` (anthropic only), `vertex` or `injected` (anthropic only; section 8) |
+| `--llm-base-url` | empty | injected: the API’s URL when it is not `https://api.anthropic.com`; only with `--llm-auth=injected` |
 | `--anthropic-key-file` | required with anthropic and key | Anthropic API key file; rejected with the others |
 | `--gemini-key-file` | required with gemini and key | Gemini API key file; rejected with the others |
 | `--anthropic-identity-token-file` | required with federation | projected identity token (JWT) |
@@ -284,7 +284,7 @@ Flags only. No credential is a flag value or an environment variable. `tria-spot
 
 ## Credentials
 
-`--llm-auth` picks the model auth mode; `federation` and `gateway` are Anthropic only. With `gateway` the spot sends no credential: the gateway named by `--llm-base-url` holds it. Federation ids are not secrets, but they are flags.
+`--llm-auth` picks the model auth mode; `federation` and `injected` are Anthropic only. With `injected` the spot holds no key: it sends a placeholder, and the egress in front of the API replaces it with the real one. Federation ids are not secrets, but they are flags.
 
 *Diagram: Credentials: each Secret or projected token becomes a file in the pod or an identity binding, and one client reads each; connector credentials are not in the pod at all.*
 
@@ -453,8 +453,8 @@ Logs carry what happened, never what was said.
 | system prompt | Not in the chart: the cell `spot-instruction` must exist in the workspace’s core before the spot starts (`make prompt-cell`), or the spot exits after two minutes. |
 | `llm.auth: key` (default) | The Secret from `llm.keySecret` (anthropic) or `llm.geminiKeySecret` (gemini, at `/secrets/gemini/<key>`), as a file. |
 | `llm.auth: vertex` | Nothing mounted. `llm.vertex.project` required, `region` defaults to `global`; the binding goes in `serviceAccount.annotations`. |
-| `runtime: substrate` | No Deployment, PVC, ServiceAccount, NetworkPolicy, Secret or ConfigMap: an ActorTemplate and an EgressPolicy, as documents of the substrate API (Runtimes, in section 1). `llm.auth: gateway` with `llm.gateway.url`, `core.identity: certificate`, `substrate.atespace` and `substrate.imageDigest` are required. |
-| `llm.auth: gateway` | Nothing mounted; `--llm-base-url` from `llm.gateway.url`. |
+| `runtime: substrate` | No Deployment, PVC, ServiceAccount, NetworkPolicy, Secret or ConfigMap: an ActorTemplate and an EgressPolicy, as documents of the substrate API (Runtimes, in section 1). `llm.auth: injected`, `core.identity: certificate`, `substrate.atespace`, `substrate.imageDigest` and `substrate.modelKey` (the Secret the egress takes the key from) are required. |
+| `llm.auth: injected` | Nothing mounted; the egress policy of a substrate actor carries the key rule. |
 | `llm.auth: federation` | A projected token volume at `/var/run/secrets/anthropic.com` (`tokenExpirationSeconds` 600; no Secret). `llm.federation.ruleId`, `orgId` and `serviceAccountId` are required, `workspaceId` is optional. Refused with `gemini`. |
 | model values | `llm.provider` (`anthropic` default, `gemini`), `llm.model` (empty = the provider’s default, no `--model` passed), `llm.effort`, `llm.maxSteps`, `llm.maxToolCalls`, `llm.maxTurnTokens`, `agent.toolTimeout`, `agent.toolResultMaxBytes`. |
 

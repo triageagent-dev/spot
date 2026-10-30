@@ -5,8 +5,8 @@
 {{- $provider := $llm.provider }}
 {{- if not (has $provider (list "anthropic" "gemini")) }}{{ fail "llm.provider must be anthropic or gemini" }}{{ end }}
 {{- $auth := $llm.auth }}
-{{- if not (has $auth (list "key" "federation" "vertex" "gateway")) }}{{ fail "llm.auth must be key, federation, vertex or gateway" }}{{ end }}
-{{- if and (eq $provider "gemini") (has $auth (list "federation" "gateway")) }}{{ fail (printf "llm.auth %s is an Anthropic auth mode: use key or vertex with llm.provider gemini" $auth) }}{{ end }}
+{{- if not (has $auth (list "key" "federation" "vertex" "injected")) }}{{ fail "llm.auth must be key, federation, vertex or injected" }}{{ end }}
+{{- if and (eq $provider "gemini") (has $auth (list "federation" "injected")) }}{{ fail (printf "llm.auth %s is an Anthropic auth mode: use key or vertex with llm.provider gemini" $auth) }}{{ end }}
 {{- $fed := $llm.federation }}
 {{- $identity := include "tria-spot.coreIdentity" . }}
 {{- if and (eq $identity "serviceAccount") (lt (int64 .Values.core.tokenExpirationSeconds) 600) }}{{ fail "core.tokenExpirationSeconds must be at least 600" }}{{ end }}
@@ -94,8 +94,10 @@ spec:
             {{- if $fed.workspaceId }}
             - --anthropic-workspace-id={{ $fed.workspaceId }}
             {{- end }}
-            {{- else if eq $auth "gateway" }}
-            - --llm-base-url={{ required "llm.gateway.url is required when llm.auth is gateway" $llm.gateway.url }}
+            {{- else if eq $auth "injected" }}
+            {{- if $llm.baseUrl }}
+            - --llm-base-url={{ $llm.baseUrl }}
+            {{- end }}
             {{- else }}
             - --vertex-project={{ required "llm.vertex.project is required when llm.auth is vertex" $llm.vertex.project }}
             - --vertex-region={{ required "llm.vertex.region must not be empty" $llm.vertex.region }}

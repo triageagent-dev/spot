@@ -58,7 +58,7 @@ temporal` fails to render. See the specification.
 
 `runtime: substrate` (the core's ADR-107) runs the spot as an actor: it is
 suspended while it is idle and holds no credential of any kind. The model auth
-is `gateway` (a gateway in the cluster holds the key), the core identity is the
+is `injected` (the spot sends a placeholder key and the egress policy puts the real one on the request from a Secret), the core identity is the
 certificate, and the chart renders an ActorTemplate and an EgressPolicy for the
 substrate CLI and no Kubernetes object. The spot serves `/readyz` and `/frame`
 on port 80, talks to the core in requests and reports when it is idle. See the

@@ -251,9 +251,9 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Cli
 	case config.AuthVertex:
 		o.VertexProject, o.VertexRegion = cfg.VertexProject, cfg.VertexRegion
 		log.Info("model auth: Google Vertex AI with application default credentials", "project", cfg.VertexProject, "region", cfg.VertexRegion)
-	case config.AuthGateway:
+	case config.AuthInjected:
 		o.BaseURL = cfg.LLMBaseURL
-		log.Info("model auth: none; the model gateway holds the credential", "gateway", cfg.LLMBaseURL)
+		log.Info("model auth: a placeholder key; the egress puts the real one on the request", "baseURL", cfg.LLMBaseURL)
 	default:
 		log.Info("model auth: API key from a file")
 	}

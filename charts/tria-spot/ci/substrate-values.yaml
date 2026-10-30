@@ -10,14 +10,16 @@ core:
   apiUrl: http://core.example-core.svc:8080
   caFingerprint: "SHA256:0000000000000000000000000000000000000000000000000000000000000000"
 llm:
-  auth: gateway
-  gateway:
-    url: http://gateway.example-gateway.svc/anthropic
+  auth: injected
 substrate:
   atespace: spots
   imageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   workerSelector:
     workload: spots
+  modelKey:
+    namespace: example-spots
+    name: example-model-key
+    key: api-key
 telemetry:
   enabled: true
   endpoint: http://ego.example-ego.svc:4318

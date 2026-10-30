@@ -7,8 +7,12 @@
 {{- $tenant := include "tria-spot.tenant" . }}
 {{- $sub := .Values.substrate }}
 {{- $llm := .Values.llm }}
-{{- if ne $llm.provider "anthropic" }}{{ fail "runtime: substrate needs llm.provider anthropic: the model gateway serves the Anthropic API" }}{{ end }}
-{{- if ne $llm.auth "gateway" }}{{ fail "runtime: substrate needs llm.auth gateway: an actor holds no model credential" }}{{ end }}
+{{- if ne $llm.provider "anthropic" }}{{ fail "runtime: substrate needs llm.provider anthropic: the spot speaks the Anthropic API" }}{{ end }}
+{{- if ne $llm.auth "injected" }}{{ fail "runtime: substrate needs llm.auth injected: an actor holds no model credential" }}{{ end }}
+{{- $mk := $sub.modelKey }}
+{{- $_ := required "substrate.modelKey.namespace is required: the Secret the egress takes the model key from" $mk.namespace }}
+{{- $_ := required "substrate.modelKey.name is required" $mk.name }}
+{{- $_ := required "substrate.modelKey.key is required" $mk.key }}
 {{- if ne (include "tria-spot.coreIdentity" .) "certificate" }}{{ fail "runtime: substrate needs core.identity certificate: an actor has no ServiceAccount token and no Secret" }}{{ end }}
 {{- if not .Values.core.apiUrl }}{{ fail "core.apiUrl is required for runtime: substrate: the actor's link to the core is HTTP requests to it" }}{{ end }}
 {{- if not (regexMatch "^SHA256:[0-9a-f]{64}$" (default "" .Values.core.caFingerprint)) }}{{ fail "core.caFingerprint (SHA256:<64 lowercase hex>) is required when core.identity is certificate" }}{{ end }}
@@ -17,12 +21,15 @@
 
 {{- /* What the actor reaches, from the URLs it is given: http for in-cluster names,
        https for what leaves the cluster. One rule per destination, no duplicates. */ -}}
-{{- $urls := list (required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl) .Values.core.apiUrl (required "llm.gateway.url is required when llm.auth is gateway" $llm.gateway.url) }}
+{{- $llmURL := default "https://api.anthropic.com" $llm.baseUrl }}
+{{- $urls := list (required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl) .Values.core.apiUrl $llmURL }}
 {{- if .Values.telemetry.enabled }}
 {{- $urls = append $urls (required "telemetry.endpoint is required when telemetry.enabled is true" .Values.telemetry.endpoint) }}
 {{- if .Values.telemetry.mcpUrl }}{{ $urls = append $urls .Values.telemetry.mcpUrl }}{{ end }}
 {{- end }}
 {{- range .Values.connectors }}{{ $urls = append $urls .url }}{{ end }}
+{{- $ld := include "tria-spot.destination" $llmURL | fromJson }}
+{{- $llmKey := printf "%s %s" $ld.scheme $ld.host }}
 {{- $order := list }}
 {{- $ports := dict }}
 {{- range $urls }}
@@ -39,6 +46,9 @@
 {{- $list := get $ports $key }}
 {{- /* The default port of the scheme is left out; any other port, or more than one, is named. */}}
 {{- if ne (join "," $list) (ternary "443" "80" (eq $scheme "https")) }}{{ $_ := set $rule "ports" (dict "numbers" $list) }}{{ end }}
+{{- if eq $key $llmKey }}
+{{- $_ := set $rule "effects" (dict "replaceHeaders" (list (dict "header" "x-api-key" "credentialUri" (printf "ate-secret://k8s.io/default/%s/%s/%s" $mk.namespace $mk.name $mk.key)))) }}
+{{- end }}
 {{- $rules = append $rules (dict $scheme $rule) }}
 {{- end }}
 {{- range $sub.egress.extraRules }}{{ $rules = append $rules . }}{{ end }}
@@ -53,7 +63,8 @@
       (printf "--core-mcp-url=%s" .Values.core.mcpUrl) (printf "--core-api-url=%s" .Values.core.apiUrl)
       (printf "--core-ca-fingerprint=%s" .Values.core.caFingerprint)
       "--runtime=substrate" "--listen=:80"
-      "--llm-provider=anthropic" "--llm-auth=gateway" (printf "--llm-base-url=%s" $llm.gateway.url) }}
+      "--llm-provider=anthropic" "--llm-auth=injected" }}
+{{- if $llm.baseUrl }}{{ $args = append $args (printf "--llm-base-url=%s" $llm.baseUrl) }}{{ end }}
 {{- if .Values.spot.chatName }}{{ $args = append $args (printf "--chat-name=%s" .Values.spot.chatName) }}{{ end }}
 {{- if $conns }}{{ $args = append $args (printf "--connectors-json=%s" (toJson $conns)) }}{{ end }}
 {{- $args = concat $args (include "tria-spot.agentArgs" . | fromYamlArray) }}
