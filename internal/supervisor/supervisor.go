@@ -1683,7 +1683,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	limited := hold && asked
 	text := prompt.Turn(prompt.Wake{
 		Limited: limited, Asked: asked,
-		Reason:  p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
+		Reason: p.reason, Now: s.now(), ChatName: s.messengerName(), Facts: p.facts, ScheduledBy: p.scheduledBy,
 		Interrupted: interrupted, Note: p.note, Digest: s.digestLines(), Rules: rules,
 		TokensUsed: used, TokensCeil: s.cfg.DailyTokenCeil,
 	})
