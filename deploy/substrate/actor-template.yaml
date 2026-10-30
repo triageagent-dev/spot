@@ -1,0 +1,67 @@
+# The ActorTemplate of a spot that runs as an actor of Agent Substrate (ADR-107):
+#   kubectl ate create actor-template -f actor-template.yaml
+# Replace every <placeholder>. The image is named by digest. Volumes cannot be
+# changed later (a template swapped under an actor must have the same volumes).
+metadata:
+  atespace: <atespace>
+  name: <template-name>
+containers:
+- name: tria-spot
+  image: ghcr.io/triageagent-dev/spot@sha256:<64 hex>
+  command:
+  - /ko-app/tria-spot
+  args:
+  - --runtime=substrate
+  - --listen=:80
+  - --tenant=<workspace id>
+  - --name=<spot name>
+  - --core-mcp-url=<core origin>/mcp
+  - --core-api-url=<core origin>
+  - --core-ca-fingerprint=SHA256:<64 hex>
+  - --llm-provider=anthropic
+  - --llm-auth=injected
+  - --model=claude-sonnet-5-5
+  - --enroll-key-injected
+  - --state-dir=/state
+  # Traces and the ego tools (drop these four lines for a spot without ego):
+  - --otel-endpoint=<ego otlp url>
+  - --ego-mcp-url=<ego mcp url>
+  - --otel-token-injected
+  - --otel-tenant-attr=triage.tenant
+  env:
+  # A path to the egress CA, not a credential.
+  - name: SSL_CERT_FILE
+    value: /run/ate/egress-trust-bundle/trust-bundle.pem
+  securityContext:
+    capabilities:
+      add:
+      - NET_BIND_SERVICE
+  volumeMounts:
+  - name: state
+    mountPath: /state
+  - name: system-info
+    mountPath: /run/ate/egress-trust-bundle
+  wakeupProbe:
+    httpGet:
+      path: /readyz
+      port: 80
+    timeoutSeconds: 30
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 536870912
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES
+  goldenSnapshotConfig:
+    mode: GOLDEN_SNAPSHOT_MODE_DISABLED
+volumes:
+- name: state
+  durableDir: {}
+- name: system-info
+  systemInfo:
+    dataSources:
+    - trustBundle:
+        names:
+        - egress-mitm.ate.dev
+        - system-roots.ate.dev
+        path: trust-bundle.pem
