@@ -399,9 +399,14 @@ func (c *Config) Validate() error {
 	if c.CoreTools != "curated" && c.CoreTools != "all" {
 		errs = append(errs, errors.New("--core-tools is curated or all"))
 	}
-	if c.EgoMCPURL != "" && c.OtelTokenFile == "" && !c.Substrate() {
-		// An actor holds no token: the egress policy puts it on the request.
-		errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))
+	if c.EgoMCPURL != "" && c.OtelTokenFile == "" {
+		// An actor holds no token file: it sends a placeholder bearer and the
+		// egress policy replaces it, which it does only on a header that is there.
+		if c.Substrate() {
+			errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-injected in --runtime=substrate: the egress replaces a bearer the spot sends, it adds none"))
+		} else {
+			errs = append(errs, errors.New("--ego-mcp-url needs --otel-token-file, the sender token ego checks"))
+		}
 	}
 	if c.EgoMCPURL != "" && !strings.HasPrefix(c.EgoMCPURL, "http://") && !strings.HasPrefix(c.EgoMCPURL, "https://") {
 		errs = append(errs, errors.New("--ego-mcp-url must be an http:// or https:// URL"))

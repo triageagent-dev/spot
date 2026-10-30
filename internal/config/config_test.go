@@ -442,10 +442,15 @@ func TestConnectorsCanBeGivenInlineForARuntimeWithNoFile(t *testing.T) {
 	}
 }
 
-func TestAnActorNeedsNoTokenFileForEgo(t *testing.T) {
-	args := with(substrateArgs, "--ego-mcp-url", "http://ego.invalid/mcp")
-	if _, err := Parse(args, io.Discard); err != nil {
+func TestAnActorReachesEgoOnlyWithAnInjectedToken(t *testing.T) {
+	// No token file, but the egress replaces a bearer only if the spot sends one.
+	ok := with(substrateArgs, "--otel-endpoint", "http://ego.invalid:4318", "--ego-mcp-url", "http://ego.invalid:8001/mcp", "--otel-token-injected")
+	if _, err := Parse(ok, io.Discard); err != nil {
 		t.Fatalf("the egress policy puts ego's token on the request: %v", err)
+	}
+	bare := with(substrateArgs, "--ego-mcp-url", "http://ego.invalid/mcp")
+	if _, err := Parse(bare, io.Discard); err == nil {
+		t.Error("ego tools with no bearer to replace were accepted: the request would go out with no token")
 	}
 	dep := with(required, "--ego-mcp-url", "http://ego.invalid/mcp")
 	if _, err := Parse(dep, io.Discard); err == nil {

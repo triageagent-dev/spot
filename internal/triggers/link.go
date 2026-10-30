@@ -65,6 +65,7 @@ type Link struct {
 	// an actor is also booted to be snapshotted before it has a wake, and the key
 	// it made then would be in every actor made from that snapshot.
 	startOnce sync.Once
+	running   sync.WaitGroup // the Run that begin started
 	runCtx    context.Context
 
 	// Guarded by inbox.mu.
@@ -112,7 +113,8 @@ func (l *Link) Actor() string {
 	return l.actor
 }
 
-// WaitReady blocks until hello has given the spot its first access token.
+// WaitReady blocks until the first hello is done: the spot has its access token,
+// the link is connected and the schedule is with the core.
 func (l *Link) WaitReady(ctx context.Context) error {
 	select {
 	case <-l.ready:
@@ -312,6 +314,11 @@ func (l *Link) takeToken(t *tokenFrame) {
 	l.mu.Lock()
 	l.bearer, l.tokenExp = t.Value, exp
 	l.mu.Unlock()
+}
+
+// markReady lets WaitReady go: hello is done, the link is connected and the
+// schedule is with the core.
+func (l *Link) markReady() {
 	select {
 	case <-l.ready:
 	default:
@@ -336,9 +343,17 @@ func (l *Link) begin() {
 		if ctx == nil {
 			return // Run was called directly
 		}
-		go l.Run(ctx)
+		l.running.Add(1)
+		go func() {
+			defer l.running.Done()
+			l.Run(ctx)
+		}()
 	})
 }
+
+// Wait blocks until the Run that the core's first request started has returned,
+// which it does once the context given to Serve ends.
+func (l *Link) Wait() { l.running.Wait() }
 
 // open loads the identity the first time it is needed.
 func (l *Link) open() error {
@@ -510,6 +525,7 @@ func (l *Link) hello(ctx context.Context, coreNonce, cert []byte) error {
 	l.connected.Store(true)
 	l.log.Info("the link to the core is up", "actor", out.Actor)
 	l.sendSchedule(ctx)
+	l.markReady()
 	return nil
 }
 

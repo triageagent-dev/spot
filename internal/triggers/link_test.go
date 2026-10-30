@@ -209,7 +209,7 @@ func upLinkWith(t *testing.T, c *linkCore, setup func(*Link)) (*Link, string, co
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go l.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, l.Run)
 	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer wcancel()
 	if err := l.WaitReady(wctx); err != nil {
@@ -435,7 +435,10 @@ func TestReadyzAnswersAsSoonAsTheServerListensAndTheLinkStartsWithTheFirstReques
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		cancel()
+		l.Wait() // the Run the first request started writes to the temporary directory
+	})
 	l.Serve(ctx)
 
 	// A process booted only to be snapshotted makes no key and does not join.
@@ -563,7 +566,7 @@ func TestAnActorWithAnInjectedKeySendsAPlaceholderHeaderOnTheJoinOnly(t *testing
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go l.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, l.Run)
 	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer wcancel()
 	if err := l.WaitReady(wctx); err != nil {
@@ -592,4 +595,19 @@ func TestAnActorWithAnInjectedKeySendsAPlaceholderHeaderOnTheJoinOnly(t *testing
 			t.Errorf("the join body carried an enrollKey: %q", k)
 		}
 	}
+}
+
+// runUntilCleanup starts run and, at the end of the test, stops it and waits for
+// it, so nothing it writes races the removal of the test's temporary directory.
+func runUntilCleanup(t *testing.T, cancel context.CancelFunc, ctx context.Context, run func(context.Context)) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }

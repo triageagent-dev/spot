@@ -196,7 +196,7 @@ func TestASpotJoinsByCertificateAndGetsItsToken(t *testing.T) {
 	c, id, tok := certClient(t, f, t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, c.Run)
 
 	wctx, wcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer wcancel()
@@ -232,7 +232,7 @@ func TestARestartedSpotSaysHelloWithItsCertificate(t *testing.T) {
 	dir := t.TempDir()
 	c, _, _ := certClient(t, f, dir)
 	ctx, cancel := context.WithCancel(context.Background())
-	go c.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, c.Run)
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestARestartedSpotSaysHelloWithItsCertificate(t *testing.T) {
 	c2, _, _ := certClient(t, f, dir)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
-	go c2.Run(ctx2)
+	runUntilCleanup(t, cancel2, ctx2, c2.Run)
 	if err := c2.WaitReady(ctx2); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestACertificateDueForRenewalIsRenewed(t *testing.T) {
 	c, id, _ := certClient(t, f, dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, c.Run)
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestACertificateDueForRenewalIsRenewed(t *testing.T) {
 	c2, id2, _ := certClient(t, f, dir)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
-	go c2.Run(ctx2)
+	runUntilCleanup(t, cancel2, ctx2, c2.Run)
 	wait(t, "renew and hello", func() bool { return strings.Join(f.sentKinds(), ",") == "renew,hello" })
 	if _, _, renew := id2.CertState(time.Now()); renew {
 		t.Fatal("the certificate is still due after renewal")
@@ -315,7 +315,7 @@ func TestARevokedCertificateIsDroppedAndTheSpotJoinsAfresh(t *testing.T) {
 	c, id, _ := certClient(t, f, dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, c.Run)
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestASpotWithAnEnrollmentKeyIsIssuedAtOnceAndSendsItOnlyWhileItHasNoCertifi
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.Run(ctx)
+	runUntilCleanup(t, cancel, ctx, c.Run)
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
