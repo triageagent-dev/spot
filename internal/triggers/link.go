@@ -42,6 +42,7 @@ import (
 const (
 	LinkPath       = "/v2/messenger/spot/link"
 	LinkReportPath = LinkPath + "/report"
+	LinkTasksPath  = LinkPath + "/tasks"
 )
 
 // maxFrameBody bounds what the core may send in one request.
@@ -127,6 +128,37 @@ func (l *Link) WaitReady(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// StartTask asks the core to make a task actor for a piece of work (the core's
+// ADR-109) and returns the task's key. The actor runs the goal, leaves its
+// result in the workspace's memory and answers Tria in the bus; nothing of it
+// comes back to the spot that asked.
+func (l *Link) StartTask(ctx context.Context, title, goal string) (string, error) {
+	l.mu.Lock()
+	tok := l.bearer
+	l.mu.Unlock()
+	if tok == "" || !l.connected.Load() {
+		return "", errors.New("the link to the core is not up")
+	}
+	var out struct {
+		Key string `json:"key"`
+	}
+	status, err := l.post(ctx, LinkTasksPath, tok, map[string]any{"title": title, "goal": goal}, &out)
+	switch {
+	case status == http.StatusUnauthorized:
+		l.connected.Store(false)
+		select {
+		case l.reauth <- struct{}{}:
+		default:
+		}
+		return "", errUnauthorized
+	case err != nil:
+		return "", err
+	case status/100 != 2 || out.Key == "":
+		return "", fmt.Errorf("the core did not start the task (status %d)", status)
+	}
+	return out.Key, nil
 }
 
 // ReportTurn keeps what a turn cost until the supervisor is idle.

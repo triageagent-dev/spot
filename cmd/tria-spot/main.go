@@ -117,7 +117,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0, Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TaskTenant: taskTenant(cfg), Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {
@@ -132,7 +132,34 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	// waits for a person to approve it) first. A deployment holds a stream; an
 	// actor of Agent Substrate holds requests and answers the core on its port.
 	var stream coreLink
-	if cfg.CoreAPIURL != "" {
+	var taskSrv *triggers.TaskServer // a task actor's side of the core
+	var task triggers.Task
+	if cfg.TaskActor() {
+		// An actor the core made for one piece of work does not join: it waits for
+		// the one request whose bearer hashes to its verifier, and that bearer is
+		// its token for everything it does.
+		ts, err := triggers.NewTaskServer(cfg.CoreAPIURL, cfg.TaskVerifierFile, log)
+		if err != nil {
+			log.Error("task actor", "err", err)
+			return 1
+		}
+		shutdown, err := serve(cfg.Listen, ts.Handler(), log)
+		if err != nil {
+			log.Error("listen", "addr", cfg.Listen, "err", err)
+			return 1
+		}
+		defer shutdown()
+		log.Info("task actor: waiting for the task")
+		if task, err = ts.Wait(ctx); err != nil {
+			return 0
+		}
+		if err := identity.WriteFile(cfg.CoreTokenFile, []byte(task.Token)); err != nil {
+			log.Error("the task's token could not be saved", "err", err)
+			return 1
+		}
+		log.Info("task actor: the task has come", "key", task.Key)
+		taskSrv = ts
+	} else if cfg.CoreAPIURL != "" {
 		tc, err := newLink(cfg, log)
 		if err != nil {
 			log.Error("core link", "err", err)
@@ -209,6 +236,15 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			}
 		})
 	}
+	if taskSrv != nil {
+		if err := sup.RunTask(ctx, task, taskSrv); err != nil {
+			log.Error("task", "err", err)
+			return 1
+		}
+		<-ctx.Done() // the core ends the actor when it has the report
+		log.Info("stopped")
+		return 0
+	}
 	if stream != nil {
 		sup.SetTrigger(stream)
 		stream.SetControl(sup.Control)
@@ -259,6 +295,17 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Cli
 	}
 	return llm.NewAnthropic(ctx, o)
 }
+
+// taskTenant is the workspace a task actor's calls go with: the one its token
+// was made for, which is the spot's own. Empty for a spot that is not a task.
+func taskTenant(cfg config.Config) string {
+	if cfg.TaskActor() {
+		return cfg.Tenant
+	}
+	return ""
+}
+
+var _ supervisor.TaskCore = (*corecli.Client)(nil)
 
 // coreServer is the core's MCP server as the tool layer sees it: its tools
 // allowed by name and the destructive ones denied by name, or with

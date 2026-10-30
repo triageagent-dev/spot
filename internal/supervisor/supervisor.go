@@ -794,15 +794,10 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 	if s.trig == nil {
 		return
 	}
-	w := triggers.Wake{
-		TS: s.now().UnixMilli(), Reason: clipLabel(reason), Lane: lane, Outcome: outcome,
-		DurationMs: res.Duration.Milliseconds(), Steps: int64(res.Steps), ToolCalls: int64(res.ToolCalls),
-		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
-		Key: clipBytes(key, triggers.MaxTaskKey), Title: clipBytes(title, triggers.MaxTitle),
-	}
+	w := s.wakeLine(key, title, reason, lane, outcome, res, nextSource)
 	if lane != LaneTask {
 		// The core keeps the schedule as the last wake of the long or the short lane
-		// reported it, so each says all of it: the plan as it stands, and the promise.
+		// reported it, so each says all of it: the plan as it stands, and the promises.
 		if next.IsZero() {
 			next, w.NextSource = s.nextTick, ""
 			if n := s.status.NextWake; n != nil {
@@ -815,10 +810,22 @@ func (s *Supervisor) reportWakeAs(key, title, reason, lane, outcome string, res 
 	if !next.IsZero() {
 		w.Next = next.UnixMilli()
 	}
+	s.trig.ReportWake(w)
+}
+
+// wakeLine is the line of activity for a wake that ended: the turn's counts and
+// its trace, labels and numbers only.
+func (s *Supervisor) wakeLine(key, title, reason, lane, outcome string, res agent.Result, nextSource string) triggers.Wake {
+	w := triggers.Wake{
+		TS: s.now().UnixMilli(), Reason: clipLabel(reason), Lane: lane, Outcome: outcome,
+		DurationMs: res.Duration.Milliseconds(), Steps: int64(res.Steps), ToolCalls: int64(res.ToolCalls),
+		Billable: res.Usage.Billable(), CacheRead: res.Usage.CacheRead, Output: res.Usage.Output, NextSource: nextSource,
+		Key: clipBytes(key, triggers.MaxTaskKey), Title: clipBytes(title, triggers.MaxTitle),
+	}
 	for _, st := range res.Trace {
 		w.Trace = append(w.Trace, triggers.Step{Kind: st.Kind, Name: st.Name, Ms: st.Ms, Tokens: st.Tokens})
 	}
-	s.trig.ReportWake(w)
+	return w
 }
 
 // maxWhy is the longest reason the core is told with a wake.
@@ -1214,7 +1221,7 @@ func (s *Supervisor) pollRooms(ctx context.Context, rooms ...string) []edges.Edg
 // BusRoom is the one room the spot reads and speaks in (ADR-109): Tria's
 // requests come in it and the spot's answers go back in it. The tools take the
 // word "bus" for the spot's own room; the core finds it from the token.
-const BusRoom = "bus"
+const BusRoom = tools.BusRoom
 
 // laterRequest keeps a request that names a later time as a promise instead of
 // a wake: the core starts the piece when it is due. later says the request

@@ -196,11 +196,40 @@ func (s *Supervisor) control(ctx context.Context, op, key string) (bool, string)
 	return true, op + " asked: the turn ends at its next step"
 }
 
-// startTasks starts the tasks a turn asked for, when the turn ends.
+// TaskStarter is a channel to the core that can have it make a task actor
+// (triggers.Link): the way a substrate spot starts a task.
+type TaskStarter interface {
+	StartTask(ctx context.Context, title, goal string) (string, error)
+}
+
+// startTasks starts the tasks a turn asked for, when the turn ends. A substrate
+// spot asks the core to make an actor for each (ADR-109); a deployment runs it
+// in a turn of its own beside the lanes.
 func (s *Supervisor) startTasks(ctx context.Context, reqs []tools.TaskRequest) {
 	for _, t := range reqs {
+		if st, ok := s.trig.(TaskStarter); ok && s.cfg.Substrate() {
+			s.askCoreForTask(ctx, st, t)
+			continue
+		}
 		s.startTask(ctx, t, false)
 	}
+}
+
+// askCoreForTask has the core make a task actor. The result goes to Tria, so
+// the spot's own digest says only that it was asked, to keep the next wake from
+// asking again.
+func (s *Supervisor) askCoreForTask(ctx context.Context, st TaskStarter, t tools.TaskRequest) {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	key, err := st.StartTask(cctx, t.Title, t.Goal)
+	summary := "the core made an actor for it (" + key + "); Tria reads its result"
+	if err != nil {
+		s.log.Warn("the core did not start the task", "title", t.Title, "err", err)
+		summary = "not started: " + err.Error()
+	} else {
+		s.log.Info("the core started the task", "title", t.Title, "key", key)
+	}
+	s.addDigest(prompt.Reason("task "+t.Title), agent.Result{Summary: summary})
 }
 
 // startTask runs a task now, or queues it when the limit is reached. A task past

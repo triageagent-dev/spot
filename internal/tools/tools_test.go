@@ -310,7 +310,7 @@ func TestScheduleNextAndFinish(t *testing.T) {
 }
 
 func TestBuiltinsAreAlwaysListed(t *testing.T) {
-	defs := builtinDefs(false)
+	defs := builtinDefs(false, false)
 	if len(defs) != 2 {
 		t.Fatalf("%v", names(defs))
 	}
@@ -901,5 +901,46 @@ func TestTheNotesTheSupervisorReadCountAsTheSearch(t *testing.T) {
 	r.Begin()
 	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
 		t.Error("the next turn starts held again")
+	}
+}
+
+func TestTheBusIsTheOnlyRoomAToolReachesAndATaskStaysInItsWorkspace(t *testing.T) {
+	// A workspace tool goes to the bus, whether or not the model named it, and
+	// never to another room; a spot is not named, the core takes the token's.
+	for _, tool := range []string{"say_in_workspace", "read_workspace_room", "read_workspace_file", "set_workspace_typing"} {
+		out, refusal := busArgs(tool, json.RawMessage(`{"text":"hi","spot":"another-spot"}`), "")
+		if refusal != "" || !strings.Contains(string(out), `"room":"bus"`) || strings.Contains(string(out), "another-spot") {
+			t.Errorf("%s with no room: %s / %q", tool, out, refusal)
+		}
+		for _, room := range []string{"team", "agents", "!abc:server", "private"} {
+			if _, refusal := busArgs(tool, json.RawMessage(`{"room":"`+room+`"}`), ""); refusal == "" {
+				t.Errorf("%s reached the room %q", tool, room)
+			}
+		}
+		if _, refusal := busArgs(tool, json.RawMessage(`{"room":"bus"}`), ""); refusal != "" {
+			t.Errorf("%s refused the bus: %q", tool, refusal)
+		}
+	}
+	// A spot's own call keeps the tenant it names; a task's goes with its own.
+	out, _ := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "")
+	if !strings.Contains(string(out), "other-workspace") {
+		t.Errorf("a spot's own search lost its tenant: %s", out)
+	}
+	out, refusal := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "mine")
+	if refusal != "" || strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) {
+		t.Errorf("a task reached another workspace: %s / %q", out, refusal)
+	}
+	for _, tool := range []string{"upsert_memory_item", "say_in_workspace", "read_workspace_room"} {
+		out, _ = busArgs(tool, json.RawMessage(`{"tenant":"other-workspace","title":"t"}`), "mine")
+		if strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) {
+			t.Errorf("%s of a task went to another workspace: %s", tool, out)
+		}
+		out, _ = busArgs(tool, json.RawMessage(`{"title":"t"}`), "mine")
+		if !strings.Contains(string(out), `"tenant":"mine"`) {
+			t.Errorf("%s of a task named no workspace: %s", tool, out)
+		}
+	}
+	if got, refusal := busArgs("say_in_workspace", json.RawMessage(`nope`), "mine"); string(got) != "nope" || refusal != "" {
+		t.Errorf("unreadable arguments are the core's to refuse: %s %q", got, refusal)
 	}
 }

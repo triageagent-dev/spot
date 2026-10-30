@@ -82,8 +82,15 @@ type Options struct {
 	// supervisor's own words. The ego tools and the built-ins are not wrapped.
 	FenceResults bool
 	// Tasks offers start_task: work that runs on its own beside the turn.
-	Tasks  bool
-	Logger *slog.Logger
+	Tasks bool
+	// TasksViaCore says a task runs as an actor the core makes (a substrate
+	// spot), and leaves its result in memory and in the bus, not in the digest.
+	TasksViaCore bool
+	// TaskTenant is set in a task actor: the workspace its access token was made
+	// for. Whatever workspace the model names in a call to the core, the call
+	// goes with this one; the core checks it against the token as well.
+	TaskTenant string
+	Logger     *slog.Logger
 }
 
 // Defaults.
@@ -324,7 +331,7 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 		}
 	}
 	if !r.o.NotesOnly {
-		defs = append(defs, builtinDefs(r.o.Tasks && !limited)...)
+		defs = append(defs, builtinDefs(r.o.Tasks && !limited, r.o.TasksViaCore)...)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(down)
@@ -399,6 +406,12 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	args := input
 	if len(strings.TrimSpace(string(args))) == 0 {
 		args = json.RawMessage(`{}`)
+	}
+	if rt.server == CoreServer {
+		var refusal string
+		if args, refusal = busArgs(rt.tool, args, r.o.TaskTenant); refusal != "" {
+			return refusal, true
+		}
 	}
 	if rt.server == CoreServer && rt.tool == upsertMemoryItem && r.o.SpotName != "" {
 		args = withSpotTag(args, SpotTagPrefix+r.o.SpotName)
@@ -631,6 +644,55 @@ func (r *Registry) onlyOffered(name string) string {
 
 const readWorkspaceRoom = "read_workspace_room"
 
+// BusRoom is the one room the spot reads and speaks in (ADR-109): the bus it
+// shares with Tria. The core finds it from the spot's token.
+const BusRoom = "bus"
+
+// busTools are the core's workspace tools that take a room.
+var busTools = []string{"say_in_workspace", readWorkspaceRoom, "read_workspace_file", "set_workspace_typing"}
+
+// busArgs keeps a call to the core inside the spot's own bus. A workspace tool
+// goes to the room "bus" and to no other, with no spot named (the core takes
+// the bus of the token's spot); a task actor's calls go with the workspace of
+// its token (taskTenant), whatever the model named. The second result is the
+// refusal the model reads, empty when the call may go.
+func busArgs(tool string, args json.RawMessage, taskTenant string) (json.RawMessage, string) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return args, "" // the core refuses what it cannot read
+	}
+	changed := false
+	if taskTenant != "" {
+		var cur string
+		if raw, ok := m["tenant"]; ok {
+			_ = json.Unmarshal(raw, &cur)
+		}
+		if cur != taskTenant && (cur != "" || inList(busTools, tool) || tool == upsertMemoryItem) {
+			m["tenant"], _ = json.Marshal(taskTenant)
+			changed = true
+		}
+	}
+	if inList(busTools, tool) {
+		if raw, ok := m["room"]; ok {
+			var v string
+			if json.Unmarshal(raw, &v) != nil || (v != "" && v != BusRoom) {
+				return args, `you read and speak in one room, your bus with Tria: pass room "bus" (or leave room out). Tria tells the people.`
+			}
+		}
+		delete(m, "spot") // the bus is the one of the token's spot
+		m["room"], _ = json.Marshal(BusRoom)
+		changed = true
+	}
+	if !changed {
+		return args, ""
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return args, ""
+	}
+	return out, ""
+}
+
 // roomReadLimit is how many messages one read of a room returns when the model
 // names no limit and the spot narrowed the read.
 const roomReadLimit = 10
@@ -646,7 +708,7 @@ func withRoomSince(args json.RawMessage, since func(room string) int64) json.Raw
 	if _, ok := m["since_ts"]; ok {
 		return args
 	}
-	room := "bus"
+	room := BusRoom
 	if raw, ok := m["room"]; ok {
 		var v string
 		if json.Unmarshal(raw, &v) == nil && v != "" {
@@ -713,7 +775,7 @@ func (r *Registry) cut(s string) string {
 	return fmt.Sprintf("%s\n[result truncated: %d bytes dropped; ask for less next time: a name, a namespace, a limit]", s[:n], len(s)-n)
 }
 
-func builtinDefs(tasks bool) []llm.ToolDef {
+func builtinDefs(tasks, viaCore bool) []llm.ToolDef {
 	defs := []llm.ToolDef{
 		{
 			Name: ScheduleNext,
@@ -734,13 +796,17 @@ func builtinDefs(tasks bool) []llm.ToolDef {
 		},
 	}
 	if tasks {
+		where := "It has your tools and limits, cannot schedule wakes or start tasks, and posts to the bus itself when the goal asks it to. " +
+			"Its one-line result comes back to you in your digest. "
+		if viaCore {
+			where = "It has your tools and limits and cannot schedule wakes or start tasks. Its result is written to the workspace's memory and Tria reads it in the bus; it does not come back to you, so do not wait for it. "
+		}
 		defs = append(defs, llm.ToolDef{
 			Name: StartTask,
 			Description: "Start a task: a turn of its own that runs now, beside you and beside other tasks, and carries on after you finish. " +
-				"Use it for work that takes long or must not hold up answering a person, and to do several things at once. " +
+				"Use it for work that takes long or must not hold up answering a request, and to do several things at once. " +
 				"The task starts with an empty conversation and knows nothing of this one, so the goal must say what to check or do, where, and what to report. " +
-				"It has your tools and limits, cannot schedule wakes or start tasks, and posts to the room itself when the goal asks it to. " +
-				"Its one-line result comes back to you in your digest. At most 3 per turn; do not start one for what you can do in a few calls.",
+				where + "At most 3 per turn; do not start one for what you can do in a few calls.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 				`"title":{"type":"string","description":"A few words that name the task."},` +
 				`"goal":{"type":"string","description":"The complete instruction for the task, with everything it needs to know."}},` +
@@ -797,6 +863,9 @@ func (r *Registry) startTask(input json.RawMessage) (string, bool) {
 		return fmt.Sprintf("not started: a turn may start %d tasks. Do the rest yourself or leave it for a later wake.", MaxTasksPerTurn), true
 	}
 	r.tasks = append(r.tasks, t)
+	if r.o.TasksViaCore {
+		return fmt.Sprintf("task %q accepted: the core starts it when you finish this turn and Tria reads its result. Do not wait for it.", t.Title), false
+	}
 	return fmt.Sprintf("task %q accepted: it starts when you finish this turn, runs on its own and tells you its result in your digest. Do not wait for it.", t.Title), false
 }
 

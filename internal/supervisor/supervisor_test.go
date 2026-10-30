@@ -57,6 +57,29 @@ type fakeCore struct {
 	rules      []string               // the standing notes the core holds
 	hold       bool                   // a rule says: check nothing until a person asks
 	lists      int                    // how many times the open issues were read
+	notes      []taskNote             // what task actors left in memory
+	bus        []busLine              // what task actors said in the bus
+	noteErr    error
+}
+
+type taskNote struct{ Key, Title, Result, Spot string }
+type busLine struct{ Text, ReplyTo, Memory string }
+
+func (f *fakeCore) RememberTask(_ context.Context, key, title, result, spot string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.noteErr != nil {
+		return "", f.noteErr
+	}
+	f.notes = append(f.notes, taskNote{key, title, result, spot})
+	return fmt.Sprintf("item-%d", len(f.notes)), nil
+}
+
+func (f *fakeCore) SayInBus(_ context.Context, text, replyTo, memory string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bus = append(f.bus, busLine{text, replyTo, memory})
+	return nil
 }
 
 func (f *fakeCore) StandingNotes(context.Context, string) ([]string, bool, error) {
@@ -604,6 +627,19 @@ type fakeTrigger struct {
 	schedules []triggers.Schedule
 	idles     int
 	onIdle    func()
+	started   []string // "title|goal" of the tasks the core was asked to make actors for
+	startErr  error
+}
+
+// StartTask is the link's way of having the core make a task actor.
+func (f *fakeTrigger) StartTask(_ context.Context, title, goal string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return "", f.startErr
+	}
+	f.started = append(f.started, title+"|"+goal)
+	return fmt.Sprintf("task-%d", len(f.started)), nil
 }
 
 // Idle counts the times the supervisor said it had nothing left to do.
@@ -2346,5 +2382,117 @@ func TestTheSpotKnowsItsOwnPosts(t *testing.T) {
 		if s.isOwn(m) {
 			t.Errorf("%s: taken for the spot's own", name)
 		}
+	}
+}
+
+type fakeTaskLink struct {
+	mu    sync.Mutex
+	wakes []triggers.Wake
+}
+
+func (l *fakeTaskLink) ReportWake(_ context.Context, w triggers.Wake) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.wakes = append(l.wakes, w)
+	return nil
+}
+
+// taskActor builds a supervisor the way a task actor has one: no loop runs.
+func taskActor(t *testing.T, h *harness) *Supervisor {
+	t.Helper()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	led.SetClock(h.clock.Now)
+	h.logs = &safeBuf{}
+	sup := New(h.cfg, led, h.core, h.script, slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	sup.SetClock(h.clock.Now)
+	return sup
+}
+
+func TestATaskActorLeavesOneNoteAndOneLineInTheBusAndReportsWithItsKey(t *testing.T) {
+	h := newHarness(t, nil)
+	sup := taskActor(t, h)
+	flushed := false
+	sup.SetFlush(func() { flushed = true })
+	h.set("summary", "The nightly job ran at 02:00 and passed.\nNo errors in the last 24h.")
+	link := &fakeTaskLink{}
+	must(t, sup.RunTask(context.Background(), triggers.Task{Key: "task-9", Goal: "check the nightly job report\nand tell me if it failed", ReplyTo: "$req", Token: "tok"}, link))
+
+	if h.script.turnCount() != 1 {
+		t.Fatalf("turns = %d", h.script.turnCount())
+	}
+	in := h.script.prompt(1)
+	for _, want := range []string{"Wake reason: task", "check the nightly job report", "Do not post: the supervisor writes your result"} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the task's prompt lacks %q:\n%s", want, in)
+		}
+	}
+	if h.script.turns[1].Task != true || h.script.turns[1].Reason != "task" {
+		t.Errorf("the turn is not a task's: %+v", h.script.turns[1])
+	}
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	if len(h.core.notes) != 1 || h.core.notes[0] != (taskNote{"task-9", "check the nightly job report", "The nightly job ran at 02:00 and passed.\nNo errors in the last 24h.", "example-spot"}) {
+		t.Fatalf("the note: %+v", h.core.notes)
+	}
+	if len(h.core.bus) != 1 || h.core.bus[0].ReplyTo != "$req" || h.core.bus[0].Memory != "item-1" ||
+		h.core.bus[0].Text != "The nightly job ran at 02:00 and passed. No errors in the last 24h." {
+		t.Fatalf("the line in the bus: %+v", h.core.bus)
+	}
+	if !flushed {
+		t.Error("the spans were not flushed before the report")
+	}
+	if len(link.wakes) != 1 {
+		t.Fatalf("reports: %+v", link.wakes)
+	}
+	w := link.wakes[0]
+	if w.Key != "task-9" || w.Lane != "task" || w.Outcome != "turn" || w.Title != "check the nightly job report" || w.Next != 0 || len(w.Promises) != 0 || w.Steps == 0 {
+		t.Fatalf("the report: %+v", w)
+	}
+}
+
+func TestATaskThatFailsIsAResultToo(t *testing.T) {
+	h := newHarness(t, nil)
+	sup := taskActor(t, h)
+	h.set("mode", "fail")
+	link := &fakeTaskLink{}
+	must(t, sup.RunTask(context.Background(), triggers.Task{Key: "task-1", Goal: "look at it", ReplyTo: "$r"}, link))
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	if len(h.core.notes) != 1 || !strings.HasPrefix(h.core.notes[0].Result, "failed: ") || len(h.core.bus) != 1 || !strings.HasPrefix(h.core.bus[0].Text, "failed: ") {
+		t.Fatalf("a failed task must say so: %+v %+v", h.core.notes, h.core.bus)
+	}
+	if len(link.wakes) != 1 || link.wakes[0].Outcome == "turn" {
+		t.Fatalf("the report must say it failed: %+v", link.wakes)
+	}
+}
+
+func TestALongResultIsInMemoryAndOnlyItsBeginningInTheBus(t *testing.T) {
+	h := newHarness(t, nil)
+	sup := taskActor(t, h)
+	long := strings.Repeat("word ", 400)
+	h.set("summary", long)
+	must(t, sup.RunTask(context.Background(), triggers.Task{Key: "task-2", Goal: "g", ReplyTo: "$r"}, &fakeTaskLink{}))
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	if h.core.notes[0].Result != strings.TrimSpace(long) || len(h.core.bus[0].Text) > maxBusLine || strings.Contains(h.core.bus[0].Text, "\n") || !strings.HasSuffix(h.core.bus[0].Text, "...") {
+		t.Fatalf("note %d bytes, line %d bytes: %q", len(h.core.notes[0].Result), len(h.core.bus[0].Text), h.core.bus[0].Text)
+	}
+}
+
+func TestATaskWhoseNoteCannotBeSavedSaysSoInTheBus(t *testing.T) {
+	h := newHarness(t, nil)
+	sup := taskActor(t, h)
+	h.core.noteErr = errors.New("memory is down")
+	h.set("summary", "found it")
+	link := &fakeTaskLink{}
+	must(t, sup.RunTask(context.Background(), triggers.Task{Key: "task-3", Goal: "g", ReplyTo: "$r"}, link))
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	if len(h.core.bus) != 1 || h.core.bus[0].Memory != "" || !strings.Contains(h.core.bus[0].Text, "found it") || !strings.Contains(h.core.bus[0].Text, "could not be saved") {
+		t.Fatalf("%+v", h.core.bus)
+	}
+	if len(link.wakes) != 1 {
+		t.Fatalf("the report must still go: %+v", link.wakes)
 	}
 }

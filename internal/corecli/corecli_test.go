@@ -21,6 +21,7 @@ import (
 )
 
 type fakeCore struct {
+	says      []map[string]any
 	mu        sync.Mutex
 	auth      []string
 	upserts   []map[string]any
@@ -43,7 +44,7 @@ func (f *fakeCore) start(t *testing.T) *httptest.Server {
 			return mcp.NewToolResultText(f.issuesOut), nil
 		})
 	s.AddTool(mcp.NewTool("upsert_memory_item", mcp.WithString("id"), mcp.WithString("kind"), mcp.WithString("scope"),
-		mcp.WithString("content"), mcp.WithString("title"), mcp.WithString("tags"), mcp.WithString("stale_after"), mcp.WithString("tenant")),
+		mcp.WithString("content"), mcp.WithString("title"), mcp.WithString("subject"), mcp.WithString("tags"), mcp.WithString("stale_after"), mcp.WithString("tenant")),
 		func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -59,6 +60,13 @@ func (f *fakeCore) start(t *testing.T) *httptest.Server {
 			}
 			b, _ := json.Marshal(map[string]any{"id": "cell-1", "kind": "spot_system_identity", "content": f.cell})
 			return mcp.NewToolResultText(string(b)), nil
+		})
+	s.AddTool(mcp.NewTool("say_in_workspace", mcp.WithString("text"), mcp.WithString("room"), mcp.WithString("reply_to"), mcp.WithString("memory"), mcp.WithString("tenant")),
+		func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.says = append(f.says, r.GetArguments())
+			return mcp.NewToolResultText(`{"ok":true}`), nil
 		})
 	if f.withRoom {
 		s.AddTool(mcp.NewTool("read_workspace_room", mcp.WithString("tenant"), mcp.WithString("room"), mcp.WithNumber("since_ts")),
@@ -429,5 +437,32 @@ func TestAnUnreachableCoreIsRetriedWithABackoff(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "level=WARN"); n < 1 || n > 33 {
 		t.Fatalf("%d warnings:\n%s", n, logs.String())
+	}
+}
+
+func TestATaskLeavesOneNoteAndOneLineInTheBus(t *testing.T) {
+	f := &fakeCore{}
+	srv := f.start(t)
+	defer srv.Close()
+	c := New(srv.URL, tokenFile(t, "tok-1"), "example")
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	id, err := c.RememberTask(ctx, "task-1", "check the nightly job", "the job ran at 02:00 and passed", "example-spot")
+	if err != nil || id != "x" {
+		t.Fatalf("id %q err %v", id, err)
+	}
+	if err := c.SayInBus(ctx, "done, see the note", "$req", id); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.upserts[len(f.upserts)-1]
+	if u["kind"] != "note" || u["scope"] != "global" || u["subject"] != "task-1" || u["title"] != "check the nightly job" ||
+		u["content"] != "the job ran at 02:00 and passed" || u["tags"] != "task,spot:example-spot" || u["tenant"] != "example" {
+		t.Fatalf("the note: %v", u)
+	}
+	if len(f.says) != 1 || f.says[0]["room"] != "bus" || f.says[0]["reply_to"] != "$req" || f.says[0]["memory"] != "x" || f.says[0]["tenant"] != "example" {
+		t.Fatalf("the line in the bus: %v", f.says)
 	}
 }

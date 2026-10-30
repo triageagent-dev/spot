@@ -345,6 +345,49 @@ func (c *Client) Heartbeat(ctx context.Context, id, title, content string, stale
 	return err
 }
 
+// RememberTask is what a task actor leaves in the workspace (ADR-109): the result
+// as one memory item, kind note, the task key as its subject, tagged task and
+// spot:<name>, and the item's id for the line in the bus.
+func (c *Client) RememberTask(ctx context.Context, key, title, result, spot string) (string, error) {
+	text, err := c.call(ctx, "upsert_memory_item", map[string]any{
+		"kind": "note", "scope": "global", "subject": key,
+		"title": clipRunes(title, 120), "content": clipRunes(result, 6000),
+		"tags": "task,spot:" + spot, "tenant": c.tenant,
+	})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil || out.ID == "" {
+		return "", fmt.Errorf("upsert_memory_item: no item id in the reply")
+	}
+	return out.ID, nil
+}
+
+// SayInBus posts one message in the spot's own bus (say_in_workspace, room
+// "bus"): an answer to the request replyTo, with the memory item it rests on.
+func (c *Client) SayInBus(ctx context.Context, text, replyTo, memory string) error {
+	args := map[string]any{"text": clipRunes(text, 2000), "room": "bus", "tenant": c.tenant}
+	if replyTo != "" {
+		args["reply_to"] = replyTo
+	}
+	if memory != "" {
+		args["memory"] = memory
+	}
+	_, err := c.call(ctx, "say_in_workspace", args)
+	return err
+}
+
+// clipRunes cuts s to n characters.
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
 // MemoryCellContent reads one memory cell by its exact id (get_memory_cell) and
 // returns its content. The spot's system prompt is such a cell.
 func (c *Client) MemoryCellContent(ctx context.Context, id string) (string, error) {
