@@ -60,6 +60,7 @@ type fakeCore struct {
 	notes      []taskNote             // what task actors left in memory
 	bus        []busLine              // what task actors said in the bus
 	noteErr    error
+	roomReads  int // how many times a room was read
 }
 
 type taskNote struct{ Key, Title, Result, Spot string }
@@ -138,6 +139,7 @@ func (f *fakeCore) Heartbeat(_ context.Context, id, title, content string, stale
 func (f *fakeCore) RoomMessages(_ context.Context, room, since string) ([]corecli.RoomMessage, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.roomReads++
 	if f.roomAbsent {
 		return nil, since, corecli.ErrNoRoomTool
 	}
@@ -2432,6 +2434,9 @@ func TestATaskActorLeavesOneNoteAndOneLineInTheBusAndReportsWithItsKey(t *testin
 	}
 	h.core.mu.Lock()
 	defer h.core.mu.Unlock()
+	if h.core.roomReads != 0 {
+		t.Fatalf("a task actor read a room %d times: it has one frame, one turn and one report", h.core.roomReads)
+	}
 	if len(h.core.notes) != 1 || h.core.notes[0] != (taskNote{"task-9", "check the nightly job report", "The nightly job ran at 02:00 and passed.\nNo errors in the last 24h.", "example-spot"}) {
 		t.Fatalf("the note: %+v", h.core.notes)
 	}
