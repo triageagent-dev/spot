@@ -303,10 +303,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if pend == nil {
 			pend = s.manualWake()
 		}
+		orderedWake := false
 		if pend == nil {
-			if pend = s.ordered(); pend != nil && s.cfg.Substrate() {
-				pend = s.withRooms(ctx, pend)
-			}
+			pend = s.ordered()
+			orderedWake = pend != nil && s.cfg.Substrate()
 		}
 		if pend == nil && s.selfWakeDue() {
 			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
@@ -316,6 +316,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 				s.pauseForCeiling()
 				s.reportWake(string(pend.reason), LaneLong, "ceiling", agent.Result{}, s.nextTick, "ceiling")
 			} else {
+				if orderedWake {
+					s.withRooms(ctx, pend)
+				}
 				s.turn(ctx, pend)
 				pend = nil
 				continue
@@ -368,21 +371,22 @@ func (s *Supervisor) primeRooms(ctx context.Context) {
 	s.hold(s.pollRooms(pctx, cold...))
 }
 
-// withRooms reads the rooms for a wake the core ordered from an actor. The
-// core's request may have come with no usable token, which the actor answers
-// with a plain tick that reads nothing of it: what was said in the rooms is
-// then a fact of this wake, not of a wake that may never come.
-func (s *Supervisor) withRooms(ctx context.Context, p *pending) *pending {
+// withRooms reads the rooms for a wake the core ordered from an actor and adds
+// what it finds to that wake. The core's request may have come with no usable
+// token, which the actor answers with a plain tick that reads nothing of it:
+// what was said in the rooms is then a fact of this wake, not of a wake that may
+// never come. The wake keeps its reason and the words it was ordered with.
+func (s *Supervisor) withRooms(ctx context.Context, p *pending) {
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	es := s.pollRooms(pctx, "team", "agents")
-	if len(es) == 0 {
-		return p
+	now := s.now()
+	for _, e := range s.pollRooms(pctx, "team", "agents") {
+		p.facts = append(p.facts, e.Fact)
+		p.edges = append(p.edges, heldEdge{Edge: e, at: now})
+		if e.Human {
+			p.room = "team"
+		}
 	}
-	s.hold(es)
-	h := s.fromHeld()
-	h.scheduledBy = p.scheduledBy
-	return h
 }
 
 // manualWake turns a wake a person asked for from the console into a wake of the

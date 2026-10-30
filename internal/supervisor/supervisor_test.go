@@ -2214,8 +2214,36 @@ func TestATickOfAnActorReadsTheRooms(t *testing.T) {
 	defer h.stop()
 	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
 	h.waitIdle(1)
-	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: human") || !strings.Contains(in, "are you there?") {
+	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "are you there?") {
 		t.Fatalf("a tick must carry the message waiting in the room:\n%s", in)
+	}
+}
+
+// What a wake was ordered for is not lost to what was said in a room: the
+// promise is still the reason, and the line in the room comes with it.
+func TestAPromisedWakeKeepsItsWordsWhenARoomHasNews(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = time.Hour
+	})
+	h.trig = trig
+	h.core.roomMsgs["agents"] = []corecli.RoomMessage{say("@tria:srv", "Tria", "old")}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	led, err := ledger.New(h.state)
+	must(t, err)
+	h.waitFor("the cursors to be saved", func() bool { return len(led.LoadRoomCursors()) == 2 })
+	h.stop()
+
+	h.post("agents", corecli.RoomMessage{Sender: "@tria:srv", Name: "Tria", Text: "a line from Tria", Tria: true})
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "promise", Why: "check the checkout pods at 15:00"}})
+	h.waitIdle(1)
+	in := h.file("stdin", 1)
+	if !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, "check the checkout pods at 15:00") || !strings.Contains(in, "a line from Tria") {
+		t.Fatalf("the promise and the line in the room must both reach the wake:\n%s", in)
 	}
 }
 
