@@ -14,6 +14,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/server/servertest"
 )
 
 func ctx(t *testing.T) context.Context {
@@ -38,7 +39,7 @@ func TestToolsAreListedAndSorted(t *testing.T) {
 			return mcp.NewToolResultText("ok"), nil
 		})
 	}
-	ts := server.NewTestStreamableHTTPServer(s)
+	ts := servertest.NewTestStreamableHTTPServer(s)
 	defer ts.Close()
 
 	c, err := Connect(ctx(t), ts.URL, "", 5*time.Second)
@@ -77,7 +78,7 @@ func TestSchemasTheTypedClientCannotParseSurviveUnchanged(t *testing.T) {
 		func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText("ok"), nil
 		})
-	ts := server.NewTestStreamableHTTPServer(s)
+	ts := servertest.NewTestStreamableHTTPServer(s)
 	defer ts.Close()
 	c, err := Connect(ctx(t), ts.URL, "", 5*time.Second)
 	if err != nil {
@@ -116,7 +117,7 @@ func TestCallResults(t *testing.T) {
 	s.AddTool(mcp.NewTool("structured"), h(func() *mcp.CallToolResult {
 		return &mcp.CallToolResult{StructuredContent: map[string]any{"n": 1}}
 	}))
-	ts := server.NewTestStreamableHTTPServer(s)
+	ts := servertest.NewTestStreamableHTTPServer(s)
 	defer ts.Close()
 	c, err := Connect(ctx(t), ts.URL, "", 5*time.Second)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestTokenFileIsReadOnEveryRequest(t *testing.T) {
 	s.AddTool(mcp.NewTool("a"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("ok"), nil
 	})
-	ts := server.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(c context.Context, r *http.Request) context.Context {
+	ts := servertest.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(c context.Context, r *http.Request) context.Context {
 		mu.Lock()
 		seen = append(seen, r.Header.Get("Authorization"))
 		mu.Unlock()
@@ -178,7 +179,7 @@ func TestNoTokenFileSendsNoAuthorization(t *testing.T) {
 	var mu sync.Mutex
 	var seen []string
 	s := server.NewMCPServer("example", "1")
-	ts := server.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(c context.Context, r *http.Request) context.Context {
+	ts := servertest.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(c context.Context, r *http.Request) context.Context {
 		mu.Lock()
 		seen = append(seen, r.Header.Get("Authorization"))
 		mu.Unlock()

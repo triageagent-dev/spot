@@ -146,7 +146,7 @@ func (c *Client) connect(ctx context.Context) error {
 		return err
 	}
 	req := mcp.InitializeRequest{}
-	req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	req.Params.ProtocolVersion = mcp.ProtocolVersion20251125
 	req.Params.ClientInfo = mcp.Implementation{Name: "tria-spot-supervisor", Version: "1"}
 	if _, err := cl.Initialize(ctx, req); err != nil {
 		_ = cl.Close()
