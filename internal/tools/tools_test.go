@@ -15,6 +15,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/server/servertest"
 
 	"github.com/triageagent-dev/spot/internal/llm"
 )
@@ -74,7 +75,7 @@ func fakeServer(t *testing.T) (url string, auth func() string) {
 	}))
 	var mu sync.Mutex
 	var seen string
-	ts := server.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+	ts := servertest.NewTestStreamableHTTPServer(s, server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 		mu.Lock()
 		seen = r.Header.Get("Authorization")
 		mu.Unlock()
