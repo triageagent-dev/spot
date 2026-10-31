@@ -526,3 +526,77 @@ func TestOnlyTheMethodsTheCoreUsesAreServed(t *testing.T) {
 		}
 	}
 }
+
+// The push URL must be the core's, and a message must carry one: it comes before
+// the message is confirmed and would otherwise make the actor post anywhere. The
+// task ends rejected, the core is not asked, nothing runs and nothing is posted
+// to the other host.
+func TestAPushURLThatIsNotTheCoresIsRejected(t *testing.T) {
+	var other []string
+	var omu sync.Mutex
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		omu.Lock()
+		other = append(other, r.URL.Path)
+		omu.Unlock()
+	}))
+	defer elsewhere.Close()
+	for name, mut := range map[string]func(p *a2a.MessageSendParams){
+		"another host": func(p *a2a.MessageSendParams) { p.Config.PushConfig.URL = elsewhere.URL + "/events" },
+		"another scheme": func(p *a2a.MessageSendParams) {
+			p.Config.PushConfig.URL = strings.Replace(p.Config.PushConfig.URL, "http://", "https://", 1)
+		},
+		"no push config": func(p *a2a.MessageSendParams) { p.Config.PushConfig = nil },
+		"no config":      func(p *a2a.MessageSendParams) { p.Config = nil },
+	} {
+		core := newTaskCore(t)
+		a := newActor(t, core, okRun)
+		c := a.client(t, testTok)
+		p := a.message(testGoal, testWS, testTok)
+		mut(p)
+		first := send(t, c, p)
+		var got *a2a.Task
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			g, err := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID})
+			if err == nil && g.Status.State == a2a.TaskStateRejected {
+				got = g
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got == nil {
+			t.Fatalf("%s: the task was not rejected", name)
+		}
+		if got.Status.Message == nil || !strings.Contains(textOf(got.Status.Message), "push URL must be the core's") {
+			t.Errorf("%s: the rejection does not say why: %+v", name, got.Status.Message)
+		}
+		core.mu.Lock()
+		if len(core.confirms) != 0 || len(core.pushes) != 0 || len(a.tasks()) != 0 {
+			t.Errorf("%s: asked %v, pushed %d, ran %v", name, core.confirms, len(core.pushes), a.tasks())
+		}
+		core.mu.Unlock()
+	}
+	time.Sleep(100 * time.Millisecond)
+	omu.Lock()
+	defer omu.Unlock()
+	if len(other) != 0 {
+		t.Fatalf("the actor posted to another host: %v", other)
+	}
+}
+
+// tasks/get is for the bearer the task's message came with.
+func TestTasksGetNeedsTheBearerOfTheTask(t *testing.T) {
+	core := newTaskCore(t)
+	a := newActor(t, core, okRun)
+	first := send(t, a.client(t, testTok), a.message(testGoal, testWS, testTok))
+	core.waitEnd(t)
+	for name, bearer := range map[string]string{"another bearer": "someone-else", "none": ""} {
+		if got, err := a.client(t, bearer).GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID}); err == nil {
+			t.Errorf("%s: read the task: %+v", name, got)
+		}
+	}
+	got, err := a.client(t, testTok).GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID})
+	if err != nil || got.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("the task's own bearer: %+v %v", got, err)
+	}
+}

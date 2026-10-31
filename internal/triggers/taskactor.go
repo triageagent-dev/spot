@@ -112,6 +112,7 @@ type TaskServer struct {
 	done  chan TaskResult // how it ended, for the executor to say
 
 	mu        sync.Mutex
+	bearers   map[a2a.TaskID]string // the bearer each A2A task's message came with: only it may read the task
 	claimed   bool
 	taskID    a2a.TaskID
 	token     string
@@ -130,13 +131,15 @@ func NewTaskServer(apiURL, workspace string, log *slog.Logger) (*TaskServer, err
 		base: u.String(), workspace: workspace, log: log,
 		hc:    &http.Client{Timeout: 30 * time.Second},
 		tasks: make(chan Task, 1), done: make(chan TaskResult, 1),
+		bearers: map[a2a.TaskID]string{},
 	}, nil
 }
 
 // Handler serves the probe, the card and the JSON-RPC endpoint.
 func (t *TaskServer) Handler() http.Handler {
 	h := a2asrv.NewHandler(&taskExecutor{s: t},
-		a2asrv.WithPushNotifications(push.NewInMemoryStore(), push.NewHTTPPushSender(&push.HTTPSenderConfig{Timeout: 30 * time.Second})),
+		a2asrv.WithPushNotifications(push.NewInMemoryStore(), coreOnlySender{t, push.NewHTTPPushSender(&push.HTTPSenderConfig{Timeout: 30 * time.Second})}),
+		a2asrv.WithCallInterceptor(t),
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
@@ -145,6 +148,59 @@ func (t *TaskServer) Handler() http.Handler {
 	mux.Handle("GET "+a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(taskCard()))
 	mux.Handle("/", onlyTaskMethods(a2asrv.NewJSONRPCHandler(h)))
 	return mux
+}
+
+// pushVerdictKey carries, from the call interceptor to the executor, whether the
+// message's push configuration points at the core.
+type pushVerdictKey struct{}
+
+// pushURLOK says url has the scheme and host:port of the core API URL: the
+// callback of a task is the core's, under the base the actor was given. The
+// path may differ.
+func (t *TaskServer) pushURLOK(raw string) bool {
+	u, err := url.Parse(raw)
+	b, berr := url.Parse(t.base)
+	return err == nil && berr == nil && u.Host != "" && strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host)
+}
+
+// Before is the call interceptor. A message/send is marked with whether its push
+// configuration is the core's; tasks/get is for the bearer the task's message
+// came with, as tasks/cancel is.
+func (t *TaskServer) Before(ctx context.Context, cc *a2asrv.CallContext, req *a2asrv.Request) (context.Context, error) {
+	switch p := req.Payload.(type) {
+	case *a2a.MessageSendParams:
+		ok := p != nil && p.Config != nil && p.Config.PushConfig != nil && t.pushURLOK(p.Config.PushConfig.URL)
+		return context.WithValue(ctx, pushVerdictKey{}, ok), nil
+	case *a2a.TaskQueryParams:
+		if p == nil {
+			return ctx, nil
+		}
+		t.mu.Lock()
+		want, known := t.bearers[p.ID]
+		t.mu.Unlock()
+		if known && (want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(bearerFrom(ctx))) != 1) {
+			return ctx, a2a.ErrUnauthenticated
+		}
+	}
+	return ctx, nil
+}
+
+func (t *TaskServer) After(context.Context, *a2asrv.CallContext, *a2asrv.Response) error { return nil }
+
+// coreOnlySender is the SDK's push sender behind one rule: nothing is posted to a
+// URL that is not the core's. The configuration comes in a message that has not
+// been confirmed yet, and a task must not make the actor post anywhere else.
+type coreOnlySender struct {
+	t    *TaskServer
+	next *push.HTTPPushSender
+}
+
+func (s coreOnlySender) SendPush(ctx context.Context, cfg *a2a.PushConfig, task *a2a.Task) error {
+	if !s.t.pushURLOK(cfg.URL) {
+		s.t.log.Warn("push notification dropped: its URL is not the core's")
+		return nil
+	}
+	return s.next.SendPush(ctx, cfg, task)
 }
 
 // onlyTaskMethods lets through the three methods the core uses: the message, a
@@ -278,8 +334,14 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 	}
 	msg := rc.Message
 	bearer := bearerFrom(ctx)
+	s.mu.Lock()
+	s.bearers[rc.TaskID] = bearer // before the first event: a task that can be read is one that is recorded
+	s.mu.Unlock()
 	if msg == nil || bearer == "" {
 		return reject("a task message needs a bearer token and a message")
+	}
+	if ok, _ := ctx.Value(pushVerdictKey{}).(bool); !ok {
+		return reject("the push URL must be the core's: a task message carries a push notification configuration at the core API URL")
 	}
 	key := metaString(msg.Metadata, MetaTaskKey)
 	if key == "" {
