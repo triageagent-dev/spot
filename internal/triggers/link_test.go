@@ -115,6 +115,7 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 		} `json:"join"`
 		Hello struct {
 			Spot, Workspace, Version, Runtime string
+			TokenCheck                        string `json:"tokenCheck"`
 			Cert, Proof                       []byte
 		} `json:"hello"`
 	}
@@ -177,7 +178,7 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 			return
 		}
 		c.lmu.Lock()
-		c.hellos = append(c.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "runtime": in.Hello.Runtime})
+		c.hellos = append(c.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "runtime": in.Hello.Runtime, "tokenCheck": in.Hello.TokenCheck})
 		refuse := c.refuseHello > 0
 		if refuse {
 			c.refuseHello--
@@ -754,5 +755,54 @@ func TestASpotAsksTheCoreForATaskActorWithItsAccessToken(t *testing.T) {
 	c.lmu.Unlock()
 	if _, err := l.StartTask(context.Background(), "t", "g"); err == nil {
 		t.Fatal("a task the core refused was reported as started")
+	}
+}
+
+// coreToken signs a core access token for spot in workspace with the fake
+// core's CA key, as the core does for each frame to an actor.
+func (c *linkCore) coreToken(spot, workspace, fingerprint string, exp time.Time) string {
+	payload, _ := json.Marshal(map[string]any{"s": spot, "w": workspace, "f": fingerprint, "i": time.Now().Unix(), "e": exp.Unix()})
+	sig := ed25519.Sign(c.caPriv, append([]byte("triage-spot-token/1\n"), payload...))
+	enc := base64.RawURLEncoding
+	return "spt1." + enc.EncodeToString(payload) + "." + enc.EncodeToString(sig)
+}
+
+// The hello says the actor verifies signed tokens, and a frame is taken with a
+// token the core CA signed for this spot, not with one for another spot, another
+// key or past its end; the hello's own token is still taken.
+func TestAFrameIsTakenWithACoreSignedTokenForThisSpot(t *testing.T) {
+	c := newLinkCore(t)
+	l, _, _ := upLink(t, c)
+	c.lmu.Lock()
+	h := c.hellos[0]
+	c.lmu.Unlock()
+	if h["tokenCheck"] != "signed" {
+		t.Fatalf("hello does not say signed: %v", h)
+	}
+	fp := l.cert.ID.Fingerprint()
+	good := c.coreToken("example-spot", "ws-1", fp, time.Now().Add(10*time.Minute))
+	if resp := frameReqAs(t, l, "/frame", `{"rooms":["team"]}`, good); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("a frame with a signed token: %d", resp.StatusCode)
+	}
+	for name, tok := range map[string]string{
+		"another spot":   c.coreToken("other-spot", "ws-1", fp, time.Now().Add(10*time.Minute)),
+		"another ws":     c.coreToken("example-spot", "ws-2", fp, time.Now().Add(10*time.Minute)),
+		"another key":    c.coreToken("example-spot", "ws-1", "SHA256:00", time.Now().Add(10*time.Minute)),
+		"expired":        c.coreToken("example-spot", "ws-1", fp, time.Now().Add(-time.Minute)),
+		"not a token":    "spt1.xx.yy",
+		"someone else's": "spt1.token-other",
+	} {
+		if resp := frameReqAs(t, l, "/frame", `{"rooms":["team"]}`, tok); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s: %d", name, resp.StatusCode)
+		}
+	}
+	// a token signed by another CA
+	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
+	other := &linkCore{fakeCore: &fakeCore{caPriv: otherPriv}}
+	if resp := frameReqAs(t, l, "/frame", `{"rooms":["team"]}`, other.coreToken("example-spot", "ws-1", fp, time.Now().Add(time.Minute))); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("another CA's token: %d", resp.StatusCode)
+	}
+	if resp := frameReq(t, l, "/frame", `{"rooms":["team"]}`); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("the hello token: %d", resp.StatusCode)
 	}
 }

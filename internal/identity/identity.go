@@ -19,6 +19,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -170,6 +171,78 @@ func (id *Identity) VerifyChallenge(c *Challenge, b Binding) error {
 			return fmt.Errorf("save core CA: %w", err)
 		}
 		id.caCert = trusted
+	}
+	return nil
+}
+
+// A core access token is "spt1." + base64url(payload) + "." + base64url(sig):
+// the payload names the spot (s), its workspace (w), its key (f, the
+// fingerprint) and when it ends (e, unix seconds); the core CA key signs
+// coreTokenContext and the payload. The core puts one on every frame it sends
+// an actor; an actor that says tokenCheck signed in its hello verifies it here
+// instead of comparing it with the token hello gave, so the core keeps none.
+const (
+	coreTokenPrefix  = "spt1."
+	coreTokenContext = "triage-spot-token/1\n"
+	maxCoreTokenLen  = 1024
+)
+
+type coreToken struct {
+	Spot        string `json:"s"`
+	Workspace   string `json:"w"`
+	Fingerprint string `json:"f"`
+	Exp         int64  `json:"e"`
+}
+
+// VerifyCoreToken checks that tok is a core access token for this spot, signed
+// by the CA this identity trusts and not past its end. It fails before the first
+// verified challenge, when no CA is saved yet.
+func (id *Identity) VerifyCoreToken(tok string, now time.Time) error {
+	id.mu.Lock()
+	caDER := id.caCert
+	pub := id.key.Public().(ed25519.PublicKey)
+	id.mu.Unlock()
+	if len(caDER) == 0 {
+		return errors.New("no core CA saved yet")
+	}
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		return fmt.Errorf("saved core CA: %w", err)
+	}
+	caPub, ok := ca.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return errors.New("the core CA key is not Ed25519")
+	}
+	rest, ok := strings.CutPrefix(tok, coreTokenPrefix)
+	if !ok || len(tok) > maxCoreTokenLen {
+		return errors.New("not a core token")
+	}
+	p, s, ok := strings.Cut(rest, ".")
+	if !ok {
+		return errors.New("malformed core token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil {
+		return errors.New("malformed core token")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return errors.New("malformed core token")
+	}
+	if !ed25519.Verify(caPub, append([]byte(coreTokenContext), payload...), sig) {
+		return errors.New("core token signature does not verify")
+	}
+	var t coreToken
+	if err := json.Unmarshal(payload, &t); err != nil {
+		return errors.New("malformed core token")
+	}
+	switch {
+	case t.Spot != id.spot || t.Workspace != id.workspace:
+		return errors.New("core token is for another spot")
+	case t.Fingerprint != Fingerprint(pub):
+		return errors.New("core token is for another key")
+	case t.Exp <= now.Unix():
+		return errors.New("core token expired")
 	}
 	return nil
 }

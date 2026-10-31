@@ -538,7 +538,10 @@ func (l *Link) hello(ctx context.Context, coreNonce, cert []byte) error {
 		"kind": "hello", "coreNonce": coreNonce,
 		"hello": map[string]any{
 			"spot": l.cert.Name, "workspace": l.cert.Workspace, "version": l.cert.Version, "runtime": "substrate", "cert": cert,
-			"proof": id.Sign(identity.ProofMessage("hello", coreNonce, l.cert.Name, l.cert.Workspace)),
+			// The actor verifies the token on a frame against the core CA for its
+			// own name (authorised), so the core mints one per frame and keeps none.
+			"tokenCheck": "signed",
+			"proof":      id.Sign(identity.ProofMessage("hello", coreNonce, l.cert.Name, l.cert.Workspace)),
 		},
 	}, &out)
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
@@ -665,10 +668,12 @@ func (l *Link) Handler() http.Handler {
 	return mux
 }
 
-// authorised reports whether the request carries the access token the core got
-// from hello: the core puts it on every request it sends the actor. A process
-// started for a wake has not said hello yet, so it takes the token its
-// predecessor saved, which is the one the core still holds.
+// authorised reports whether the request carries a token of the core's: one
+// the core CA signed for this spot that has not ended (the core mints one for
+// each frame once hello said tokenCheck signed), or the access token hello
+// gave, which a core from before signed tokens puts on every request. A
+// process started for a wake has not said hello yet, so it also takes the
+// token its predecessor saved, which such a core still holds.
 func (l *Link) authorised(r *http.Request) bool {
 	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || got == "" {
@@ -688,7 +693,13 @@ func (l *Link) authorised(r *http.Request) bool {
 			match |= subtle.ConstantTimeCompare([]byte(got), []byte(k))
 		}
 	}
-	return match == 1
+	if match == 1 {
+		return true
+	}
+	if l.open() != nil {
+		return false
+	}
+	return l.cert.ID.VerifyCoreToken(got, time.Now()) == nil
 }
 
 // serveFrame takes one frame of the core. A control is answered in the
