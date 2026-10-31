@@ -64,7 +64,7 @@ func Connect(ctx context.Context, url, tokenFile string, httpTimeout time.Durati
 		return nil, err
 	}
 	init := mcp.InitializeRequest{}
-	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	init.Params.ProtocolVersion = mcp.ProtocolVersion20251125
 	init.Params.ClientInfo = mcp.Implementation{Name: "tria-spot", Version: "1"}
 	if _, err := cl.Initialize(ctx, init); err != nil {
 		_ = cl.Close()
