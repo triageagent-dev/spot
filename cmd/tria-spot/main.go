@@ -108,6 +108,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	var sup *supervisor.Supervisor // set below; the registry asks it for the rooms's watermark
+	var link *triggers.Link        // the substrate link, once it is built; start_task waits for its hello to say the core makes task actors
 	newRegistry := func() *tools.Registry {
 		return tools.New(tools.Options{
 			RequestHop: func(id string) (int, bool) {
@@ -123,7 +124,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TaskTenant: taskTenant(cfg), Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TasksOffered: func() bool { return link != nil && link.TasksOffered() }, TaskTenant: taskTenant(cfg), Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {
@@ -172,6 +173,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			return 1
 		}
 		if l, ok := tc.(*triggers.Link); ok {
+			link = l
 			// The server listens at once and the link starts with the core's first
 			// request, which the process then waits for.
 			shutdown, err := serve(cfg.Listen, l.Handler(), log)

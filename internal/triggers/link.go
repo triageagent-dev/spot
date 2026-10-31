@@ -61,6 +61,7 @@ type Link struct {
 	hc   *http.Client
 
 	connected atomic.Bool
+	tasks     atomic.Bool // the core's last hello said it makes task actors
 	poked     atomic.Bool // a request with no token has already been answered with a tick
 	ready     chan struct{}
 	reauth    chan struct{}
@@ -118,6 +119,11 @@ func (l *Link) Actor() string {
 	defer l.mu.Unlock()
 	return l.actor
 }
+
+// TasksOffered reports whether the core's last hello said it makes task actors
+// (`tasks: true`). A core that does not say so, or has not been heard yet, has
+// none, and the spot does not offer start_task.
+func (l *Link) TasksOffered() bool { return l.tasks.Load() }
 
 // WaitReady blocks until the first hello is done: the spot has its access token,
 // the link is connected and the schedule is with the core.
@@ -479,6 +485,9 @@ type linkIn struct {
 	Budget     *Budget        `json:"budget,omitempty"`
 	Token      *tokenFrame    `json:"token,omitempty"`
 	Actor      string         `json:"actor,omitempty"`
+	// Tasks says the core can make task actors (the core's ADR-109): without it
+	// start_task has nothing to ask for.
+	Tasks bool `json:"tasks,omitempty"`
 }
 
 // connect does what the spot's certificate calls for, in as many exchanges as
@@ -564,6 +573,7 @@ func (l *Link) hello(ctx context.Context, coreNonce, cert []byte) error {
 	l.actor = out.Actor
 	l.mu.Unlock()
 	l.takeToken(out.Token)
+	l.tasks.Store(out.Tasks)
 	l.add(frame{Name: out.Name, Budget: out.Budget})
 	l.connected.Store(true)
 	l.log.Info("the link to the core is up", "actor", out.Actor)

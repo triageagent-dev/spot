@@ -90,6 +90,11 @@ type Options struct {
 	// TasksViaCore says a task runs as an actor the core makes (a substrate
 	// spot), and leaves its result in memory and in the bus, not in the digest.
 	TasksViaCore bool
+	// TasksOffered, for a spot whose tasks run as actors the core makes
+	// (TasksViaCore), says whether the core can make one now (its hello said so).
+	// It is asked each time the tool list is built, so start_task is not offered
+	// to a core that has no template for it. Nil means no.
+	TasksOffered func() bool
 	// TaskTenant is set in a task actor: the workspace its access token was made
 	// for. Whatever workspace the model names in a call to the core, the call
 	// goes with this one; the core checks it against the token as well.
@@ -337,7 +342,7 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 		}
 	}
 	if !r.o.NotesOnly {
-		defs = append(defs, builtinDefs(r.o.Tasks && !limited, r.o.TasksViaCore)...)
+		defs = append(defs, builtinDefs(r.tasksOn() && !limited, r.o.TasksViaCore)...)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	sort.Strings(down)
@@ -386,7 +391,7 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	case Finish:
 		return r.finish(input)
 	case StartTask:
-		if !r.o.Tasks {
+		if !r.tasksOn() {
 			return fmt.Sprintf("unknown tool %q: it was not in your tool list", name), true
 		}
 		return r.startTask(input)
@@ -866,6 +871,15 @@ func (r *Registry) cut(s string) string {
 		n--
 	}
 	return fmt.Sprintf("%s\n[result truncated: %d bytes dropped; ask for less next time: a name, a namespace, a limit]", s[:n], len(s)-n)
+}
+
+// tasksOn says start_task is offered: tasks are on, and where they run as
+// actors of the core, the core says it makes them.
+func (r *Registry) tasksOn() bool {
+	if !r.o.Tasks {
+		return false
+	}
+	return !r.o.TasksViaCore || (r.o.TasksOffered != nil && r.o.TasksOffered())
 }
 
 func builtinDefs(tasks, viaCore bool) []llm.ToolDef {
