@@ -141,10 +141,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	var taskSrv *triggers.TaskServer // a task actor's side of the core
 	var task triggers.Task
 	if cfg.TaskActor() {
-		// An actor the core made for one piece of work does not join: it waits for
-		// the one request whose bearer hashes to its verifier, and that bearer is
-		// its token for everything it does.
-		ts, err := triggers.NewTaskServer(cfg.CoreAPIURL, cfg.TaskVerifierFile, log)
+		// An actor the core made for one piece of work does not join: it is an A2A
+		// agent that takes one message, confirms the task with the core by the
+		// message's bearer, and that bearer is its token for everything it does.
+		ts, err := triggers.NewTaskServer(cfg.CoreAPIURL, cfg.Tenant, log)
 		if err != nil {
 			log.Error("task actor", "err", err)
 			return 1
@@ -163,7 +163,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			log.Error("the task's token could not be saved", "err", err)
 			return 1
 		}
-		log.Info("task actor: the task has come", "key", task.Key)
+		log.Info("task actor: the task is confirmed", "key", task.Key)
 		taskSrv = ts
 	} else if cfg.CoreAPIURL != "" {
 		tc, err := newLink(cfg, log)
@@ -243,11 +243,14 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		})
 	}
 	if taskSrv != nil {
-		if err := sup.RunTask(ctx, task, taskSrv); err != nil {
+		taskSrv.OnStop(sup.StopTask)
+		res, err := sup.RunTask(ctx, task)
+		if err != nil {
 			log.Error("task", "err", err)
-			return 1
+			res = triggers.TaskResult{Failed: true}
 		}
-		<-ctx.Done() // the core ends the actor when it has the report
+		taskSrv.Finish(res) // the A2A task ends; the SDK's push tells the core
+		<-ctx.Done()        // the core ends the actor when it has the push
 		log.Info("stopped")
 		return 0
 	}
