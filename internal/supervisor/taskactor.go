@@ -14,19 +14,14 @@ import (
 
 // A task actor (the core's ADR-109) is an actor the core made for one piece of
 // work that Tria asked for. It has no schedule, no rooms to poll and no lanes:
-// one goal, one turn, then the result goes where Tria reads it, and the core is
-// told with a wake report that carries the task's key.
+// one goal, one turn, then the result goes where Tria reads it. The core is told
+// by the actor's A2A task ending (triggers.TaskServer), not by a report.
 
 // TaskCore is what the task leaves in the workspace: the result as one memory
 // item, and one line in the bus that carries the item's id.
 type TaskCore interface {
 	RememberTask(ctx context.Context, key, title, result, spot string) (string, error)
 	SayInBus(ctx context.Context, text, replyTo, memory string, hop int) error
-}
-
-// TaskLink is the task actor's channel to the core: its one wake report.
-type TaskLink interface {
-	ReportWake(ctx context.Context, w triggers.Wake) error
 }
 
 // taskReplyHop is the hop of a task's answer. The task frame does not carry the
@@ -37,16 +32,20 @@ const taskReplyHop = 2
 // item holds the rest.
 const maxBusLine = 300
 
-// RunTask runs the task a task actor was made for and ends with its report. It
-// returns an error only when the actor cannot do what it is for (the core does
-// not offer what it needs); a task that fails is a result like any other and
-// Tria is told so.
-func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task, link TaskLink) error {
+// RunTask runs the task a task actor was made for and returns how it ended: the
+// memory item and the bus line it left, and whether the run failed. It returns
+// an error only when the actor cannot do what it is for (the core does not offer
+// what it needs); a task that fails is a result like any other and Tria is told
+// so.
+func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task) (triggers.TaskResult, error) {
 	tc, ok := s.core.(TaskCore)
 	if !ok {
-		return errors.New("the core client cannot leave a task result")
+		return triggers.TaskResult{}, errors.New("the core client cannot leave a task result")
 	}
-	title := taskTitle(t.Goal)
+	title := t.Title
+	if title == "" {
+		title = taskTitle(t.Goal)
+	}
 	s.setState("running")
 	rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
 	rules, _, rerr := s.core.StandingNotes(rctx, s.cfg.Name) // a rule to check nothing holds for the wake of a spot, not for a request Tria made
@@ -59,6 +58,12 @@ func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task, link TaskLink
 		TokensCeil: s.cfg.DailyTokenCeil,
 	})
 	j, jctx := s.begin(ctx, LaneTask, title, tools.TaskRequest{Title: title, Goal: t.Goal})
+	s.work.mu.Lock()
+	if s.work.stopAsked { // a stop that came before the turn did
+		j.stopped = true
+		j.cancel()
+	}
+	s.work.mu.Unlock()
 	s.log.Info("task start", "wake", j.key, "replyTo", t.ReplyTo != "")
 	res := s.turner.Run(jctx, agent.Turn{Reason: string(prompt.Task), Prompt: text, Task: true, NotesRead: rerr == nil})
 	stopped, _ := s.end(j)
@@ -94,12 +99,24 @@ func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task, link TaskLink
 	if s.flush != nil {
 		s.flush() // the spans of the task leave before the core ends the actor
 	}
-	outcome := turnOutcome(failed)
-	if err := link.ReportWake(dctx, s.wakeLine(t.Key, title, "task: "+title, LaneTask, outcome, res, "task")); err != nil {
-		s.log.Error("the task's report was not taken", "err", err)
-	}
 	s.setState("idle")
-	return nil
+	return triggers.TaskResult{Memory: id, Line: line, Failed: failed}, nil
+}
+
+// StopTask ends the turn of the task this actor runs at its next step, as an
+// operator's stop does for a task of a deployment spot. A stop that comes before
+// the turn has begun ends it as it begins.
+func (s *Supervisor) StopTask() {
+	w := &s.work
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopAsked = true
+	for _, j := range w.running {
+		if j.lane == LaneTask {
+			j.stopped = true
+			j.cancel()
+		}
+	}
 }
 
 // taskTitle is the request line of a goal: its first line, cut.

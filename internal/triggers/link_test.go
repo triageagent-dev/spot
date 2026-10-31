@@ -44,6 +44,8 @@ type linkCore struct {
 	// tasks are the bodies of the task requests the core took; noTasks refuses them 403.
 	tasks   []map[string]any
 	noTasks bool
+	// makesTasks is what the hello answer says in `tasks`: the core can make task actors.
+	makesTasks bool
 }
 
 func newLinkCore(t *testing.T) *linkCore {
@@ -189,11 +191,17 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "join_result", "joinResult": map[string]any{"status": "refused", "message": "the certificate is not valid"}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		c.lmu.Lock()
+		out := map[string]any{
 			"kind": "hello", "name": "Example", "budget": map[string]any{"spent": 1, "cap": 100, "remaining": 99},
 			"token": map[string]any{"value": "spt1.token-" + in.Hello.Spot, "exp": time.Now().Add(c.life).Unix()},
 			"actor": "spots/s0123",
-		})
+		}
+		if c.makesTasks {
+			out["tasks"] = true
+		}
+		c.lmu.Unlock()
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }
 
@@ -755,6 +763,22 @@ func TestASpotAsksTheCoreForATaskActorWithItsAccessToken(t *testing.T) {
 	c.lmu.Unlock()
 	if _, err := l.StartTask(context.Background(), "t", "g"); err == nil {
 		t.Fatal("a task the core refused was reported as started")
+	}
+}
+
+// start_task has something to ask for only when the hello says the core makes
+// task actors; a core that says nothing has none.
+func TestTheHelloSaysWhetherTheCoreMakesTaskActors(t *testing.T) {
+	c := newLinkCore(t)
+	l, _, _ := upLink(t, c)
+	if l.TasksOffered() {
+		t.Fatal("a core that did not say `tasks` is taken to make task actors")
+	}
+	c2 := newLinkCore(t)
+	c2.makesTasks = true
+	l2, _, _ := upLink(t, c2)
+	if !l2.TasksOffered() {
+		t.Fatal("the hello said `tasks: true` and the link does not offer tasks")
 	}
 }
 

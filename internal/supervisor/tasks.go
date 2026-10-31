@@ -63,6 +63,8 @@ type work struct {
 	qseq    int
 	running map[string]*job
 	queue   []*job
+	// stopAsked is set by StopTask: a task actor's one task was told to stop.
+	stopAsked bool
 }
 
 // taskEnd is a task's turn that has ended, for the loop to account.

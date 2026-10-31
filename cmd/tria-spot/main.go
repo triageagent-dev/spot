@@ -108,6 +108,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	}
 
 	var sup *supervisor.Supervisor // set below; the registry asks it for the rooms's watermark
+	var link *triggers.Link        // the substrate link, once it is built; start_task waits for its hello to say the core makes task actors
 	newRegistry := func() *tools.Registry {
 		return tools.New(tools.Options{
 			RequestHop: func(id string) (int, bool) {
@@ -123,7 +124,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TaskTenant: taskTenant(cfg), Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TasksOffered: func() bool { return link != nil && link.TasksOffered() }, TaskTenant: taskTenant(cfg), Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {
@@ -141,10 +142,10 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	var taskSrv *triggers.TaskServer // a task actor's side of the core
 	var task triggers.Task
 	if cfg.TaskActor() {
-		// An actor the core made for one piece of work does not join: it waits for
-		// the one request whose bearer hashes to its verifier, and that bearer is
-		// its token for everything it does.
-		ts, err := triggers.NewTaskServer(cfg.CoreAPIURL, cfg.TaskVerifierFile, log)
+		// An actor the core made for one piece of work does not join: it is an A2A
+		// agent that takes one message, confirms the task with the core by the
+		// message's bearer, and that bearer is its token for everything it does.
+		ts, err := triggers.NewTaskServer(cfg.CoreAPIURL, cfg.Tenant, log)
 		if err != nil {
 			log.Error("task actor", "err", err)
 			return 1
@@ -163,7 +164,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			log.Error("the task's token could not be saved", "err", err)
 			return 1
 		}
-		log.Info("task actor: the task has come", "key", task.Key)
+		log.Info("task actor: the task is confirmed", "key", task.Key)
 		taskSrv = ts
 	} else if cfg.CoreAPIURL != "" {
 		tc, err := newLink(cfg, log)
@@ -172,6 +173,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 			return 1
 		}
 		if l, ok := tc.(*triggers.Link); ok {
+			link = l
 			// The server listens at once and the link starts with the core's first
 			// request, which the process then waits for.
 			shutdown, err := serve(cfg.Listen, l.Handler(), log)
@@ -243,11 +245,14 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 		})
 	}
 	if taskSrv != nil {
-		if err := sup.RunTask(ctx, task, taskSrv); err != nil {
+		taskSrv.OnStop(sup.StopTask)
+		res, err := sup.RunTask(ctx, task)
+		if err != nil {
 			log.Error("task", "err", err)
-			return 1
+			res = triggers.TaskResult{Failed: true}
 		}
-		<-ctx.Done() // the core ends the actor when it has the report
+		taskSrv.Finish(res) // the A2A task ends; the SDK's push tells the core
+		<-ctx.Done()        // the core ends the actor when it has the push
 		log.Info("stopped")
 		return 0
 	}

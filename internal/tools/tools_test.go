@@ -810,6 +810,50 @@ func TestStartTaskIsOfferedOnlyToATurnThatMayStartOne(t *testing.T) {
 	}
 }
 
+// On the substrate a task is an actor the core makes: start_task is offered only
+// while the core's hello says it makes them, and is asked again at every list.
+func TestStartTaskOnTheSubstrateWaitsForTheCoreToOfferTaskActors(t *testing.T) {
+	url, _ := fakeServer(t)
+	offer := false
+	r := newRegistry(t, url, func(o *Options) {
+		o.Tasks, o.TasksViaCore = true, true
+		o.TasksOffered = func() bool { return offer }
+	})
+	has := func() bool {
+		defs, err := r.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range defs {
+			if d.Name == StartTask {
+				return true
+			}
+		}
+		return false
+	}
+	if has() {
+		t.Fatal("start_task offered before the core said it makes task actors")
+	}
+	if got, isErr := r.Call(context.Background(), "start_task", json.RawMessage(`{"title":"a","goal":"b"}`)); !isErr || !strings.Contains(got, "unknown tool") {
+		t.Errorf("a call to a tool that was not offered: %q %v", got, isErr)
+	}
+	offer = true
+	if !has() {
+		t.Fatal("start_task not offered once the core said it makes task actors")
+	}
+	if got, isErr := r.Call(context.Background(), "start_task", json.RawMessage(`{"title":"a","goal":"b"}`)); isErr {
+		t.Errorf("%q", got)
+	}
+	// No answer at all is a core without task actors.
+	r2 := newRegistry(t, url, func(o *Options) { o.Tasks, o.TasksViaCore = true, true })
+	defs, _ := r2.List(context.Background())
+	for _, d := range defs {
+		if d.Name == StartTask {
+			t.Error("start_task offered with no word from the core")
+		}
+	}
+}
+
 func TestStartTaskRecordsTheTaskAndKeepsAtMostThreePerTurn(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, func(o *Options) { o.Tasks = true })
