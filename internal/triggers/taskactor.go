@@ -25,7 +25,6 @@ package triggers
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +73,10 @@ type TaskResult struct {
 // maxTaskGoal bounds the goal the core may send.
 const maxTaskGoal = 8000
 
+// confirmBudget is how long the actor waits for the core to confirm a bearer it
+// has not seen for a task.
+const confirmBudget = 5 * time.Second
+
 // confirmTries is how often the actor asks the core to confirm a task when the
 // core cannot be reached or answers with a server error.
 const confirmTries = 3
@@ -111,11 +114,14 @@ type TaskServer struct {
 	tasks chan Task       // the confirmed task, for the process to run
 	done  chan TaskResult // how it ended, for the executor to say
 
-	mu        sync.Mutex
-	bearers   map[a2a.TaskID]string // the bearer each A2A task's message came with: only it may read the task
+	mu sync.Mutex
+	// For each A2A task: the key its message names and the bearers good for it (the
+	// message's own, and any the core confirmed for the key). Only these may read
+	// or cancel the task.
+	keys      map[a2a.TaskID]string
+	bearers   map[a2a.TaskID]map[string]bool
 	claimed   bool
 	taskID    a2a.TaskID
-	token     string
 	stop      func()
 	stopAsked bool
 }
@@ -131,7 +137,7 @@ func NewTaskServer(apiURL, workspace string, log *slog.Logger) (*TaskServer, err
 		base: u.String(), workspace: workspace, log: log,
 		hc:    &http.Client{Timeout: 30 * time.Second},
 		tasks: make(chan Task, 1), done: make(chan TaskResult, 1),
-		bearers: map[a2a.TaskID]string{},
+		keys: map[a2a.TaskID]string{}, bearers: map[a2a.TaskID]map[string]bool{},
 	}, nil
 }
 
@@ -163,22 +169,52 @@ func (t *TaskServer) pushURLOK(raw string) bool {
 	return err == nil && berr == nil && u.Host != "" && strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host)
 }
 
+// authorized says the request's bearer is good for the A2A task: it is the one
+// the task's message came with or one already confirmed for it, or the core
+// confirms it now for the task's key (the core does not keep the task token: for
+// tasks/get and tasks/cancel it mints a fresh one for the same task). A task the
+// actor has no record of, and a bearer the core does not confirm, are refused.
+func (t *TaskServer) authorized(ctx context.Context, id a2a.TaskID) bool {
+	bearer := bearerFrom(ctx)
+	t.mu.Lock()
+	key, known := t.keys[id]
+	good := bearer != "" && t.bearers[id][bearer]
+	t.mu.Unlock()
+	if !known || bearer == "" {
+		return false
+	}
+	if good {
+		return true
+	}
+	if key == "" {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(ctx, confirmBudget)
+	defer cancel()
+	info, _, err := t.confirm(cctx, key, bearer, 1)
+	if err != nil || info.Key != key {
+		return false
+	}
+	t.mu.Lock()
+	t.bearers[id][bearer] = true
+	t.mu.Unlock()
+	return true
+}
+
 // Before is the call interceptor. A message/send is marked with whether its push
-// configuration is the core's; tasks/get is for the bearer the task's message
-// came with, as tasks/cancel is.
+// configuration is the core's; tasks/get and tasks/cancel are for a bearer that
+// is good for the task (authorized).
 func (t *TaskServer) Before(ctx context.Context, cc *a2asrv.CallContext, req *a2asrv.Request) (context.Context, error) {
 	switch p := req.Payload.(type) {
 	case *a2a.MessageSendParams:
 		ok := p != nil && p.Config != nil && p.Config.PushConfig != nil && t.pushURLOK(p.Config.PushConfig.URL)
 		return context.WithValue(ctx, pushVerdictKey{}, ok), nil
 	case *a2a.TaskQueryParams:
-		if p == nil {
-			return ctx, nil
+		if p != nil && !t.authorized(ctx, p.ID) {
+			return ctx, a2a.ErrUnauthenticated
 		}
-		t.mu.Lock()
-		want, known := t.bearers[p.ID]
-		t.mu.Unlock()
-		if known && (want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(bearerFrom(ctx))) != 1) {
+	case *a2a.TaskIDParams:
+		if p != nil && !t.authorized(ctx, p.ID) {
 			return ctx, a2a.ErrUnauthenticated
 		}
 	}
@@ -325,6 +361,22 @@ func end(ctx context.Context, rc *a2asrv.RequestContext, q eventqueue.Queue, sta
 // task's, ends the A2A task rejected and the actor stays idle for the next.
 func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q eventqueue.Queue) error {
 	s := e.s
+	msg := rc.Message
+	bearer := bearerFrom(ctx)
+	key := ""
+	if msg != nil {
+		key = metaString(msg.Metadata, MetaTaskKey)
+		if key == "" {
+			key = msg.ContextID
+		}
+	}
+	// Recorded before the first event: a task that can be read is one that is recorded.
+	s.mu.Lock()
+	s.keys[rc.TaskID], s.bearers[rc.TaskID] = key, map[string]bool{}
+	if bearer != "" {
+		s.bearers[rc.TaskID][bearer] = true
+	}
+	s.mu.Unlock()
 	if err := q.Write(ctx, a2a.NewStatusUpdateEvent(rc, a2a.TaskStateSubmitted, nil)); err != nil {
 		return err
 	}
@@ -332,25 +384,16 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 		s.log.Warn("task message rejected", "why", why)
 		return end(ctx, rc, q, a2a.TaskStateRejected, why)
 	}
-	msg := rc.Message
-	bearer := bearerFrom(ctx)
-	s.mu.Lock()
-	s.bearers[rc.TaskID] = bearer // before the first event: a task that can be read is one that is recorded
-	s.mu.Unlock()
 	if msg == nil || bearer == "" {
 		return reject("a task message needs a bearer token and a message")
 	}
 	if ok, _ := ctx.Value(pushVerdictKey{}).(bool); !ok {
 		return reject("the push URL must be the core's: a task message carries a push notification configuration at the core API URL")
 	}
-	key := metaString(msg.Metadata, MetaTaskKey)
-	if key == "" {
-		key = msg.ContextID
-	}
 	if key == "" {
 		return reject("the message names no task")
 	}
-	info, status, err := s.confirm(ctx, key, bearer)
+	info, status, err := s.confirm(ctx, key, bearer, confirmTries)
 	switch {
 	case ctx.Err() != nil:
 		return nil // canceled while it asked
@@ -391,7 +434,7 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 		s.mu.Unlock()
 		return reject("this actor has its task: one task per actor")
 	}
-	s.claimed, s.taskID, s.token = true, rc.TaskID, bearer
+	s.claimed, s.taskID = true, rc.TaskID
 	s.mu.Unlock()
 	if err := q.Write(ctx, a2a.NewStatusUpdateEvent(rc, a2a.TaskStateWorking, nil)); err != nil {
 		return err
@@ -415,22 +458,20 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 	}
 }
 
-// Cancel ends the running turn at its next step and the A2A task canceled. Only
-// the bearer the task came with may cancel it.
+// Cancel ends the running turn at its next step and the A2A task canceled. Only a
+// bearer that is good for the task may cancel it (authorized).
 func (e *taskExecutor) Cancel(ctx context.Context, rc *a2asrv.RequestContext, q eventqueue.Queue) error {
 	s := e.s
+	if !s.authorized(ctx, rc.TaskID) {
+		return a2a.ErrUnauthenticated
+	}
 	s.mu.Lock()
-	mine := s.claimed && s.taskID == rc.TaskID
-	ok := subtle.ConstantTimeCompare([]byte(s.token), []byte(bearerFrom(ctx))) == 1
 	var stop func()
-	if mine && ok {
+	if s.claimed && s.taskID == rc.TaskID {
 		s.stopAsked = true
 		stop = s.stop
 	}
 	s.mu.Unlock()
-	if mine && !ok {
-		return a2a.ErrUnauthenticated
-	}
 	if stop != nil {
 		stop()
 	}
@@ -449,10 +490,10 @@ type taskInfo struct {
 // confirm asks the core for the task with the message's bearer. The status is
 // the core's last answer (0 when it could not be reached); an error with a
 // 401, 403 or 404 is the core refusing, anything else a core that could not say.
-func (t *TaskServer) confirm(ctx context.Context, key, bearer string) (taskInfo, int, error) {
+func (t *TaskServer) confirm(ctx context.Context, key, bearer string, tries int) (taskInfo, int, error) {
 	var last error
 	var status int
-	for i := range confirmTries {
+	for i := range tries {
 		if i > 0 {
 			select {
 			case <-time.After(time.Duration(i) * time.Second):

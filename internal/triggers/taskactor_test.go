@@ -446,8 +446,8 @@ func TestASecondMessageIsRejected(t *testing.T) {
 	}
 }
 
-// tasks/cancel with the task's bearer stops the turn at its next step and ends
-// the task canceled; another bearer cannot cancel it.
+// tasks/cancel stops the turn at its next step and ends the task canceled, with
+// a bearer the core confirms for the task; one it refuses cannot cancel it.
 func TestCancelStopsTheTurnAndEndsCanceled(t *testing.T) {
 	core := newTaskCore(t)
 	a := newActor(t, core, func(a *actor, task Task) TaskResult {
@@ -470,8 +470,16 @@ func TestCancelStopsTheTurnAndEndsCanceled(t *testing.T) {
 	default:
 	}
 
-	if _, err := c.CancelTask(context.Background(), &a2a.TaskIDParams{ID: first.ID}); err != nil {
-		t.Fatalf("tasks/cancel: %v", err)
+	// The core mints a fresh token for the cancel: the actor asks the core and
+	// takes it.
+	core.mu.Lock()
+	core.bearers["fresh-cancel-tok"] = true
+	core.mu.Unlock()
+	if _, err := a.client(t, "fresh-cancel-tok").CancelTask(context.Background(), &a2a.TaskIDParams{ID: first.ID}); err != nil {
+		t.Fatalf("tasks/cancel with a bearer the core confirms: %v", err)
+	}
+	if core.confirmsOf("fresh-cancel-tok") != 1 {
+		t.Errorf("the core did not see the GET with the new bearer once: %v", core.confirms)
 	}
 	select {
 	case <-a.stop:
@@ -584,19 +592,68 @@ func TestAPushURLThatIsNotTheCoresIsRejected(t *testing.T) {
 	}
 }
 
-// tasks/get is for the bearer the task's message came with.
+// confirmsOf is how many times the core was asked to confirm bearer.
+func (c *taskCore) confirmsOf(bearer string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, b := range c.confirms {
+		if b == bearer {
+			n++
+		}
+	}
+	return n
+}
+
+// tasks/get is for the bearer the task's message came with, or one the core
+// confirms for the task (it mints a fresh token for the same task and keeps none).
 func TestTasksGetNeedsTheBearerOfTheTask(t *testing.T) {
 	core := newTaskCore(t)
 	a := newActor(t, core, okRun)
 	first := send(t, a.client(t, testTok), a.message(testGoal, testWS, testTok))
 	core.waitEnd(t)
+	get := func(bearer string, id a2a.TaskID) (*a2a.Task, error) {
+		return a.client(t, bearer).GetTask(context.Background(), &a2a.TaskQueryParams{ID: id})
+	}
+	// A bearer the core refuses, none, and a task the actor has no record of.
 	for name, bearer := range map[string]string{"another bearer": "someone-else", "none": ""} {
-		if got, err := a.client(t, bearer).GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID}); err == nil {
+		if got, err := get(bearer, first.ID); err == nil {
 			t.Errorf("%s: read the task: %+v", name, got)
 		}
 	}
-	got, err := a.client(t, testTok).GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID})
+	if core.confirmsOf("someone-else") != 1 {
+		t.Errorf("the core was not asked about the other bearer exactly once: %v", core.confirms)
+	}
+	if got, err := get(testTok, "no-such-task"); err == nil {
+		t.Errorf("a task with no record was read: %+v", got)
+	}
+	got, err := get(testTok, first.ID)
 	if err != nil || got.Status.State != a2a.TaskStateCompleted {
 		t.Fatalf("the task's own bearer: %+v %v", got, err)
+	}
+	// A second bearer the core confirms: accepted, and remembered, so the next
+	// call with it costs no round trip.
+	core.mu.Lock()
+	core.bearers["fresh-tok"] = true
+	core.mu.Unlock()
+	for range 2 {
+		if got, err := get("fresh-tok", first.ID); err != nil || got.Status.State != a2a.TaskStateCompleted {
+			t.Fatalf("a bearer the core confirms: %+v %v", got, err)
+		}
+	}
+	if n := core.confirmsOf("fresh-tok"); n != 1 {
+		t.Errorf("the core was asked %d times about a bearer it confirmed: want once", n)
+	}
+	// One the core answers 403 for stays refused, however often it is tried.
+	core.mu.Lock()
+	core.status = http.StatusForbidden
+	core.mu.Unlock()
+	for range 2 {
+		if got, err := get("forbidden-tok", first.ID); err == nil {
+			t.Fatalf("a bearer the core refuses read the task: %+v", got)
+		}
+	}
+	if n := core.confirmsOf("forbidden-tok"); n != 2 {
+		t.Errorf("a refused bearer was asked %d times: want each time", n)
 	}
 }
