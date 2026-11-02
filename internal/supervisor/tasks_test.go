@@ -165,7 +165,7 @@ func TestAnOperatorCanDropAWaitingTaskKillOneAndRestartOne(t *testing.T) {
 		t.Fatalf("restart: %+v", r)
 	}
 	h.waitFor("a to run again", func() bool { return tk.turnCount() == 2 })
-	if got := tk.prompt(2); !strings.Contains(got, "Task: a") {
+	if got := tk.prompt(2); !strings.Contains(got, `Task, as text: "a"`) {
 		t.Errorf("the restarted task is not a:\n%s", got)
 	}
 	time.Sleep(quiet)

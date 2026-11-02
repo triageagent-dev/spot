@@ -65,13 +65,31 @@ type Task struct {
 
 // TaskResult is how a task ended, for the A2A task's final state and artifact.
 type TaskResult struct {
-	Memory string // the id of the memory item that holds the result; empty when it could not be saved
-	Line   string // the line the task left in the bus
-	Failed bool   // the run failed
+	Memory string     // the id of the memory item that holds the result; empty when it could not be saved
+	Line   string     // the line the task left in the bus
+	Failed bool       // the run failed
+	Usage  *TaskUsage // what the run cost; nil when nothing ran
+}
+
+// TaskUsage is what a task's turn cost, in the artifact for the core's books:
+// a task actor has no link and sends no turn report, so this is the one place
+// the core learns what the actor spent.
+type TaskUsage struct {
+	Model     string `json:"model,omitempty"`
+	Input     int64  `json:"input"`  // input tokens, cache writes and reads included
+	Cached    int64  `json:"cached"` // of which read from the cache
+	Output    int64  `json:"output"`
+	Steps     int    `json:"steps"`
+	ToolCalls int    `json:"toolCalls"`
 }
 
 // maxTaskGoal bounds the goal the core may send.
 const maxTaskGoal = 8000
+
+// maxAdmitted bounds the tasks an actor records before it has its own: only a
+// message the core confirms is recorded at all, so the bound is against a core
+// that sends many.
+const maxAdmitted = 16
 
 // confirmBudget is how long the actor waits for the core to confirm a bearer it
 // has not seen for a task.
@@ -144,7 +162,11 @@ func NewTaskServer(apiURL, workspace string, log *slog.Logger) (*TaskServer, err
 // Handler serves the probe, the card and the JSON-RPC endpoint.
 func (t *TaskServer) Handler() http.Handler {
 	h := a2asrv.NewHandler(&taskExecutor{s: t},
-		a2asrv.WithPushNotifications(push.NewInMemoryStore(), coreOnlySender{t, push.NewHTTPPushSender(&push.HTTPSenderConfig{Timeout: 30 * time.Second})}),
+		a2asrv.WithPushNotifications(push.NewInMemoryStore(), corePush{t: t, hc: &http.Client{
+			Timeout: 30 * time.Second,
+			// A redirect would move the post, and the bearer on it, off the pinned URL.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}}),
 		a2asrv.WithCallInterceptor(t),
 	)
 	mux := http.NewServeMux()
@@ -156,17 +178,74 @@ func (t *TaskServer) Handler() http.Handler {
 	return mux
 }
 
-// pushVerdictKey carries, from the call interceptor to the executor, whether the
-// message's push configuration points at the core.
-type pushVerdictKey struct{}
+// admittedKey carries, from the call interceptor to the executor, what the
+// core confirmed for a message/send.
+type admittedKey struct{}
 
-// pushURLOK says url has the scheme and host:port of the core API URL: the
-// callback of a task is the core's, under the base the actor was given. The
-// path may differ.
-func (t *TaskServer) pushURLOK(raw string) bool {
+// admitted is a message/send the core confirmed: the task it names, the bearer
+// it came with and the core's answer for the task.
+type admitted struct {
+	key    string
+	bearer string
+	info   taskInfo
+}
+
+// pushURLOK says raw is the core's callback for the task with this key: the
+// scheme and host:port of the core API URL, and the path of the task's events
+// under it, nothing else. A push carries the task and the credentials the
+// message gave, so it goes to that one place or not at all.
+func (t *TaskServer) pushURLOK(raw, key string) bool {
 	u, err := url.Parse(raw)
 	b, berr := url.Parse(t.base)
-	return err == nil && berr == nil && u.Host != "" && strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host)
+	if err != nil || berr != nil || u.Host == "" || key == "" {
+		return false
+	}
+	want := strings.TrimRight(b.Path, "/") + LinkTasksPath + "/" + key + "/events"
+	return strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host) &&
+		(u.Path == want || u.EscapedPath() == strings.TrimRight(b.Path, "/")+LinkTasksPath+"/"+url.PathEscape(key)+"/events")
+}
+
+// admit is what a message/send must pass before the SDK records a task for it:
+// the actor has no task yet, the message carries a bearer and names a task, its
+// push configuration is the core's callback for that task, and the core confirms
+// the bearer for it. A message that fails is answered with an error and leaves
+// nothing behind: no task, no push, no entry.
+func (t *TaskServer) admit(ctx context.Context, p *a2a.MessageSendParams) (admitted, error) {
+	if p == nil || p.Message == nil {
+		return admitted{}, fmt.Errorf("%w: a task message needs a message", a2a.ErrInvalidParams)
+	}
+	t.mu.Lock()
+	busy := t.claimed || len(t.keys) >= maxAdmitted
+	t.mu.Unlock()
+	if busy {
+		return admitted{}, fmt.Errorf("%w: this actor has its task, one task per actor", a2a.ErrUnsupportedOperation)
+	}
+	bearer := bearerFrom(ctx)
+	if bearer == "" {
+		return admitted{}, fmt.Errorf("%w: a task message needs a bearer token", a2a.ErrUnauthenticated)
+	}
+	key := metaString(p.Message.Metadata, MetaTaskKey)
+	if key == "" {
+		key = p.Message.ContextID
+	}
+	if key == "" {
+		return admitted{}, fmt.Errorf("%w: the message names no task", a2a.ErrInvalidParams)
+	}
+	if p.Config == nil || p.Config.PushConfig == nil || !t.pushURLOK(p.Config.PushConfig.URL, key) {
+		return admitted{}, fmt.Errorf("%w: the push URL must be the core's: a task message carries a push notification configuration at the core API URL, for the events of this task", a2a.ErrInvalidParams)
+	}
+	info, status, err := t.confirm(ctx, key, bearer, confirmTries)
+	switch {
+	case ctx.Err() != nil:
+		return admitted{}, ctx.Err()
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound:
+		t.log.Warn("task message refused: the core does not confirm it", "status", status)
+		return admitted{}, fmt.Errorf("%w: the core does not confirm this task", a2a.ErrUnauthenticated)
+	case err != nil:
+		t.log.Warn("task message refused: the core could not confirm it", "err", err)
+		return admitted{}, fmt.Errorf("%w: the core could not confirm the task", a2a.ErrInternalError)
+	}
+	return admitted{key: key, bearer: bearer, info: info}, nil
 }
 
 // authorized says the request's bearer is good for the A2A task: it is the one
@@ -201,14 +280,19 @@ func (t *TaskServer) authorized(ctx context.Context, id a2a.TaskID) bool {
 	return true
 }
 
-// Before is the call interceptor. A message/send is marked with whether its push
-// configuration is the core's; tasks/get and tasks/cancel are for a bearer that
-// is good for the task (authorized).
+// Before is the call interceptor. A message/send is admitted first (admit): the
+// core confirms its bearer before the SDK records anything for it; tasks/get and
+// tasks/cancel are for a bearer that is good for the task (authorized).
 func (t *TaskServer) Before(ctx context.Context, cc *a2asrv.CallContext, req *a2asrv.Request) (context.Context, error) {
 	switch p := req.Payload.(type) {
 	case *a2a.MessageSendParams:
-		ok := p != nil && p.Config != nil && p.Config.PushConfig != nil && t.pushURLOK(p.Config.PushConfig.URL)
-		return context.WithValue(ctx, pushVerdictKey{}, ok), nil
+		adm, err := t.admit(ctx, p)
+		if err != nil {
+			// The client gets the error's code; the reason is for the actor's log.
+			t.log.Warn("task message refused", "why", err)
+			return ctx, err
+		}
+		return context.WithValue(ctx, admittedKey{}, adm), nil
 	case *a2a.TaskQueryParams:
 		if p != nil && !t.authorized(ctx, p.ID) {
 			return ctx, a2a.ErrUnauthenticated
@@ -223,20 +307,63 @@ func (t *TaskServer) Before(ctx context.Context, cc *a2asrv.CallContext, req *a2
 
 func (t *TaskServer) After(context.Context, *a2asrv.CallContext, *a2asrv.Response) error { return nil }
 
-// coreOnlySender is the SDK's push sender behind one rule: nothing is posted to a
-// URL that is not the core's. The configuration comes in a message that has not
-// been confirmed yet, and a task must not make the actor post anywhere else.
-type coreOnlySender struct {
-	t    *TaskServer
-	next *push.HTTPPushSender
+// corePush posts a task's state to the core, as the SDK's push sender does, behind
+// two rules: the task is one the actor recorded (the core confirmed its message),
+// and the URL is the core's callback for that task; and with a client that
+// follows no redirect. A push that cannot go is dropped, never sent elsewhere.
+type corePush struct {
+	t  *TaskServer
+	hc *http.Client
 }
 
-func (s coreOnlySender) SendPush(ctx context.Context, cfg *a2a.PushConfig, task *a2a.Task) error {
-	if !s.t.pushURLOK(cfg.URL) {
-		s.t.log.Warn("push notification dropped: its URL is not the core's")
+// pushTokenHeader is the header the A2A push carries the configuration's token in.
+const pushTokenHeader = "X-A2A-Notification-Token"
+
+func (s corePush) SendPush(ctx context.Context, cfg *a2a.PushConfig, task *a2a.Task) error {
+	if cfg == nil || task == nil {
 		return nil
 	}
-	return s.next.SendPush(ctx, cfg, task)
+	s.t.mu.Lock()
+	key, known := s.t.keys[task.ID]
+	s.t.mu.Unlock()
+	if !known || !s.t.pushURLOK(cfg.URL, key) {
+		s.t.log.Warn("push notification dropped: its URL is not the core's callback for the task")
+		return nil
+	}
+	body, err := json.Marshal(task)
+	if err != nil {
+		s.t.log.Warn("push notification dropped: the task does not serialise", "err", err)
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, strings.NewReader(string(body)))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.Token != "" {
+		req.Header.Set(pushTokenHeader, cfg.Token)
+	}
+	if cfg.Auth != nil && cfg.Auth.Credentials != "" {
+		for _, scheme := range cfg.Auth.Schemes {
+			switch strings.ToLower(scheme) {
+			case "bearer":
+				req.Header.Set("Authorization", "Bearer "+cfg.Auth.Credentials)
+			case "basic":
+				req.Header.Set("Authorization", "Basic "+cfg.Auth.Credentials)
+			}
+		}
+	}
+	resp, err := s.hc.Do(req)
+	if err != nil {
+		s.t.log.Warn("push notification failed", "err", err)
+		return nil
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		s.t.log.Warn("push notification not taken", "status", resp.Status)
+	}
+	return nil
 }
 
 // onlyTaskMethods lets through the three methods the core uses: the message, a
@@ -356,26 +483,25 @@ func end(ctx context.Context, rc *a2asrv.RequestContext, q eventqueue.Queue, sta
 	return q.Write(ctx, ev)
 }
 
-// Execute takes the message: confirm the task with the core, run it once, say
-// how it ended. A message the core does not confirm, or one that is not the
-// task's, ends the A2A task rejected and the actor stays idle for the next.
+// Execute takes a message the interceptor admitted (the core confirmed its
+// bearer for the task): check the core's task against the message, run it once,
+// say how it ended. A message whose goal or workspace is not the core's ends the
+// A2A task rejected and the actor stays idle for the next.
 func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q eventqueue.Queue) error {
 	s := e.s
 	msg := rc.Message
-	bearer := bearerFrom(ctx)
-	key := ""
-	if msg != nil {
-		key = metaString(msg.Metadata, MetaTaskKey)
-		if key == "" {
-			key = msg.ContextID
-		}
+	adm, admitted := ctx.Value(admittedKey{}).(admitted)
+	if !admitted || msg == nil {
+		// Not through the interceptor: nothing is recorded, so nothing can be read
+		// or pushed for it.
+		s.log.Warn("task message rejected: not admitted")
+		return end(ctx, rc, q, a2a.TaskStateRejected, "the message was not admitted")
 	}
-	// Recorded before the first event: a task that can be read is one that is recorded.
+	key, bearer, info := adm.key, adm.bearer, adm.info
+	// Recorded before the first event: a task that can be read is one that is
+	// recorded, and only an admitted one is.
 	s.mu.Lock()
-	s.keys[rc.TaskID], s.bearers[rc.TaskID] = key, map[string]bool{}
-	if bearer != "" {
-		s.bearers[rc.TaskID][bearer] = true
-	}
+	s.keys[rc.TaskID], s.bearers[rc.TaskID] = key, map[string]bool{bearer: true}
 	s.mu.Unlock()
 	if err := q.Write(ctx, a2a.NewStatusUpdateEvent(rc, a2a.TaskStateSubmitted, nil)); err != nil {
 		return err
@@ -383,24 +509,6 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 	reject := func(why string) error {
 		s.log.Warn("task message rejected", "why", why)
 		return end(ctx, rc, q, a2a.TaskStateRejected, why)
-	}
-	if msg == nil || bearer == "" {
-		return reject("a task message needs a bearer token and a message")
-	}
-	if ok, _ := ctx.Value(pushVerdictKey{}).(bool); !ok {
-		return reject("the push URL must be the core's: a task message carries a push notification configuration at the core API URL")
-	}
-	if key == "" {
-		return reject("the message names no task")
-	}
-	info, status, err := s.confirm(ctx, key, bearer, confirmTries)
-	switch {
-	case ctx.Err() != nil:
-		return nil // canceled while it asked
-	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound:
-		return reject("the core does not confirm this task")
-	case err != nil:
-		return reject("the core could not confirm the task: " + err.Error())
 	}
 	goal := strings.TrimSpace(info.Goal)
 	switch {
@@ -444,7 +552,15 @@ func (e *taskExecutor) Execute(ctx context.Context, rc *a2asrv.RequestContext, q
 
 	select {
 	case res := <-s.done:
-		art := a2a.NewArtifactEvent(rc, a2a.DataPart{Data: map[string]any{"memory": res.Memory, "line": res.Line}})
+		data := map[string]any{"memory": res.Memory, "line": res.Line}
+		if res.Usage != nil {
+			// As plain JSON values: the SDK keeps a data part as it is given.
+			var usage map[string]any
+			if b, err := json.Marshal(res.Usage); err == nil && json.Unmarshal(b, &usage) == nil {
+				data["usage"] = usage
+			}
+		}
+		art := a2a.NewArtifactEvent(rc, a2a.DataPart{Data: data})
 		art.LastChunk = true
 		if err := q.Write(ctx, art); err != nil {
 			return err

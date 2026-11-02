@@ -925,11 +925,12 @@ func TestATaskTurnCannotScheduleOrStartTasks(t *testing.T) {
 	}
 }
 
-func TestTheNotesTheSupervisorReadCountAsTheSearch(t *testing.T) {
+func TestTheNotesTheSupervisorReadCountAsTheSearchForTheCoresToolsOnly(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, func(o *Options) {
 		o.RecallFirst = true
 		o.Core.Allow = []string{"search_memory", "list_open_issues"}
+		o.Others = []Server{{Name: "kube", URL: url, Allow: []string{"get_pods"}}}
 	})
 	ctx := context.Background()
 	r.Begin()
@@ -942,6 +943,17 @@ func TestTheNotesTheSupervisorReadCountAsTheSearch(t *testing.T) {
 	r.NotesRead()
 	if c, isErr := r.Call(ctx, "core__list_open_issues", nil); isErr {
 		t.Errorf("the supervisor read the notes for this turn: %q", c)
+	}
+	// A connector can change the cluster, and the standing notes are the
+	// spot's, not the subject's: it waits for the model's own search.
+	if c, isErr := r.Call(ctx, "kube__get_pods", nil); !isErr || !strings.Contains(c, "search your notes first") {
+		t.Errorf("a connector tool ran on the supervisor's read alone: %q %v", c, isErr)
+	}
+	if _, isErr := r.Call(ctx, "core__search_memory", json.RawMessage(`{"query":"pods"}`)); isErr {
+		t.Fatal("search_memory")
+	}
+	if c, _ := r.Call(ctx, "kube__get_pods", nil); strings.Contains(c, "search your notes first") {
+		t.Errorf("a connector tool is still held after the search: %q", c)
 	}
 	r.Begin()
 	if _, isErr := r.Call(ctx, "core__list_open_issues", nil); !isErr {
@@ -966,14 +978,26 @@ func TestTheBusIsTheOnlyRoomAToolReachesAndATaskStaysInItsWorkspace(t *testing.T
 			t.Errorf("%s refused the bus: %q", tool, refusal)
 		}
 	}
-	// A spot's own call keeps the tenant it names; a task's goes with its own.
+	// Without a workspace of its own to pin to (tests, an old settings file) a
+	// call keeps what it names; with one, every call goes with it, under any
+	// spelling of the key the model used.
 	out, _ := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "")
 	if !strings.Contains(string(out), "other-workspace") {
-		t.Errorf("a spot's own search lost its tenant: %s", out)
+		t.Errorf("a call with no workspace to pin to lost its tenant: %s", out)
 	}
-	out, refusal := busArgs("search_memory", json.RawMessage(`{"query":"x","tenant":"other-workspace"}`), "mine")
-	if refusal != "" || strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) {
-		t.Errorf("a task reached another workspace: %s / %q", out, refusal)
+	for _, in := range []string{
+		`{"query":"x","tenant":"other-workspace"}`,
+		`{"query":"x","Tenant":"other-workspace"}`,
+		`{"query":"x","TENANT":"other-workspace"}`,
+		`{"query":"x","Tenant":"other-workspace","tenant":"other-workspace"}`,
+	} {
+		out, refusal := busArgs("search_memory", json.RawMessage(in), "mine")
+		if refusal != "" || strings.Contains(string(out), "other-workspace") || !strings.Contains(string(out), `"tenant":"mine"`) || strings.Count(string(out), "mine") != 1 {
+			t.Errorf("%s reached another workspace: %s / %q", in, out, refusal)
+		}
+	}
+	if out, _ := busArgs("search_memory", json.RawMessage(`{"query":"x"}`), "mine"); strings.Contains(string(out), "tenant") {
+		t.Errorf("a call that names no workspace is the core's to scope by the token: %s", out)
 	}
 	for _, tool := range []string{"upsert_memory_item", "say_in_workspace", "read_workspace_room"} {
 		out, _ = busArgs(tool, json.RawMessage(`{"tenant":"other-workspace","title":"t"}`), "mine")
