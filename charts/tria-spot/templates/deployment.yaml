@@ -148,7 +148,7 @@ spec:
             - --otel-tenant={{ .Values.telemetry.tenant }}
             {{- end }}
             {{- if .Values.telemetry.tenantName }}
-            - --otel-tenant-name={{ .Values.telemetry.tenantName | quote }}
+            - --otel-tenant-name={{ .Values.telemetry.tenantName }}
             {{- end }}
             - --otel-tenant-attr={{ .Values.telemetry.tenantAttr }}
             {{- if .Values.telemetry.mcpUrl }}
