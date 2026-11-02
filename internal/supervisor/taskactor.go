@@ -53,33 +53,48 @@ func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task) (triggers.Tas
 	if rerr != nil && ctx.Err() == nil {
 		s.log.Warn("standing notes not read; the task goes on without them", "err", rerr)
 	}
-	text := prompt.Turn(prompt.Wake{
-		Reason: prompt.Task, Now: s.now(), Rules: rules, Title: title, Goal: t.Goal, ReplyTo: t.ReplyTo,
-		TokensCeil: s.cfg.DailyTokenCeil,
-	})
-	j, jctx := s.begin(ctx, LaneTask, title, tools.TaskRequest{Title: title, Goal: t.Goal})
-	s.work.mu.Lock()
-	if s.work.stopAsked { // a stop that came before the turn did
-		j.stopped = true
-		j.cancel()
-	}
-	s.work.mu.Unlock()
-	s.log.Info("task start", "wake", j.key, "replyTo", t.ReplyTo != "")
-	res := s.turner.Run(jctx, agent.Turn{Reason: string(prompt.Task), Prompt: text, Task: true, NotesRead: rerr == nil})
-	stopped, _ := s.end(j)
-	s.book(res)
+	var res agent.Result
+	var usage *triggers.TaskUsage
+	failed, result := false, ""
+	if s.paused() {
+		// The ceilings hold a task as they hold a wake: a task actor's model
+		// credential is the workspace's, and its spend is not for free either.
+		failed, result = true, "not run: the spot's token ceiling holds it back; ask again later"
+		s.log.Warn("task not run: a ceiling holds the spot back")
+	} else {
+		text := prompt.Turn(prompt.Wake{
+			Reason: prompt.Task, Now: s.now(), Rules: rules, Title: title, Goal: t.Goal, ReplyTo: t.ReplyTo,
+			TokensCeil: s.cfg.DailyTokenCeil,
+		})
+		j, jctx := s.begin(ctx, LaneTask, title, tools.TaskRequest{Title: title, Goal: t.Goal})
+		s.work.mu.Lock()
+		if s.work.stopAsked { // a stop that came before the turn did
+			j.stopped = true
+			j.cancel()
+		}
+		s.work.mu.Unlock()
+		s.log.Info("task start", "wake", j.key, "replyTo", t.ReplyTo != "")
+		res = s.turner.Run(jctx, agent.Turn{Reason: string(prompt.Task), Prompt: text, Task: true, NotesRead: rerr == nil})
+		stopped, _ := s.end(j)
+		s.book(res)
+		u := res.Usage
+		usage = &triggers.TaskUsage{
+			Model: modelLabel(res.Model), Input: u.Input + u.CacheWrite + u.CacheRead, Cached: u.CacheRead, Output: u.Output,
+			Steps: res.Steps, ToolCalls: res.ToolCalls,
+		}
 
-	failed := (res.Failed || res.CoreDown) && !res.Canceled
-	result := strings.TrimSpace(res.Summary)
-	switch {
-	case failed:
-		result = "failed: " + failureText(res, s.cfg.LLMAuth)
-	case stopped && result == "":
-		result = "stopped by an operator before it finished"
-	case result == "":
-		result = "the task ended without a result"
+		failed = (res.Failed || res.CoreDown) && !res.Canceled
+		result = strings.TrimSpace(res.Summary)
+		switch {
+		case failed:
+			result = "failed: " + failureText(res, s.cfg.LLMAuth)
+		case stopped && result == "":
+			result = "stopped by an operator before it finished"
+		case result == "":
+			result = "the task ended without a result"
+		}
+		s.log.Info("task done", "wake", j.key, "steps", res.Steps, "toolCalls", res.ToolCalls, "failed", failed, "billable", res.Usage.Billable())
 	}
-	s.log.Info("task done", "wake", j.key, "steps", res.Steps, "toolCalls", res.ToolCalls, "failed", failed, "billable", res.Usage.Billable())
 
 	// The result is left where Tria reads it, even when the task failed: she tells
 	// the person. A fresh context: the task may have ended because ctx did.
@@ -100,7 +115,7 @@ func (s *Supervisor) RunTask(ctx context.Context, t triggers.Task) (triggers.Tas
 		s.flush() // the spans of the task leave before the core ends the actor
 	}
 	s.setState("idle")
-	return triggers.TaskResult{Memory: id, Line: line, Failed: failed}, nil
+	return triggers.TaskResult{Memory: id, Line: line, Failed: failed, Usage: usage}, nil
 }
 
 // StopTask ends the turn of the task this actor runs at its next step, as an

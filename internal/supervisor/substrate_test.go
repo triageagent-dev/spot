@@ -198,6 +198,32 @@ func TestASubstrateSpotAsksTheCoreToMakeAnActorForATask(t *testing.T) {
 	}
 }
 
+// At a ceiling a substrate spot does not ask the core for a task actor: the
+// actor would spend on the same credential, with no ledger of its own to stop
+// it. The digest says so for the next wake.
+func TestATaskIsNotAskedForWhileACeilingHoldsTheSpotBack(t *testing.T) {
+	h, trig := substrateHarness(t)
+	h.cfg.DailyTokenCeil = 100 // the first turn books 150
+	h.set("tasks", `[{"title":"check the cart","goal":"g"}]`)
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	h.waitFor("the digest", func() bool {
+		for _, d := range h.sup.led.LoadDigest() {
+			if d.Reason == "task check the cart" && strings.Contains(d.Summary, "token ceiling") {
+				return true
+			}
+		}
+		return false
+	})
+	trig.mu.Lock()
+	defer trig.mu.Unlock()
+	if len(trig.started) != 0 {
+		t.Fatalf("the core was asked past the ceiling: %v", trig.started)
+	}
+}
+
 func TestATaskTheCoreWillNotMakeIsInTheDigest(t *testing.T) {
 	h, trig := substrateHarness(t)
 	trig.startErr = errors.New("the core did not start the task (status 403)")

@@ -185,6 +185,10 @@ const (
 	coreTokenPrefix  = "spt1."
 	coreTokenContext = "triage-spot-token/1\n"
 	maxCoreTokenLen  = 1024
+	// maxCoreTokenLife bounds how far ahead a core token may end. The core signs
+	// them for 30 minutes; one that ends later was not minted for a frame or a
+	// hello, whoever signed it, and is not taken.
+	maxCoreTokenLife = time.Hour
 )
 
 type coreToken struct {
@@ -194,57 +198,80 @@ type coreToken struct {
 	Exp         int64  `json:"e"`
 }
 
+// splitCoreToken takes a token apart: its payload and signature, or an error
+// when it does not have the shape of a core token.
+func splitCoreToken(tok string) (payload, sig []byte, err error) {
+	rest, ok := strings.CutPrefix(tok, coreTokenPrefix)
+	if !ok || len(tok) > maxCoreTokenLen {
+		return nil, nil, errors.New("not a core token")
+	}
+	p, s, ok := strings.Cut(rest, ".")
+	if !ok {
+		return nil, nil, errors.New("malformed core token")
+	}
+	if payload, err = base64.RawURLEncoding.DecodeString(p); err != nil {
+		return nil, nil, errors.New("malformed core token")
+	}
+	if sig, err = base64.RawURLEncoding.DecodeString(s); err != nil {
+		return nil, nil, errors.New("malformed core token")
+	}
+	return payload, sig, nil
+}
+
+// IsCoreToken reports whether tok has the shape of a signed core token: the
+// prefix, a payload with the token's fields and a signature. It says nothing
+// about who signed it or whether it still holds; VerifyCoreToken does.
+func IsCoreToken(tok string) bool {
+	payload, _, err := splitCoreToken(tok)
+	if err != nil {
+		return false
+	}
+	var t coreToken
+	return json.Unmarshal(payload, &t) == nil && t.Spot != "" && t.Exp != 0
+}
+
 // VerifyCoreToken checks that tok is a core access token for this spot, signed
-// by the CA this identity trusts and not past its end. It fails before the first
-// verified challenge, when no CA is saved yet.
-func (id *Identity) VerifyCoreToken(tok string, now time.Time) error {
+// by the CA this identity trusts, not past its end and not ending further ahead
+// than a core mints them. It returns when the token ends. It fails before the
+// first verified challenge, when no CA is saved yet.
+func (id *Identity) VerifyCoreToken(tok string, now time.Time) (time.Time, error) {
 	id.mu.Lock()
 	caDER := id.caCert
 	pub := id.key.Public().(ed25519.PublicKey)
 	id.mu.Unlock()
 	if len(caDER) == 0 {
-		return errors.New("no core CA saved yet")
+		return time.Time{}, errors.New("no core CA saved yet")
 	}
 	ca, err := x509.ParseCertificate(caDER)
 	if err != nil {
-		return fmt.Errorf("saved core CA: %w", err)
+		return time.Time{}, fmt.Errorf("saved core CA: %w", err)
 	}
 	caPub, ok := ca.PublicKey.(ed25519.PublicKey)
 	if !ok {
-		return errors.New("the core CA key is not Ed25519")
+		return time.Time{}, errors.New("the core CA key is not Ed25519")
 	}
-	rest, ok := strings.CutPrefix(tok, coreTokenPrefix)
-	if !ok || len(tok) > maxCoreTokenLen {
-		return errors.New("not a core token")
-	}
-	p, s, ok := strings.Cut(rest, ".")
-	if !ok {
-		return errors.New("malformed core token")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(p)
+	payload, sig, err := splitCoreToken(tok)
 	if err != nil {
-		return errors.New("malformed core token")
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return errors.New("malformed core token")
+		return time.Time{}, err
 	}
 	if !ed25519.Verify(caPub, append([]byte(coreTokenContext), payload...), sig) {
-		return errors.New("core token signature does not verify")
+		return time.Time{}, errors.New("core token signature does not verify")
 	}
 	var t coreToken
 	if err := json.Unmarshal(payload, &t); err != nil {
-		return errors.New("malformed core token")
+		return time.Time{}, errors.New("malformed core token")
 	}
 	switch {
 	case t.Spot != id.spot || t.Workspace != id.workspace:
-		return errors.New("core token is for another spot")
+		return time.Time{}, errors.New("core token is for another spot")
 	case t.Fingerprint != Fingerprint(pub):
-		return errors.New("core token is for another key")
+		return time.Time{}, errors.New("core token is for another key")
 	case t.Exp <= now.Unix():
-		return errors.New("core token expired")
+		return time.Time{}, errors.New("core token expired")
+	case t.Exp-now.Unix() > int64(maxCoreTokenLife/time.Second):
+		return time.Time{}, errors.New("core token ends further ahead than the core mints them")
 	}
-	return nil
+	return time.Unix(t.Exp, 0), nil
 }
 
 // ValidateIssued checks a certificate the core returned before it is saved: it

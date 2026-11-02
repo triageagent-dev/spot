@@ -95,11 +95,12 @@ type Options struct {
 	// It is asked each time the tool list is built, so start_task is not offered
 	// to a core that has no template for it. Nil means no.
 	TasksOffered func() bool
-	// TaskTenant is set in a task actor: the workspace its access token was made
-	// for. Whatever workspace the model names in a call to the core, the call
-	// goes with this one; the core checks it against the token as well.
-	TaskTenant string
-	Logger     *slog.Logger
+	// Tenant is the spot's own workspace, the one its access token was made for.
+	// Whatever workspace the model names in a call to the core, under whatever
+	// spelling of the key, the call goes with this one; the core checks it
+	// against the token as well.
+	Tenant string
+	Logger *slog.Logger
 }
 
 // Defaults.
@@ -155,6 +156,7 @@ type Registry struct {
 	summary  string
 	finished bool
 	recalled bool           // a search_memory succeeded in this turn
+	notes    bool           // the supervisor read the standing notes for this turn (see NotesRead)
 	limited  bool           // List offers only HoldTools and the built-ins (see Limit)
 	task     bool           // the turn is a task's (see Task)
 	read     bool           // a ContextTools call succeeded in this turn
@@ -207,17 +209,19 @@ func (r *Registry) Task(on bool) {
 func (r *Registry) Begin() {
 	r.End()
 	r.mu.Lock()
-	r.next, r.tasks, r.summary, r.finished, r.recalled, r.read, r.noted = nil, nil, "", false, false, false, false
+	r.next, r.tasks, r.summary, r.finished, r.recalled, r.notes, r.read, r.noted = nil, nil, "", false, false, false, false, false
 	r.hops = nil
 	r.mu.Unlock()
 }
 
 // NotesRead records that the supervisor read the standing notes for this turn
-// and showed them to the model: the search the recall gate waits for has been
-// made for it. The gate for a post still wants the memory read and a note.
+// and showed them to the model. The core's tools then need no search of their
+// own first; a connector's still do: the standing notes are the spot's, not the
+// subject's, and a connector can change the cluster. The gate for a post still
+// wants the memory read and a note.
 func (r *Registry) NotesRead() {
 	r.mu.Lock()
-	r.recalled = true
+	r.notes = true
 	r.mu.Unlock()
 }
 
@@ -420,7 +424,7 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 	}
 	if rt.server == CoreServer {
 		var refusal string
-		if args, refusal = busArgs(rt.tool, args, r.o.TaskTenant); refusal != "" {
+		if args, refusal = busArgs(rt.tool, args, r.o.Tenant); refusal != "" {
 			return refusal, true
 		}
 	}
@@ -500,6 +504,9 @@ func (r *Registry) heldForRecall(rt route) bool {
 		return false
 	}
 	if rt.server == CoreServer {
+		if r.notes {
+			return false
+		}
 		for _, n := range RecallTools {
 			if rt.tool == n {
 				return false
@@ -749,24 +756,38 @@ func (r *Registry) noteHops(text string) {
 	}
 }
 
-// busArgs keeps a call to the core inside the spot's own bus. A workspace tool
-// goes to the room "bus" and to no other, with no spot named (the core takes
-// the bus of the token's spot); a task actor's calls go with the workspace of
-// its token (taskTenant), whatever the model named. The second result is the
-// refusal the model reads, empty when the call may go.
-func busArgs(tool string, args json.RawMessage, taskTenant string) (json.RawMessage, string) {
+// busArgs keeps a call to the core inside the spot's own workspace and bus. A
+// workspace tool goes to the room "bus" and to no other, with no spot named
+// (the core takes the bus of the token's spot); a call that names a workspace,
+// under any spelling of the key, goes with the spot's own (tenant), whatever
+// the model named. The second result is the refusal the model reads, empty
+// when the call may go.
+func busArgs(tool string, args json.RawMessage, tenant string) (json.RawMessage, string) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(args, &m); err != nil {
 		return args, "" // the core refuses what it cannot read
 	}
 	changed := false
-	if taskTenant != "" {
+	if tenant != "" {
 		var cur string
+		for k, raw := range m {
+			if !strings.EqualFold(k, "tenant") {
+				continue
+			}
+			var v string
+			if json.Unmarshal(raw, &v) != nil || v != "" {
+				cur = "named"
+			}
+			if k != "tenant" {
+				delete(m, k) // one key, the core's spelling
+				changed = true
+			}
+		}
 		if raw, ok := m["tenant"]; ok {
 			_ = json.Unmarshal(raw, &cur)
 		}
-		if cur != taskTenant && (cur != "" || inList(busTools, tool) || tool == upsertMemoryItem) {
-			m["tenant"], _ = json.Marshal(taskTenant)
+		if cur != tenant && (cur != "" || inList(busTools, tool) || tool == upsertMemoryItem) {
+			m["tenant"], _ = json.Marshal(tenant)
 			changed = true
 		}
 	}

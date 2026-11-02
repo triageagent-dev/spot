@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2aclient"
 
+	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/triggers"
 )
 
@@ -111,6 +113,12 @@ func TestATaskActorOverA2AEndsWithAPushCarryingTheNoteAndTheLine(t *testing.T) {
 	if data["memory"] != "item-1" || data["line"] != "The nightly job passed." {
 		t.Fatalf("the artifact: %+v", data)
 	}
+	// What the run cost rides in the artifact: the actor has no link and sends
+	// no turn report, so this is where the core's books learn of it.
+	usage, _ := data["usage"].(map[string]any)
+	if in, _ := usage["input"].(float64); in <= 0 || usage["steps"] == nil {
+		t.Fatalf("the artifact carries no usage: %+v", data)
+	}
 	if len(bearers) != 1 || bearers[0] != "Bearer tok-9" {
 		t.Fatalf("the core was asked %v", bearers)
 	}
@@ -118,5 +126,30 @@ func TestATaskActorOverA2AEndsWithAPushCarryingTheNoteAndTheLine(t *testing.T) {
 	defer h.core.mu.Unlock()
 	if len(h.core.notes) != 1 || h.core.notes[0].Title != "Nightly job" || len(h.core.bus) != 1 || h.core.bus[0].ReplyTo != "$req" || h.core.bus[0].Memory != "item-1" {
 		t.Fatalf("note %+v, bus %+v", h.core.notes, h.core.bus)
+	}
+}
+
+// The ceilings hold a task actor as they hold a wake: at the daily ceiling the
+// task does not run, no model call is made, and Tria is told so in the bus.
+func TestATaskActorAtTheCeilingDoesNotRunAndSaysSo(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.DailyTokenCeil = 100 })
+	sup := taskActor(t, h)
+	if _, err := sup.led.AddUsage(150, 0, 50); err != nil {
+		t.Fatal(err)
+	}
+	res, err := sup.RunTask(context.Background(), triggers.Task{Key: "task-9", Goal: "check the nightly job", Title: "Nightly job", ReplyTo: "$req"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Failed || !strings.Contains(res.Line, "not run") || !strings.Contains(res.Line, "ceiling") || res.Usage != nil {
+		t.Fatalf("result: %+v", res)
+	}
+	if h.script.hasStarted(1) {
+		t.Fatal("the task ran a turn past the ceiling")
+	}
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	if len(h.core.bus) != 1 || h.core.bus[0].ReplyTo != "$req" || !strings.Contains(h.core.bus[0].Text, "not run") {
+		t.Fatalf("bus %+v", h.core.bus)
 	}
 }

@@ -124,7 +124,7 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				return sup.RoomSince(room)
 			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
-			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TasksOffered: func() bool { return link != nil && link.TasksOffered() }, TaskTenant: taskTenant(cfg), Logger: log,
+			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TasksOffered: func() bool { return link != nil && link.TasksOffered() }, Tenant: cfg.Tenant, Logger: log,
 		})
 	}
 	for _, c := range cfg.Connectors {
@@ -305,15 +305,6 @@ func newModel(ctx context.Context, cfg config.Config, log *slog.Logger) (llm.Cli
 		log.Info("model auth: API key from a file")
 	}
 	return llm.NewAnthropic(ctx, o)
-}
-
-// taskTenant is the workspace a task actor's calls go with: the one its token
-// was made for, which is the spot's own. Empty for a spot that is not a task.
-func taskTenant(cfg config.Config) string {
-	if cfg.TaskActor() {
-		return cfg.Tenant
-	}
-	return ""
 }
 
 var _ supervisor.TaskCore = (*corecli.Client)(nil)

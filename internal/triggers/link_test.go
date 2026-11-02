@@ -830,3 +830,78 @@ func TestAFrameIsTakenWithACoreSignedTokenForThisSpot(t *testing.T) {
 		t.Fatalf("the hello token: %d", resp.StatusCode)
 	}
 }
+
+// A signed token opens one frame: the core mints one per frame, so the same
+// token on a second frame is a replay and is refused, and a token that ends
+// further ahead than the core mints them is not taken at all. The hello token
+// is the one the core puts on every request, and stays good.
+func TestASignedTokenOpensOneFrameAndEndsWithinTheHour(t *testing.T) {
+	c := newLinkCore(t)
+	l, _, _ := upLink(t, c)
+	fp := l.cert.ID.Fingerprint()
+	good := c.coreToken("example-spot", "ws-1", fp, time.Now().Add(10*time.Minute))
+	if resp := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"first"}}`, good); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("the first frame: %d", resp.StatusCode)
+	}
+	if p := l.Take(); p.Order == nil || p.Order.Why != "first" {
+		t.Fatalf("the first frame was not taken: %+v", p)
+	}
+	for i := range 3 {
+		if resp := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"replay"}}`, good); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("replay %d: %d", i, resp.StatusCode)
+		}
+	}
+	if p := l.Take(); p.Order != nil {
+		t.Fatalf("a replayed frame ordered a wake: %+v", p)
+	}
+	far := c.coreToken("example-spot", "ws-1", fp, time.Now().Add(100*365*24*time.Hour))
+	if resp := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"forever"}}`, far); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a token that ends in a hundred years: %d", resp.StatusCode)
+	}
+	another := c.coreToken("example-spot", "ws-1", fp, time.Now().Add(20*time.Minute))
+	if resp := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"next"}}`, another); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("the next frame's own token: %d", resp.StatusCode)
+	}
+	for range 2 {
+		if resp := frameReq(t, l, "/frame", `{"rooms":["team"]}`); resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("the hello token on every request: %d", resp.StatusCode)
+		}
+	}
+}
+
+// A saved token the actor can read as a signed one is taken only while it
+// verifies: one from a snapshot, past its end or signed by a CA the actor does
+// not trust, opens nothing, and the first request is a bare poke.
+func TestAFreshProcessDoesNotTakeASavedSignedTokenItCannotVerify(t *testing.T) {
+	c := newLinkCore(t)
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(c.handler))
+	t.Cleanup(srv.Close)
+	tok := filepath.Join(dir, "token")
+	id, err := identity.Load(dir, "example-spot", "ws-1", identity.Fingerprint(c.caPub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real signed token for this spot and key, long past its end.
+	stale := c.coreToken("example-spot", "ws-1", id.Fingerprint(), time.Now().Add(-time.Hour))
+	if err := os.WriteFile(tok, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewLink(srv.URL, Cert{Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok,
+		Open: func() (*identity.Identity, error) { return id, nil }}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		l.Wait()
+	})
+	l.Serve(ctx)
+	if r := frameReqAs(t, l, "/frame", `{"wake":{"reason":"tick","why":"stale"}}`, stale); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	if p := l.Take(); p.Order == nil || p.Order.Why != "" {
+		t.Errorf("the stale token opened the frame: %+v (a bare poke asks for a plain tick)", p)
+	}
+}

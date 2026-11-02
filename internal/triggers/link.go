@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -88,7 +89,15 @@ type Link struct {
 	actor        string
 	noRenewUntil time.Time
 	pendingN     int
+	// seen holds the digest of every signed frame token taken, until it ends:
+	// the core mints one per frame, so a token seen again is a replay.
+	seen map[string]time.Time
 }
+
+// maxSeenTokens bounds the replay record. The core sends an actor a few frames a
+// minute and a token ends within the hour (identity.VerifyCoreToken), so the
+// record stays small; past the bound a new token is refused until old ones end.
+const maxSeenTokens = 10000
 
 // NewLink builds the link for the core's HTTP API base URL. The certificate
 // identity is the same as the stream's (Cert); the token the core hands over is
@@ -679,23 +688,23 @@ func (l *Link) Handler() http.Handler {
 }
 
 // authorised reports whether the request carries a token of the core's: one
-// the core CA signed for this spot that has not ended (the core mints one for
-// each frame once hello said tokenCheck signed), or the access token hello
-// gave, which a core from before signed tokens puts on every request. A
-// process started for a wake has not said hello yet, so it also takes the
-// token its predecessor saved, which such a core still holds.
+// the core CA signed for this spot that has not ended and is seen for the
+// first time (the core mints one for each frame once hello said tokenCheck
+// signed), or the access token hello gave, which a core from before signed
+// tokens puts on every request. A process started for a wake has not said
+// hello yet, so it also takes the token its predecessor saved, which such a
+// core still holds, while that token verifies.
 func (l *Link) authorised(r *http.Request) bool {
 	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || got == "" {
 		return false
 	}
+	now := time.Now()
 	l.mu.Lock()
 	known := []string{l.bearer, l.prevBearer}
 	l.mu.Unlock()
 	if known[0] == "" {
-		if b, err := os.ReadFile(l.cert.TokenFile); err == nil {
-			known[0] = strings.TrimSpace(string(b))
-		}
+		known[0] = l.savedToken(now)
 	}
 	match := 0
 	for _, k := range known {
@@ -709,7 +718,63 @@ func (l *Link) authorised(r *http.Request) bool {
 	if l.open() != nil {
 		return false
 	}
-	return l.cert.ID.VerifyCoreToken(got, time.Now()) == nil
+	exp, err := l.cert.ID.VerifyCoreToken(got, now)
+	if err != nil {
+		return false
+	}
+	return l.firstUse(got, exp, now)
+}
+
+// savedToken is the access token the predecessor process saved, for the first
+// frames of a process that has not said hello yet. A signed token is taken only
+// while it verifies, so one lifted from an old snapshot opens nothing; a token
+// the actor cannot read as a signed one is a core's from before signed tokens,
+// and is taken as it is.
+func (l *Link) savedToken(now time.Time) string {
+	b, err := os.ReadFile(l.cert.TokenFile)
+	if err != nil {
+		return ""
+	}
+	tok := strings.TrimSpace(string(b))
+	if tok == "" || !identity.IsCoreToken(tok) {
+		return tok
+	}
+	if l.open() != nil {
+		return ""
+	}
+	if _, err := l.cert.ID.VerifyCoreToken(tok, now); err != nil {
+		l.log.Warn("the saved access token is not taken", "err", err)
+		return ""
+	}
+	return tok
+}
+
+// firstUse records a signed token the first time a frame carries it and
+// refuses it from then on: the core mints one per frame and keeps none, so a
+// token seen twice was replayed by someone who read a frame. A token is
+// forgotten when it ends.
+func (l *Link) firstUse(tok string, exp, now time.Time) bool {
+	sum := sha256.Sum256([]byte(tok))
+	key := string(sum[:])
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for k, e := range l.seen {
+		if !e.After(now) {
+			delete(l.seen, k)
+		}
+	}
+	if _, dup := l.seen[key]; dup {
+		l.log.Warn("a frame carried a token already used; refused as a replay")
+		return false
+	}
+	if len(l.seen) >= maxSeenTokens {
+		return false
+	}
+	if l.seen == nil {
+		l.seen = map[string]time.Time{}
+	}
+	l.seen[key] = exp
+	return true
 }
 
 // serveFrame takes one frame of the core. A control is answered in the

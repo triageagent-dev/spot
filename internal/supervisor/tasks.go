@@ -210,6 +210,14 @@ type TaskStarter interface {
 func (s *Supervisor) startTasks(ctx context.Context, reqs []tools.TaskRequest) {
 	for _, t := range reqs {
 		if st, ok := s.trig.(TaskStarter); ok && s.cfg.Substrate() {
+			if s.paused() {
+				// A task actor is a turn on the same credential, and it has no ledger
+				// of its own to tell it: the ceilings that hold the next wake back hold
+				// the ask back too. A deployment's task waits in its queue instead.
+				s.log.Warn("task not started: a ceiling holds the spot back", "title", t.Title)
+				s.addDigest(prompt.Reason("task "+t.Title), agent.Result{Summary: "not started: the token ceiling holds the spot back"})
+				continue
+			}
 			s.askCoreForTask(ctx, st, t)
 			continue
 		}

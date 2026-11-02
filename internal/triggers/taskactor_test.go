@@ -37,6 +37,9 @@ type taskCore struct {
 	confirms  []string
 	pushes    []pushed
 	reports   int
+	// redirect answers every push with a 307 towards this URL, and counts them.
+	redirect   string
+	redirected int
 }
 
 type pushed struct {
@@ -65,6 +68,16 @@ func newTaskCore(t *testing.T) *taskCore {
 		}
 	})
 	mux.HandleFunc("POST "+LinkTasksPath+"/{key}/events", func(w http.ResponseWriter, r *http.Request) {
+		c.mu.Lock()
+		to := c.redirect
+		if to != "" {
+			c.redirected++
+		}
+		c.mu.Unlock()
+		if to != "" {
+			http.Redirect(w, r, to, http.StatusTemporaryRedirect)
+			return
+		}
 		var task a2a.Task
 		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -308,47 +321,70 @@ func TestAFailedRunEndsFailedWithTheSameArtifact(t *testing.T) {
 
 // A bearer the core refuses is no task: the A2A task ends rejected, nothing runs
 // and the actor is still free for the next message.
-func TestABearerTheCoreRefusesEndsRejectedAndNothingRuns(t *testing.T) {
+// sendErr is a message/send the actor must answer with an error: no task is
+// made for it, so nothing can be read, run or pushed.
+func sendErr(t *testing.T, c *a2aclient.Client, p *a2a.MessageSendParams, want string) {
+	t.Helper()
+	res, err := c.SendMessage(context.Background(), p)
+	if err == nil {
+		t.Fatalf("message/send was taken: %#v", res)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("message/send: %v, want %q", err, want)
+	}
+}
+
+// A message the core does not confirm is answered with an error before the SDK
+// records a task: nothing is run, nothing is pushed, and the actor is free for
+// the real one.
+func TestABearerTheCoreRefusesIsAnsweredWithAnErrorAndNothingRuns(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
 		core := newTaskCore(t)
 		core.status = status
 		a := newActor(t, core, okRun)
-		first := send(t, a.client(t, "not-the-token"), a.message(testGoal, testWS, "not-the-token"))
-		_ = first
-		state, _ := core.waitEnd(t)
-		if state != a2a.TaskStateRejected {
-			t.Fatalf("%d: ended %q", status, state)
-		}
-		if got := a.tasks(); len(got) != 0 {
-			t.Fatalf("%d: a task the core refused ran: %+v", status, got)
-		}
-
-		// Idle for the next: the real one is taken.
+		sendErr(t, a.client(t, "not-the-token"), a.message(testGoal, testWS, "not-the-token"), "unauthenticated")
 		core.mu.Lock()
+		if len(core.pushes) != 0 || len(a.tasks()) != 0 {
+			t.Fatalf("%d: pushed %d, ran %v", status, len(core.pushes), a.tasks())
+		}
 		core.status = 0
 		core.mu.Unlock()
+
+		// Idle for the next: the real one is taken.
 		send(t, a.client(t, testTok), a.message(testGoal, testWS, testTok))
 		deadline := time.Now().Add(10 * time.Second)
 		for len(a.tasks()) == 0 && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		if got := a.tasks(); len(got) != 1 {
-			t.Fatalf("%d: the message after a rejection did not run: %+v", status, got)
+			t.Fatalf("%d: the message after a refusal did not run: %+v", status, got)
 		}
 	}
 }
 
-func TestAMessageWithNoBearerIsRejectedWithoutAskingTheCore(t *testing.T) {
+func TestAMessageWithNoBearerIsRefusedWithoutAskingTheCore(t *testing.T) {
 	core := newTaskCore(t)
 	a := newActor(t, core, okRun)
-	send(t, a.client(t, ""), a.message(testGoal, testWS, ""))
-	if state, _ := core.waitEnd(t); state != a2a.TaskStateRejected {
-		t.Fatalf("ended %q", state)
-	}
+	sendErr(t, a.client(t, ""), a.message(testGoal, testWS, ""), "unauthenticated")
 	core.mu.Lock()
 	defer core.mu.Unlock()
-	if len(core.confirms) != 0 || len(a.tasks()) != 0 {
-		t.Fatalf("asked %v, ran %v", core.confirms, a.tasks())
+	if len(core.confirms) != 0 || len(core.pushes) != 0 || len(a.tasks()) != 0 {
+		t.Fatalf("asked %v, pushed %d, ran %v", core.confirms, len(core.pushes), a.tasks())
+	}
+}
+
+// A message that names no task is refused before the core is asked.
+func TestAMessageThatNamesNoTaskIsRefused(t *testing.T) {
+	core := newTaskCore(t)
+	a := newActor(t, core, okRun)
+	p := a.message(testGoal, testWS, testTok)
+	p.Message.ContextID = ""
+	delete(p.Message.Metadata, MetaTaskKey)
+	sendErr(t, a.client(t, testTok), p, "invalid params")
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if len(core.confirms) != 0 || len(core.pushes) != 0 {
+		t.Fatalf("asked %v, pushed %d", core.confirms, len(core.pushes))
 	}
 }
 
@@ -400,23 +436,13 @@ func TestASecondMessageIsRejected(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	second := send(t, c, a.message(testGoal, testWS, testTok))
-	if second.ID == first.ID {
-		t.Fatal("the second message joined the first task")
-	}
-	deadline = time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: second.ID})
-		if err == nil && got.Status.State == a2a.TaskStateRejected {
-			if got.Status.Message == nil || !strings.Contains(textOf(got.Status.Message), "one task per actor") {
-				t.Errorf("the rejection does not say why: %+v", got.Status.Message)
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got, _ := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: second.ID}); got == nil || got.Status.State != a2a.TaskStateRejected {
-		t.Fatalf("the second task: %+v", got)
+	// A second message is refused before the core is asked: the actor has its
+	// task (the client sees the error's code, "not supported"; the reason is in
+	// the actor's log).
+	asked := core.confirmsOf(testTok)
+	sendErr(t, c, a.message(testGoal, testWS, testTok), "not supported")
+	if n := core.confirmsOf(testTok); n != asked {
+		t.Fatalf("the core was asked again for a message the actor could not take: %d", n-asked)
 	}
 
 	close(release)
@@ -429,18 +455,7 @@ func TestASecondMessageIsRejected(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// After it ended: still one.
-	third := send(t, c, a.message(testGoal, testWS, testTok))
-	deadline = time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: third.ID})
-		if err == nil && got.Status.State == a2a.TaskStateRejected {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got, _ := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: third.ID}); got == nil || got.Status.State != a2a.TaskStateRejected {
-		t.Fatalf("a message after the task ended: %+v", got)
-	}
+	sendErr(t, c, a.message(testGoal, testWS, testTok), "not supported")
 	if n := len(a.tasks()); n != 1 {
 		t.Fatalf("%d tasks ran", n)
 	}
@@ -553,6 +568,14 @@ func TestAPushURLThatIsNotTheCoresIsRejected(t *testing.T) {
 		"another scheme": func(p *a2a.MessageSendParams) {
 			p.Config.PushConfig.URL = strings.Replace(p.Config.PushConfig.URL, "http://", "https://", 1)
 		},
+		// The core's host, but not this task's events: a relay to another route of
+		// the core, with the message's credentials on it.
+		"another task's events": func(p *a2a.MessageSendParams) {
+			p.Config.PushConfig.URL = strings.Replace(p.Config.PushConfig.URL, "/"+testKey+"/", "/OTHER-KEY/", 1)
+		},
+		"another path of the core": func(p *a2a.MessageSendParams) {
+			p.Config.PushConfig.URL = p.Config.PushConfig.URL + "/../../../../agent/events"
+		},
 		"no push config": func(p *a2a.MessageSendParams) { p.Config.PushConfig = nil },
 		"no config":      func(p *a2a.MessageSendParams) { p.Config = nil },
 	} {
@@ -561,23 +584,7 @@ func TestAPushURLThatIsNotTheCoresIsRejected(t *testing.T) {
 		c := a.client(t, testTok)
 		p := a.message(testGoal, testWS, testTok)
 		mut(p)
-		first := send(t, c, p)
-		var got *a2a.Task
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			g, err := c.GetTask(context.Background(), &a2a.TaskQueryParams{ID: first.ID})
-			if err == nil && g.Status.State == a2a.TaskStateRejected {
-				got = g
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if got == nil {
-			t.Fatalf("%s: the task was not rejected", name)
-		}
-		if got.Status.Message == nil || !strings.Contains(textOf(got.Status.Message), "push URL must be the core's") {
-			t.Errorf("%s: the rejection does not say why: %+v", name, got.Status.Message)
-		}
+		sendErr(t, c, p, "invalid params")
 		core.mu.Lock()
 		if len(core.confirms) != 0 || len(core.pushes) != 0 || len(a.tasks()) != 0 {
 			t.Errorf("%s: asked %v, pushed %d, ran %v", name, core.confirms, len(core.pushes), a.tasks())
@@ -589,6 +596,45 @@ func TestAPushURLThatIsNotTheCoresIsRejected(t *testing.T) {
 	defer omu.Unlock()
 	if len(other) != 0 {
 		t.Fatalf("the actor posted to another host: %v", other)
+	}
+}
+
+// A push is not moved by a redirect: the core's callback answering 307 towards
+// another host gets the post once, and the other host gets nothing.
+func TestAPushFollowsNoRedirect(t *testing.T) {
+	var other []string
+	var omu sync.Mutex
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		omu.Lock()
+		other = append(other, r.URL.Path)
+		omu.Unlock()
+	}))
+	defer elsewhere.Close()
+	core := newTaskCore(t)
+	core.mu.Lock()
+	core.redirect = elsewhere.URL + "/events"
+	core.mu.Unlock()
+	a := newActor(t, core, okRun)
+	send(t, a.client(t, testTok), a.message(testGoal, testWS, testTok))
+	deadline := time.Now().Add(10 * time.Second)
+	for len(a.tasks()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		core.mu.Lock()
+		n := core.redirected
+		core.mu.Unlock()
+		if n >= 2 { // submitted, working, ... each answered with the redirect
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	omu.Lock()
+	defer omu.Unlock()
+	if len(other) != 0 {
+		t.Fatalf("the actor followed the redirect: %v", other)
 	}
 }
 
