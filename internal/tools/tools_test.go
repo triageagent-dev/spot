@@ -885,6 +885,58 @@ func TestStartTaskRecordsTheTaskAndKeepsAtMostThreePerTurn(t *testing.T) {
 	}
 }
 
+func TestATurnThatStartedATaskPostsNoReplyToTheRequest(t *testing.T) {
+	url, _ := fakeServer(t)
+	ctx := context.Background()
+	say := func(r *Registry, in string) (string, bool) {
+		return r.Call(ctx, "core__say_in_workspace", json.RawMessage(in))
+	}
+	deploy := newRegistry(t, url, func(o *Options) {
+		o.Tasks = true
+		o.Core.Allow = append(o.Core.Allow, "say_in_workspace")
+	})
+	if _, err := deploy.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := say(deploy, `{"text":"checking","reply_to":"$req"}`); isErr {
+		t.Errorf("no task started yet, the reply goes: %q", got)
+	}
+	if _, isErr := deploy.Call(ctx, "start_task", json.RawMessage(`{"title":"a","goal":"check, post with reply_to $req"}`)); isErr {
+		t.Fatal("start_task refused")
+	}
+	if got, isErr := say(deploy, `{"text":"checking","reply_to":"$req"}`); !isErr || !strings.Contains(got, "the task posts the answer") {
+		t.Errorf("a reply after start_task: %q %v", got, isErr)
+	}
+	if got, isErr := say(deploy, `{"text":"a note to Tria"}`); isErr {
+		t.Errorf("a message that answers nothing is not held: %q", got)
+	}
+
+	// The task's own turn starts no task, so its post goes.
+	deploy.Begin()
+	if _, err := deploy.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := say(deploy, `{"text":"done","reply_to":"$req"}`); isErr {
+		t.Errorf("a new turn starts with no task: %q", got)
+	}
+
+	// A substrate spot's tasks are the core's to see.
+	sub := newRegistry(t, url, func(o *Options) {
+		o.Tasks, o.TasksViaCore = true, true
+		o.TasksOffered = func() bool { return true }
+		o.Core.Allow = append(o.Core.Allow, "say_in_workspace")
+	})
+	if _, err := sub.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, isErr := sub.Call(ctx, "start_task", json.RawMessage(`{"title":"a","goal":"x"}`)); isErr {
+		t.Fatal("start_task refused")
+	}
+	if got, isErr := say(sub, `{"text":"checking","reply_to":"$req"}`); isErr {
+		t.Errorf("the core handles a substrate spot: %q", got)
+	}
+}
+
 func TestStartTaskIsUnknownWithoutTasks(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, nil)
