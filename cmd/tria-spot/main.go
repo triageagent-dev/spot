@@ -111,6 +111,11 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 	var link *triggers.Link        // the substrate link, once it is built; start_task waits for its hello to say the core makes task actors
 	newRegistry := func() *tools.Registry {
 		return tools.New(tools.Options{
+			Replied: func(id string) {
+				if sup != nil {
+					sup.Replied(id)
+				}
+			},
 			RequestHop: func(id string) (int, bool) {
 				if sup == nil {
 					return 0, false

@@ -18,6 +18,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/agent"
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
+	"github.com/triageagent-dev/spot/internal/edges"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
 	"github.com/triageagent-dev/spot/internal/tools"
@@ -2366,6 +2367,36 @@ func TestAPersonsMessageOnAnOrderedWakeIsNotHeld(t *testing.T) {
 	h.waitIdle(1)
 	if in := h.file("stdin", 1); !strings.Contains(in, "checkout pods") {
 		t.Fatalf("the person's message must reach a turn under a hold rule:\n%s", in)
+	}
+}
+
+func TestARequestThatATurnAnsweredWakesNobody(t *testing.T) {
+	h := newHarness(t, nil)
+	led, err := ledger.New(h.state)
+	must(t, err)
+	s := New(h.cfg, led, h.core, h.script, slog.New(slog.NewTextHandler(&safeBuf{}, nil)))
+	req := func(id string) edges.Edge {
+		return edges.Edge{Kind: edges.Message, Human: true, Mentioned: true, Room: BusRoom, Fact: "request " + id, Request: id}
+	}
+	// Tria's ask and the nudge after it both wake the spot: the nudge's turn reads
+	// the bus and answers, while the request waits as a held edge.
+	s.hold([]edges.Edge{req("$a"), req("$b")})
+	s.Replied("$a")
+	s.lastTurnEnd = s.now().Add(-time.Hour)
+	p := s.dueFromHeld()
+	if p == nil {
+		t.Fatal("the request that was not answered must still wake the spot")
+	}
+	if len(p.facts) != 1 || !strings.Contains(p.facts[0], "$b") {
+		t.Fatalf("facts of the wake: %q", p.facts)
+	}
+
+	s.hold([]edges.Edge{req("$a")})
+	if p := s.dueFromHeld(); p != nil {
+		t.Fatalf("a request that was answered woke the spot: %q", p.facts)
+	}
+	if len(s.held) != 0 {
+		t.Errorf("held: %d", len(s.held))
 	}
 }
 

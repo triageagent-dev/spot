@@ -937,6 +937,27 @@ func TestATurnThatStartedATaskPostsNoReplyToTheRequest(t *testing.T) {
 	}
 }
 
+func TestAReplyToARequestIsToldToTheSupervisor(t *testing.T) {
+	url, _ := fakeServer(t)
+	ctx := context.Background()
+	var got []string
+	r := newRegistry(t, url, func(o *Options) {
+		o.Core.Allow = append(o.Core.Allow, "say_in_workspace")
+		o.Replied = func(id string) { got = append(got, id) }
+	})
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{`{"text":"a note"}`, `{"text":"answer","reply_to":"$req"}`} {
+		if c, isErr := r.Call(ctx, "core__say_in_workspace", json.RawMessage(in)); isErr {
+			t.Fatalf("%s: %q", in, c)
+		}
+	}
+	if len(got) != 1 || got[0] != "$req" {
+		t.Errorf("replied: %q", got)
+	}
+}
+
 func TestStartTaskIsUnknownWithoutTasks(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, nil)

@@ -100,8 +100,9 @@ type Supervisor struct {
 	promises schedule.Promises
 	// hops is the hop count of the requests read in the bus, by message id, so a
 	// reply can carry the next one (see tools.Registry.withHop).
-	hopMu sync.Mutex
-	hops  map[string]int
+	hopMu   sync.Mutex
+	hops    map[string]int
+	replied map[string]struct{} // requests of the bus a turn answered
 	// dueNoted is set when a request in the bus room named a later time and
 	// became a promise; the core is told at the end of the read.
 	dueNoted bool
@@ -1097,6 +1098,7 @@ const liveGap = 5 * time.Second
 // name the spot waits up to ChatBatch. A machine's message never wakes on
 // its own; it is a fact for the next wake. Early wakes are capped per hour.
 func (s *Supervisor) dueFromHeld() *pending {
+	s.dropReplied()
 	if len(s.held) == 0 || s.paused() {
 		return nil
 	}
@@ -1233,6 +1235,56 @@ func (s *Supervisor) noteHop(id string, hop int) {
 		s.hops = map[string]int{}
 	}
 	s.hops[id] = hop
+}
+
+// maxReplied bounds the requests remembered as answered; the set is dropped
+// when it is full, as the hops are.
+const maxReplied = 256
+
+// Replied records that a turn answered the request id in the bus. A request of
+// the same id that waits for a wake (Tria's ask and the nudge that follows it
+// each wake the spot, and the first turn to read the bus answers it) is dropped
+// from what wakes the spot, so the person is answered once.
+func (s *Supervisor) Replied(id string) {
+	if id == "" {
+		return
+	}
+	s.hopMu.Lock()
+	defer s.hopMu.Unlock()
+	if s.replied == nil || len(s.replied) >= maxReplied {
+		s.replied = map[string]struct{}{}
+	}
+	s.replied[id] = struct{}{}
+}
+
+func (s *Supervisor) isReplied(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.hopMu.Lock()
+	defer s.hopMu.Unlock()
+	_, ok := s.replied[id]
+	return ok
+}
+
+// dropReplied takes out of the held edges the requests that a turn has answered
+// since they were read.
+func (s *Supervisor) dropReplied() {
+	if len(s.held) == 0 {
+		return
+	}
+	kept := s.held[:0:0]
+	for _, h := range s.held {
+		if s.isReplied(h.Request) {
+			s.log.Info("a request that was answered meanwhile wakes nobody")
+			continue
+		}
+		kept = append(kept, h)
+	}
+	if len(kept) != len(s.held) {
+		s.held = kept
+		s.status.HeldEdges = len(s.held)
+	}
 }
 
 // RequestHop is the hop of a request the spot read in the bus.
@@ -1443,7 +1495,11 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 			s.refreshIdentity(ctx, false, identityGap)
 			mentioned = s.mentioned(m.Text)
 		}
-		out = append(out, edges.Edge{Kind: edges.Message, Human: human && !aside, Room: room, Mentioned: mentioned, Fact: fact})
+		req := ""
+		if room == BusRoom {
+			req = m.ID
+		}
+		out = append(out, edges.Edge{Kind: edges.Message, Human: human && !aside, Room: room, Mentioned: mentioned, Fact: fact, Request: req})
 	}
 	return out, moved
 }
@@ -1778,6 +1834,7 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	// start of the wake and from the core's memory. A long conversation would
 	// be paid for again on every model call.
 
+	s.dropReplied()
 	if len(s.held) > 0 && p.reason != prompt.Startup {
 		for _, e := range s.held {
 			p.facts = append(p.facts, e.Fact)

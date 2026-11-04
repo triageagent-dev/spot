@@ -33,6 +33,9 @@ type Edge struct {
 	Room    string // for a room message, the room it came from
 	// Mentioned is set on a room message that names the spot.
 	Mentioned bool
+	// Request is the id of a request in the bus: a turn that answered it first
+	// leaves it nothing to wake for.
+	Request string
 }
 
 type seen struct {

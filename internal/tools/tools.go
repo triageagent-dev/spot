@@ -50,6 +50,9 @@ type Options struct {
 	// the supervisor read it. A reply carries that hop plus one; the model does not
 	// set it.
 	RequestHop func(id string) (int, bool)
+	// Replied is told the id of a request in the bus that a post of the turn
+	// answered (reply_to of a say_in_workspace the core took).
+	Replied func(id string)
 	// RoomSince gives, for a room, the timestamp (ms) of the newest message the
 	// last finished turn could see; read_workspace_room is then asked only for
 	// what is newer, unless the model names its own since_ts. Nil or 0 = no
@@ -465,6 +468,14 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 		}
 		if rt.server == CoreServer && rt.tool == readWorkspaceRoom && !res.IsError {
 			r.noteHops(res.Text)
+		}
+		if rt.server == CoreServer && rt.tool == sayInWorkspace && !res.IsError && r.o.Replied != nil {
+			var m struct {
+				ReplyTo string `json:"reply_to"`
+			}
+			if json.Unmarshal(args, &m) == nil && m.ReplyTo != "" {
+				r.o.Replied(m.ReplyTo)
+			}
 		}
 		return r.fence(rt, r.cut(res.Text)), res.IsError
 	case ctx.Err() != nil:
