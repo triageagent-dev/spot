@@ -429,6 +429,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 		}
 	}
 	if rt.server == CoreServer && rt.tool == sayInWorkspace {
+		if refusal := r.quickLineRefusal(args); refusal != "" {
+			return refusal, true
+		}
 		var refusal string
 		if args, refusal = r.withHop(args); refusal != "" {
 			return refusal, true
@@ -716,6 +719,31 @@ func (r *Registry) withHop(args json.RawMessage) (json.RawMessage, string) {
 	return out, ""
 }
 
+// quickLineRefusal is the refusal of a reply to a request from a turn that has
+// started a task on a deployment spot: the task posts the answer, and a quick
+// line from the turn would reach Tria, and through her the person, before it and
+// apart from it, so the person would be answered twice. A substrate spot is
+// handled by the core, which sees its task actors. A message that answers
+// nothing is not held.
+func (r *Registry) quickLineRefusal(args json.RawMessage) string {
+	if r.o.TasksViaCore {
+		return ""
+	}
+	var m struct {
+		ReplyTo string `json:"reply_to"`
+	}
+	if json.Unmarshal(args, &m) != nil || m.ReplyTo == "" {
+		return ""
+	}
+	r.mu.Lock()
+	started := len(r.tasks)
+	r.mu.Unlock()
+	if started == 0 {
+		return ""
+	}
+	return "not sent: you started a task in this turn, and the task posts the answer. A line from you now would reach the person apart from it and answer them twice. Say nothing in the bus and finish; the goal of the task must say to post the result with reply_to the request id."
+}
+
 // requestHop is the hop of a request: from what this registry read in the turn,
 // else from what the supervisor read.
 func (r *Registry) requestHop(id string) (int, bool) {
@@ -934,7 +962,7 @@ func builtinDefs(tasks, viaCore bool) []llm.ToolDef {
 			Description: "Start a task: a turn of its own that runs now, beside you and beside other tasks, and carries on after you finish. " +
 				"Use it for work that takes long or must not hold up answering a request, and to do several things at once. " +
 				"The task starts with an empty conversation and knows nothing of this one, so the goal must say what to check or do, where, and what to report. " +
-				where + "At most 3 per turn; do not start one for what you can do in a few calls.",
+				where + postsWhere(viaCore) + "At most 3 per turn; do not start one for what you can do in a few calls.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 				`"title":{"type":"string","description":"A few words that name the task."},` +
 				`"goal":{"type":"string","description":"The complete instruction for the task, with everything it needs to know."}},` +
@@ -942,6 +970,17 @@ func builtinDefs(tasks, viaCore bool) []llm.ToolDef {
 		})
 	}
 	return defs
+}
+
+// postsWhere says who answers the request a task was started for. On a
+// deployment the task does, with reply_to the request id its goal names, and the
+// turn that started it posts no reply of its own: Tria would tell the person
+// twice. On a substrate spot the core posts the result.
+func postsWhere(viaCore bool) string {
+	if viaCore {
+		return ""
+	}
+	return "If you start it for a request, put the request id in the goal and tell the task to post its result in the bus with reply_to that id; start the task before you post anything, and do not answer the request yourself, because the person would hear two answers. "
 }
 
 // maxText bounds the free text a built-in keeps.

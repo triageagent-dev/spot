@@ -157,7 +157,7 @@ func Turn(w Wake) string {
 		if w.ReplyTo != "" {
 			b.WriteString("You are a task that Tria asked for, and nothing else is running of you: do exactly the goal, read the least you need, and do not widen it. You cannot schedule wakes or start tasks. Do not post: the supervisor writes your result to the workspace's memory and answers the request in the bus with the item's id. End by calling finish with the result: what you found or did, in a few plain sentences that stand alone, because Tria reads them to answer the person.\n")
 		} else {
-			b.WriteString("You are a task: do exactly the goal, read the least you need, and do not widen it. You cannot schedule wakes or start tasks. If the goal asks you to tell or answer someone, post it in the bus (read your notes and write one first, as the post gate wants). End by calling finish with one line: what you found or did, which the turn that started you reads in its digest.\n")
+			b.WriteString("You are a task: do exactly the goal, read the least you need, and do not widen it. You cannot schedule wakes or start tasks. If the goal asks you to tell or answer someone, post it in the bus (read your notes and write one first, as the post gate wants), with reply_to the request id when the goal names one. End by calling finish with one line: what you found or did, which the turn that started you reads in its digest.\n")
 		}
 		return b.String()
 	}
