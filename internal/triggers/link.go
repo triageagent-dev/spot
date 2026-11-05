@@ -552,16 +552,17 @@ func (l *Link) hello(ctx context.Context, coreNonce, cert []byte) error {
 	var out linkIn
 	ctxc, cancel := context.WithTimeout(ctx, joinWait)
 	defer cancel()
-	status, err := l.post(ctxc, LinkPath, "", map[string]any{
-		"kind": "hello", "coreNonce": coreNonce,
-		"hello": map[string]any{
-			"spot": l.cert.Name, "workspace": l.cert.Workspace, "version": l.cert.Version, "runtime": "substrate", "cert": cert,
-			// The actor verifies the token on a frame against the core CA for its
-			// own name (authorised), so the core mints one per frame and keeps none.
-			"tokenCheck": "signed",
-			"proof":      id.Sign(identity.ProofMessage("hello", coreNonce, l.cert.Name, l.cert.Workspace)),
-		},
-	}, &out)
+	h := map[string]any{
+		"spot": l.cert.Name, "workspace": l.cert.Workspace, "version": l.cert.Version, "runtime": "substrate", "cert": cert,
+		// The actor verifies the token on a frame against the core CA for its
+		// own name (authorised), so the core mints one per frame and keeps none.
+		"tokenCheck": "signed",
+		"proof":      id.Sign(identity.ProofMessage("hello", coreNonce, l.cert.Name, l.cert.Workspace)),
+	}
+	if l.cert.Card != nil {
+		h["card"] = l.cert.Card // what the actor is for (the core's ADR-114)
+	}
+	status, err := l.post(ctxc, LinkPath, "", map[string]any{"kind": "hello", "coreNonce": coreNonce, "hello": h}, &out)
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		why := "refused"
 		if out.JoinResult != nil {

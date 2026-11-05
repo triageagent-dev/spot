@@ -18,6 +18,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+
+	"github.com/a2aproject/a2a-go/a2a"
 	"os"
 	"strings"
 	"time"
@@ -40,6 +42,10 @@ type Cert struct {
 	Name      string // the spot's name, as in its certificate
 	Workspace string
 	Version   string
+	// Card is the spot's agent card (the core's ADR-114), sent with every hello
+	// so the core knows what the spot is for and the skills it declares; nil
+	// sends none.
+	Card      *a2a.AgentCard
 	TokenFile string
 	// EnrollKeyFile holds the one-time key that makes the core approve the join
 	// at once; empty = none. It is sent only while the spot has no certificate.
@@ -197,10 +203,14 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn, nonce []by
 		}
 		return false, up, err
 	}
-	hello_ := map[string]any{"kind": "hello", "hello": map[string]any{
+	h := map[string]any{
 		"spot": c.cert.Name, "workspace": c.cert.Workspace, "version": c.cert.Version, "cert": cert,
 		"proof": id.Sign(identity.ProofMessage("hello", ch.Nonce, c.cert.Name, c.cert.Workspace)),
-	}}
+	}
+	if c.cert.Card != nil {
+		h["card"] = c.cert.Card // what the spot is for (the core's ADR-114)
+	}
+	hello_ := map[string]any{"kind": "hello", "hello": h}
 	if err := conn.WriteJSON(hello_); err != nil {
 		return false, false, err
 	}
