@@ -1,0 +1,29 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# The agent card's values (the core's ADR-114): a description with ": " in it
+# and a skills list, which must each render as one quoted argument.
+spot:
+  enabled: true
+  tenant: example
+  description: "The hands: live pods and logs, in one sentence with a colon."
+  skills:
+    - id: deploy
+      name: Deploy
+      description: "Rolls a release: through the example tool."
+      tags: [rollout, example]
+core:
+  identity: secret
+  mcpUrl: https://core.example-core.svc/mcp
+  tokenSecret:
+    name: example-spot-core-token
+llm:
+  auth: federation
+  federation:
+    ruleId: fdrl_example
+    orgId: 00000000-0000-0000-0000-000000000000
+    serviceAccountId: svac_example
+networkPolicy:
+  core:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: example-core}
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}

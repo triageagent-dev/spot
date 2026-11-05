@@ -68,11 +68,12 @@ spec:
             {{- if .Values.spot.chatName }}
             - --chat-name={{ .Values.spot.chatName }}
             {{- end }}
+            {{- /* Quoted: a description with ": " or a skills list would otherwise read as YAML, not as one argument. */}}
             {{- if .Values.spot.description }}
-            - --description={{ .Values.spot.description }}
+            - {{ printf "--description=%s" .Values.spot.description | quote }}
             {{- end }}
             {{- if .Values.spot.skills }}
-            - --skills-json={{ toJson .Values.spot.skills }}
+            - {{ printf "--skills-json=%s" (toJson .Values.spot.skills) | quote }}
             {{- end }}
             - --core-mcp-url={{ required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl }}
             {{- if .Values.core.apiUrl }}
