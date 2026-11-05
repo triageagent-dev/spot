@@ -1,0 +1,25 @@
+# Placeholder values for `helm lint` and `helm template`. Not for installing.
+# Certificate identity with the one-time key given as a value: the chart makes
+# the Secret and mounts it.
+spot:
+  enabled: true
+  tenant: example
+  name: example-spot
+core:
+  identity: certificate
+  mcpUrl: https://core.example-core.svc/mcp
+  apiUrl: https://core.example-core.svc
+  caFingerprint: SHA256:0000000000000000000000000000000000000000000000000000000000000000
+  enrollKey: tak_example_one_time_key
+llm:
+  auth: federation
+  federation:
+    ruleId: fdrl_example
+    orgId: 00000000-0000-0000-0000-000000000000
+    serviceAccountId: svac_example
+networkPolicy:
+  core:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: example-core}
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: core}

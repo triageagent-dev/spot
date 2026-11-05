@@ -1,0 +1,17 @@
+{{- /* The one-time enrollment key given as a value (core.enrollKey) becomes a
+Secret the spot mounts: `helm upgrade --install … --set core.enrollKey=<key>`
+is the whole install, no Secret made by hand. The key is spent on the first
+join; the value can then be dropped from the release (the Secret goes with it,
+the spot keeps its certificate on its volume). */ -}}
+{{- if and .Values.spot.enabled (eq .Values.core.identity "certificate") .Values.core.enrollKey (not .Values.core.enrollKeySecret.name) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "tria-spot.enrollSecret" . }}
+  labels:
+    app.kubernetes.io/name: tria-spot
+    app.kubernetes.io/instance: {{ .Release.Name }}
+type: Opaque
+stringData:
+  key: {{ .Values.core.enrollKey | quote }}
+{{- end }}

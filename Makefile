@@ -93,6 +93,7 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, A
 	helm lint $(CHART) -f $(CHART)/ci/serviceaccount-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/connectors-values.yaml
 	helm lint $(CHART) -f $(CHART)/ci/card-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/enroll-values.yaml
 	@test -z "$$(helm template t $(CHART))" || { echo "spot.enabled=false must render nothing"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml > $(CHART_TMP)/tria-spot-key.yaml
 	helm template t $(CHART) -f $(CHART)/ci/key-values.yaml > $(CHART_TMP)/tria-spot-keyset.yaml
@@ -106,6 +107,9 @@ chart-lint: ## helm lint and helm template: flag off, ServiceAccount identity, A
 	helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set agent.maxTasks=5 | grep -q -e --max-tasks=5 || { echo "agent.maxTasks must pass --max-tasks"; exit 1; }
 	helm template t $(CHART) -f $(CHART)/ci/card-values.yaml > $(CHART_TMP)/tria-spot-card.yaml
 	@grep -q -- '- "--description=The hands: live pods' $(CHART_TMP)/tria-spot-card.yaml && grep -q -- '- "--skills-json=\[{' $(CHART_TMP)/tria-spot-card.yaml || { echo "spot.description and spot.skills must render as one quoted argument each"; exit 1; }
+	helm template t $(CHART) -f $(CHART)/ci/enroll-values.yaml > $(CHART_TMP)/tria-spot-enroll.yaml
+	@grep -q 'name: example-spot-enroll-key' $(CHART_TMP)/tria-spot-enroll.yaml && grep -q 'key: "tak_example_one_time_key"' $(CHART_TMP)/tria-spot-enroll.yaml && grep -q -- '--enroll-key-file=/secrets/enroll/key' $(CHART_TMP)/tria-spot-enroll.yaml && grep -q 'secretName: example-spot-enroll-key' $(CHART_TMP)/tria-spot-enroll.yaml || { echo "core.enrollKey must make the Secret the spot mounts"; exit 1; }
+	@! grep -q 'enroll-key' $(CHART_TMP)/tria-spot-key.yaml || { echo "no enrollment Secret without core.enrollKey"; exit 1; }
 	@! helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set engine.type=temporal >/dev/null 2>&1 || { echo "engine.type: temporal must fail to render"; exit 1; }
 	@helm template t $(CHART) -f $(CHART)/ci/enabled-values.yaml --set engine.type=temporal 2>&1 | grep -q 'ADR-106' || { echo "the failure for engine.type: temporal must name ADR-106"; exit 1; }
 	@for f in key keyset fed vertex gmkey gmvertex tel sa conn; do \
