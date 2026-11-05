@@ -62,7 +62,8 @@ core:
   #   for the first join, enrollKeySecret. The spot's name (spot.name) is its
   #   identity: keep it stable. Losing /state needs a new enrollment key.
   identity: serviceAccount
-  enrollKeySecret:               # identity: certificate. The one-time key a workspace admin minted in the core for this spot (label = spot.name, kind spot, 7 days, one use); a Secret name, mounted as a file at /secrets/enroll. Sent only while the spot has no certificate; a spent key left here is harmless
+  enrollKey: ""                  # identity: certificate. The one-time key itself, as minted in the core for this spot (label = spot.name, kind spot, 7 days, one use): `--set core.enrollKey=<key>` and the chart makes the Secret it mounts. The first join spends it; drop the value afterwards if you like, the spot keeps its certificate. Not with enrollKeySecret
+  enrollKeySecret:               # identity: certificate. The same key in a Secret you made (mounted as a file at /secrets/enroll), for an install that keeps secrets out of Helm values. Sent only while the spot has no certificate; a spent key left here is harmless
     name: ""
     key: key
   caFingerprint: ""              # identity: certificate. SHA256:<64 lowercase hex> of the core's CA (required then)

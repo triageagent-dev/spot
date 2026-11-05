@@ -6,6 +6,25 @@
 {{- default (printf "%s-spot" (include "tria-spot.tenant" .)) .Values.spot.name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- /* The Secret that holds the one-time enrollment key: the one named in
+core.enrollKeySecret, else the one the chart makes from core.enrollKey (the key
+given as a value), else none. */ -}}
+{{- define "tria-spot.enrollSecret" -}}
+{{- if .Values.core.enrollKeySecret.name -}}
+{{- .Values.core.enrollKeySecret.name -}}
+{{- else if .Values.core.enrollKey -}}
+{{- printf "%s-enroll-key" (include "tria-spot.name" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "tria-spot.enrollKeyFile" -}}
+{{- if .Values.core.enrollKeySecret.name -}}
+{{- .Values.core.enrollKeySecret.key -}}
+{{- else -}}
+key
+{{- end -}}
+{{- end -}}
+
 {{- define "tria-spot.saName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "tria-spot.name" .) .Values.serviceAccount.name -}}

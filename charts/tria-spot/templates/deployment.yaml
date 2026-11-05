@@ -81,8 +81,8 @@ spec:
             {{- end }}
             {{- if eq $identity "certificate" }}
             - --core-ca-fingerprint={{ .Values.core.caFingerprint }}
-            {{- if .Values.core.enrollKeySecret.name }}
-            - --enroll-key-file=/secrets/enroll/{{ .Values.core.enrollKeySecret.key }}
+            {{- if (include "tria-spot.enrollSecret" .) }}
+            - --enroll-key-file=/secrets/enroll/{{ include "tria-spot.enrollKeyFile" . }}
             {{- end }}
             {{- else }}
             - --core-token-file=/secrets/core/{{ if eq $identity "secret" }}{{ .Values.core.tokenSecret.key }}{{ else }}token{{ end }}
@@ -192,7 +192,7 @@ spec:
             - name: core-token
               mountPath: /secrets/core
               readOnly: true
-            {{- else if .Values.core.enrollKeySecret.name }}
+            {{- else if (include "tria-spot.enrollSecret" .) }}
             - name: enroll-key
               mountPath: /secrets/enroll
               readOnly: true
@@ -240,10 +240,10 @@ spec:
         {{- end }}
         {{- if eq $identity "certificate" }}
         {{- /* No token for the core: the spot's key, certificate and access token live in /state/identity. */}}
-        {{- if .Values.core.enrollKeySecret.name }}
+        {{- if (include "tria-spot.enrollSecret" .) }}
         - name: enroll-key
           secret:
-            secretName: {{ .Values.core.enrollKeySecret.name }}
+            secretName: {{ include "tria-spot.enrollSecret" . }}
             defaultMode: 0440
         {{- end }}
         {{- else if eq $identity "secret" }}
