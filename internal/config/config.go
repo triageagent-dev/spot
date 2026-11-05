@@ -27,7 +27,17 @@ type Config struct {
 	// ChatName is the name people see and write to in the messenger, when it
 	// is not Name: the core names a spot after its workspace's label. Empty =
 	// Name.
-	ChatName   string
+	ChatName string
+	// Description is what this spot is for, in a sentence or two, for its agent
+	// card (Card; the core's ADR-114). Empty = a default that names the
+	// workspace and the cluster work.
+	Description string
+	// SkillsFile is a JSON array of Skill: what this spot declares it can do,
+	// beside the built-in cluster skill and one per connector. SkillsJSON is the
+	// same list inline; Skills is what they hold, loaded by Parse.
+	SkillsFile string
+	SkillsJSON string
+	Skills     []Skill
 	CoreMCPURL string
 	// CoreAPIURL is the core's HTTP API, for its trigger stream (a websocket
 	// the core writes to when something changed). Empty = no stream: the
@@ -222,6 +232,9 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.StringVar(&c.IdentityDir, "identity-dir", "", "directory for the spot's key, certificate and access token with --core-ca-fingerprint (default <state-dir>/identity)")
 	fs.StringVar(&c.ConnectorsFile, "connectors-file", "", "JSON file listing connectors, more MCP servers beside the core: [{name, url, tools, hint}]; the spot may call only the named tools and holds no credential for them; empty = none")
 	fs.StringVar(&c.ConnectorsJSON, "connectors-json", "", "the connectors as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --connectors-file")
+	fs.StringVar(&c.Description, "description", "", "what this spot is for, in a sentence or two, for its agent card (the core's ADR-114): Tria picks a spot by its card when the workspace has several; default names the workspace and the cluster work")
+	fs.StringVar(&c.SkillsFile, "skills-file", "", "JSON file listing the skills this spot declares on its agent card beside the built-in cluster skill and one per connector: [{id, name, description, tags}]; empty = none")
+	fs.StringVar(&c.SkillsJSON, "skills-json", "", "the skills as the JSON itself, for a runtime with no file to read them from (the substrate actor); not with --skills-file")
 	fs.StringVar(&c.LLMProvider, "llm-provider", ProviderAnthropic, "the model provider: anthropic or gemini")
 	fs.StringVar(&c.LLMAuth, "llm-auth", AuthKey, "how the spot authenticates to the model API: key, federation (anthropic only), vertex, or injected (anthropic only: the spot sends a placeholder key and the egress in front of the API puts the real one on the request)")
 	fs.StringVar(&c.LLMBaseURL, "llm-base-url", "", "injected: the API's URL when it is not https://api.anthropic.com (for example an in-cluster proxy); only with --llm-auth=injected")
@@ -292,6 +305,17 @@ func Parse(args []string, out io.Writer) (Config, error) {
 		c.Connectors, cerr = ParseConnectors(c.ConnectorsJSON)
 	} else {
 		c.Connectors, cerr = LoadConnectors(c.ConnectorsFile)
+	}
+	if cerr != nil {
+		return c, errors.Join(cerr, c.Validate())
+	}
+	if c.SkillsFile != "" && c.SkillsJSON != "" {
+		return c, errors.Join(errSkillsTwice, c.Validate())
+	}
+	if c.SkillsJSON != "" {
+		c.Skills, cerr = ParseSkills(c.SkillsJSON)
+	} else {
+		c.Skills, cerr = LoadSkills(c.SkillsFile)
 	}
 	if cerr != nil {
 		return c, errors.Join(cerr, c.Validate())

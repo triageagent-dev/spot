@@ -68,6 +68,12 @@ spec:
             {{- if .Values.spot.chatName }}
             - --chat-name={{ .Values.spot.chatName }}
             {{- end }}
+            {{- if .Values.spot.description }}
+            - --description={{ .Values.spot.description }}
+            {{- end }}
+            {{- if .Values.spot.skills }}
+            - --skills-json={{ toJson .Values.spot.skills }}
+            {{- end }}
             - --core-mcp-url={{ required "core.mcpUrl is required when spot.enabled is true" .Values.core.mcpUrl }}
             {{- if .Values.core.apiUrl }}
             - --core-api-url={{ .Values.core.apiUrl }}

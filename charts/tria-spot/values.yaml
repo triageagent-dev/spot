@@ -15,6 +15,16 @@ spot:
   # is only the fallback for a core that cannot say, and until it has. The spot
   # also answers to name. Empty = name.
   chatName: ""
+  # The spot's agent card (the core's ADR-114): what this spot is for, in a
+  # sentence or two, and the skills it declares beside the built-in cluster
+  # skill and one per connector. Tria picks a spot by its card when the
+  # workspace has several. Empty = a default that names the workspace.
+  description: ""
+  skills: []
+    # - id: deploy                 # lower case, unique; 32 at most
+    #   name: Deploy
+    #   description: Rolls a release of the workspace's services.
+    #   tags: [argo, rollout]
   # 1 runs the spot; 0 parks it (the Deployment, its state and its Secrets stay).
   # More than 1 is not supported: one writer on /state.
   replicas: 1

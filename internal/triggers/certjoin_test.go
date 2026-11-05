@@ -7,9 +7,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+
+	"github.com/a2aproject/a2a-go/a2a"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -96,6 +99,7 @@ func (f *fakeCore) handler(w http.ResponseWriter, r *http.Request) {
 		Hello struct {
 			Spot, Workspace, Version string
 			Cert, Proof              []byte
+			Card                     json.RawMessage
 		} `json:"hello"`
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -158,7 +162,7 @@ func (f *fakeCore) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.mu.Lock()
-		f.hellos = append(f.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "version": in.Hello.Version})
+		f.hellos = append(f.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "version": in.Hello.Version, "card": string(in.Hello.Card)})
 		revoked := f.revoked
 		f.mu.Unlock()
 		if revoked {
@@ -184,7 +188,8 @@ func certClient(t *testing.T, f *fakeCore, dir string) (*Client, *identity.Ident
 		t.Fatal(err)
 	}
 	tok := filepath.Join(dir, "token")
-	c, err := NewCert(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok}, quiet())
+	c, err := NewCert(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok,
+		Card: &a2a.AgentCard{Name: "Example", Description: "the hands", Skills: []a2a.AgentSkill{{ID: "logs", Name: "Logs", Tags: []string{"loki"}}}}}, quiet())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +224,10 @@ func TestASpotJoinsByCertificateAndGetsItsToken(t *testing.T) {
 	f.mu.Unlock()
 	if h["spot"] != "example-spot" || h["workspace"] != "ws-1" || h["version"] != "test" {
 		t.Fatalf("hello: %v", h)
+	}
+	// the card goes with hello (the core's ADR-114)
+	if card, _ := h["card"].(string); !strings.Contains(card, `"name":"Example"`) || !strings.Contains(card, `"id":"logs"`) {
+		t.Fatalf("hello without the card: %v", h)
 	}
 	if _, usable, _ := id.CertState(time.Now()); !usable {
 		t.Fatal("the certificate was not kept")

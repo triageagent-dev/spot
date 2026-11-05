@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a2aproject/a2a-go/a2a"
+
 	"github.com/triageagent-dev/spot/internal/identity"
 )
 
@@ -119,6 +121,7 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 			Spot, Workspace, Version, Runtime string
 			TokenCheck                        string `json:"tokenCheck"`
 			Cert, Proof                       []byte
+			Card                              json.RawMessage
 		} `json:"hello"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
@@ -180,7 +183,7 @@ func (c *linkCore) link(w http.ResponseWriter, body []byte) {
 			return
 		}
 		c.lmu.Lock()
-		c.hellos = append(c.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "runtime": in.Hello.Runtime, "tokenCheck": in.Hello.TokenCheck})
+		c.hellos = append(c.hellos, map[string]any{"spot": in.Hello.Spot, "workspace": in.Hello.Workspace, "runtime": in.Hello.Runtime, "tokenCheck": in.Hello.TokenCheck, "card": string(in.Hello.Card)})
 		refuse := c.refuseHello > 0
 		if refuse {
 			c.refuseHello--
@@ -216,7 +219,8 @@ func linkClient(t *testing.T, c *linkCore, dir string) (*Link, string) {
 		t.Fatal(err)
 	}
 	tok := filepath.Join(dir, "token")
-	l, err := NewLink(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok}, quiet())
+	l, err := NewLink(srv.URL, Cert{ID: id, Name: "example-spot", Workspace: "ws-1", Version: "test", TokenFile: tok,
+		Card: &a2a.AgentCard{Name: "Example", Skills: []a2a.AgentSkill{{ID: "cluster"}}}}, quiet())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +271,10 @@ func TestAnActorJoinsOverHTTPAndGetsItsTokenNameAndBudget(t *testing.T) {
 	}
 	if h["spot"] != "example-spot" || h["workspace"] != "ws-1" || h["runtime"] != "substrate" {
 		t.Fatalf("hello: %v", h)
+	}
+	// the card goes with hello (the core's ADR-114)
+	if card, _ := h["card"].(string); !strings.Contains(card, `"name":"Example"`) || !strings.Contains(card, `"id":"cluster"`) {
+		t.Fatalf("hello without the card: %v", h)
 	}
 	if l.Actor() != "spots/s0123" {
 		t.Errorf("actor %q", l.Actor())
