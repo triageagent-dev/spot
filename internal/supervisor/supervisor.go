@@ -115,6 +115,7 @@ type Supervisor struct {
 	lastTurnEnd time.Time
 	failures    int
 	edgeWakes   []time.Time // early wakes in the last hour
+	capLogged   time.Time   // when the early-wake cap was last said in the log
 	status      Status
 
 	// recent is the tokens each turn of the last hour billed (hourlyUntil).
@@ -149,6 +150,40 @@ type roomState struct {
 	cursor   string
 	primed   bool
 	disabled time.Time // do not ask again before this
+
+	seen      map[string]struct{} // ids of the messages already read, whatever page the core sent them in
+	seenOrder []string            // the same ids, oldest first, so the set stays bounded
+}
+
+// capLogEvery is how often the log says the early wakes are capped: the check
+// runs every second while edges are held, and one line a second is noise.
+const capLogEvery = 10 * time.Minute
+
+// maxSeenMessages bounds the ids a room remembers: far more than a page holds.
+const maxSeenMessages = 1024
+
+// markSeen records a message id and reports whether it was already known. The
+// core's cursor is its promise to send only what is new; a page that comes back
+// whole (a core that ignores since_ts, a cursor it lost) must not read as news
+// again, or every poll wakes the model to answer an old request once more.
+// A message without an id cannot be told apart and is always news.
+func (rs *roomState) markSeen(id string) bool {
+	if id == "" {
+		return false
+	}
+	if _, ok := rs.seen[id]; ok {
+		return true
+	}
+	if rs.seen == nil {
+		rs.seen = map[string]struct{}{}
+	}
+	if len(rs.seenOrder) >= maxSeenMessages {
+		delete(rs.seen, rs.seenOrder[0])
+		rs.seenOrder = rs.seenOrder[1:]
+	}
+	rs.seen[id] = struct{}{}
+	rs.seenOrder = append(rs.seenOrder, id)
+	return false
 }
 
 // Status is /state/supervisor/status.json.
@@ -1153,7 +1188,10 @@ func (s *Supervisor) edgeWakesCapped(now time.Time) bool {
 	s.edgeWakes = kept
 	s.status.EdgeWakesHour = len(kept)
 	if s.cfg.MaxEdgeWakesHr > 0 && len(kept) >= s.cfg.MaxEdgeWakesHr {
-		s.log.Warn("early wakes capped for this hour; changes wait for the scheduled wake", "wakes", len(kept), "cap", s.cfg.MaxEdgeWakesHr, "held", len(s.held))
+		if now.Sub(s.capLogged) >= capLogEvery {
+			s.capLogged = now
+			s.log.Warn("early wakes capped for this hour; changes wait for the scheduled wake", "wakes", len(kept), "cap", s.cfg.MaxEdgeWakesHr, "held", len(s.held))
+		}
 		return true
 	}
 	return false
@@ -1371,16 +1409,27 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		for _, m := range msgs {
 			if m.TS >= cut {
 				recent = append(recent, m)
+			} else {
+				rs.markSeen(m.ID)
 			}
 		}
 		msgs, first = recent, false
 	}
 	if first {
-		return nil, moved // history at startup is not news
+		// What is in the room when the spot starts is history: never news, even
+		// if the core sends it again.
+		for _, m := range msgs {
+			rs.markSeen(m.ID)
+		}
+		return nil, moved
 	}
 	var out []edges.Edge
 	for _, m := range msgs {
 		if s.isOwn(m) {
+			continue
+		}
+		if rs.markSeen(m.ID) {
+			s.log.Debug("a message the core sent again is not news", "room", room)
 			continue
 		}
 		who := m.Name

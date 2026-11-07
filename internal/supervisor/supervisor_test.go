@@ -49,6 +49,7 @@ type fakeCore struct {
 	beatErr    error
 	roomMsgs   map[string][]corecli.RoomMessage
 	roomAbsent bool
+	roomReplay bool     // a core that ignores the cursor: every read sends the whole room
 	typing     []string // "room|on" per call
 	typingErr  error
 	late       func() []corecli.Issue // extra issues, for changes that land during a turn
@@ -148,6 +149,9 @@ func (f *fakeCore) RoomMessages(_ context.Context, room, since string) ([]corecl
 	}
 	msgs := f.roomMsgs[room]
 	n := 0
+	if f.roomReplay {
+		return append([]corecli.RoomMessage(nil), msgs...), strconv.Itoa(len(msgs)), nil
+	}
 	if since != "" {
 		n, _ = strconv.Atoi(since)
 	}
@@ -1344,6 +1348,33 @@ func TestEveryRequestInTheBusWakesAtOnceEvenWithChatBatchOn(t *testing.T) {
 	// The spot knows the request's hop, for the reply to carry the next one.
 	if hop, ok := h.sup.RequestHop("$req1"); !ok || hop != 1 {
 		t.Fatalf("the hop of the request: %d %v", hop, ok)
+	}
+}
+
+func TestAPageTheCoreSendsAgainIsNotNews(t *testing.T) {
+	h := newHarness(t, nil)
+	h.core.roomMsgs["bus"] = []corecli.RoomMessage{{ID: "$old", Sender: "alice", Name: "alice", Text: "old"}}
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	h.waitIdle(1)
+	time.Sleep(80 * time.Millisecond)
+	defer h.stop()
+	h.core.mu.Lock()
+	h.core.roomReplay = true
+	h.core.mu.Unlock()
+	h.post("bus", corecli.RoomMessage{ID: "$req1", Sender: "@tria:srv", Name: "Tria", Text: "check the checkout pods", Tria: true, Hop: 1, For: "alice"})
+	h.waitIdle(2)
+	reads := func() int { h.core.mu.Lock(); defer h.core.mu.Unlock(); return h.core.roomReads }
+	before := reads()
+	h.waitFor("more polls of the room", func() bool { return reads() >= before+5 })
+	if n := h.turns(); n != 2 {
+		t.Fatalf("a request the core sent again woke the spot: %d turns", n)
+	}
+	// A new request in the same replayed page is news.
+	h.post("bus", corecli.RoomMessage{ID: "$req2", Sender: "@tria:srv", Name: "Tria", Text: "and the cart pods", Tria: true, Hop: 1, For: "alice"})
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "and the cart pods") || strings.Contains(in, "check the checkout pods") {
+		t.Fatalf("only the new request is news:\n%s", in)
 	}
 }
 
