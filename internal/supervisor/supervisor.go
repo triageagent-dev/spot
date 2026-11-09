@@ -102,6 +102,9 @@ type Supervisor struct {
 	// reply can carry the next one (see tools.Registry.withHop).
 	hopMu sync.Mutex
 	hops  map[string]int
+	// bus is what the bus has said: Tria's requests and the spot's replies to
+	// them, asked before a reply goes (ReplyCheck).
+	bus busBook
 	// dueNoted is set when a request in the bus room named a later time and
 	// became a promise; the core is told at the end of the read.
 	dueNoted bool
@@ -1386,6 +1389,7 @@ func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, b
 		page[m.ID] = quoted{who: who, text: m.Text}
 		if room == BusRoom {
 			s.noteHop(m.ID, m.Hop)
+			s.bus.note(m, s.isOwn(m))
 		}
 	}
 	if first && next == "" {

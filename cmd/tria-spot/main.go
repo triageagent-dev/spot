@@ -123,6 +123,17 @@ func supervise(cfg config.Config, errOut io.Writer) int {
 				}
 				return sup.RoomSince(room)
 			},
+			ReadBus: func(text string) {
+				if sup != nil {
+					sup.ReadBus(text)
+				}
+			},
+			ReplyCheck: func(replyTo string) string {
+				if sup == nil {
+					return ""
+				}
+				return sup.ReplyCheck(replyTo)
+			},
 			Core: coreServer(cfg), Others: otherServers(cfg),
 			CallTimeout: cfg.ToolTimeout, ResultMax: cfg.ToolResultMax, SpotName: cfg.Name, RecallFirst: cfg.RecallFirst, NotesOnly: cfg.NotesOnly, PostGate: cfg.PostGate, FenceResults: cfg.FenceResults, Tasks: cfg.MaxTasks > 0 && !cfg.TaskActor(), TasksViaCore: cfg.Substrate(), TasksOffered: func() bool { return link != nil && link.TasksOffered() }, Tenant: cfg.Tenant, Logger: log,
 		})

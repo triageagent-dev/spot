@@ -937,6 +937,39 @@ func TestATurnThatStartedATaskPostsNoReplyToTheRequest(t *testing.T) {
 	}
 }
 
+// The supervisor has the last word on a reply in the bus: what it refuses is a
+// tool result the model reads, and nothing reaches the core.
+func TestAReplyTheSupervisorRefusesIsNotSent(t *testing.T) {
+	url, _ := fakeServer(t)
+	ctx := context.Background()
+	var asked []string
+	r := newRegistry(t, url, func(o *Options) {
+		o.Core.Allow = append(o.Core.Allow, "say_in_workspace")
+		o.ReplyCheck = func(replyTo string) string {
+			asked = append(asked, replyTo)
+			if replyTo == "$old" {
+				return "not sent: you answered the request \"$old\" already"
+			}
+			return ""
+		}
+	})
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := r.Call(ctx, "core__say_in_workspace", json.RawMessage(`{"text":"again","reply_to":"$old"}`)); !isErr || !strings.Contains(got, "answered the request") {
+		t.Errorf("a reply the supervisor refuses: %q %v", got, isErr)
+	}
+	if got, isErr := r.Call(ctx, "core__say_in_workspace", json.RawMessage(`{"text":"found it","reply_to":"$open"}`)); isErr {
+		t.Errorf("a reply the supervisor lets go: %q", got)
+	}
+	if got, isErr := r.Call(ctx, "core__say_in_workspace", json.RawMessage(`{"text":"a note"}`)); isErr {
+		t.Errorf("a message that answers nothing: %q", got)
+	}
+	if strings.Join(asked, ",") != "$old,$open" {
+		t.Errorf("the supervisor is asked about replies only: %v", asked)
+	}
+}
+
 func TestStartTaskIsUnknownWithoutTasks(t *testing.T) {
 	url, _ := fakeServer(t)
 	r := newRegistry(t, url, nil)

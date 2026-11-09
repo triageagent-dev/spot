@@ -50,6 +50,15 @@ type Options struct {
 	// the supervisor read it. A reply carries that hop plus one; the model does not
 	// set it.
 	RequestHop func(id string) (int, bool)
+	// ReadBus is given the result of every read of the bus the model makes, so
+	// the supervisor's book of requests and replies holds what the model read
+	// too. Nil = nothing is noted.
+	ReadBus func(text string)
+	// ReplyCheck is asked before a reply in the bus goes, with the id of the
+	// message it answers; it returns the refusal the model reads, or "" when the
+	// reply may go. The supervisor refuses a second answer to a request while a
+	// newer request of Tria's is open. Nil = every reply goes.
+	ReplyCheck func(replyTo string) string
 	// RoomSince gives, for a room, the timestamp (ms) of the newest message the
 	// last finished turn could see; read_workspace_room is then asked only for
 	// what is newer, unless the model names its own since_ts. Nil or 0 = no
@@ -432,6 +441,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 		if refusal := r.quickLineRefusal(args); refusal != "" {
 			return refusal, true
 		}
+		if refusal := r.replyRefusal(args); refusal != "" {
+			return refusal, true
+		}
 		var refusal string
 		if args, refusal = r.withHop(args); refusal != "" {
 			return refusal, true
@@ -465,6 +477,9 @@ func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage)
 		}
 		if rt.server == CoreServer && rt.tool == readWorkspaceRoom && !res.IsError {
 			r.noteHops(res.Text)
+			if r.o.ReadBus != nil {
+				r.o.ReadBus(res.Text)
+			}
 		}
 		return r.fence(rt, r.cut(res.Text)), res.IsError
 	case ctx.Err() != nil:
@@ -742,6 +757,23 @@ func (r *Registry) quickLineRefusal(args json.RawMessage) string {
 		return ""
 	}
 	return "not sent: you started a task in this turn, and the task posts the answer. A line from you now would reach the person apart from it and answer them twice. Say nothing in the bus and finish; the goal of the task must say to post the result with reply_to the request id."
+}
+
+// replyRefusal is the supervisor's word on a reply in the bus (ReplyCheck): a
+// second answer to a request already answered, while a newer request of Tria's
+// waits, is refused with the open request named. A message that answers
+// nothing is not asked about.
+func (r *Registry) replyRefusal(args json.RawMessage) string {
+	if r.o.ReplyCheck == nil {
+		return ""
+	}
+	var m struct {
+		ReplyTo string `json:"reply_to"`
+	}
+	if json.Unmarshal(args, &m) != nil || m.ReplyTo == "" {
+		return ""
+	}
+	return r.o.ReplyCheck(m.ReplyTo)
 }
 
 // requestHop is the hop of a request: from what this registry read in the turn,
