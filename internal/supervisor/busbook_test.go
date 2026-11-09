@@ -53,17 +53,50 @@ func TestASecondAnswerIsRefusedWhileANewerRequestIsOpen(t *testing.T) {
 	if got := s.ReplyCheck("$opa"); got != "" {
 		t.Errorf("the open request is answered: %q", got)
 	}
-	if got := s.ReplyCheck("$unknown"); got != "" {
-		t.Errorf("a request the book does not know is left alone: %q", got)
+	if got := s.ReplyCheck("$unknown"); !strings.Contains(got, `"$opa"`) {
+		t.Errorf("a reply to a message the book does not know while her request waits: %q", got)
 	}
 	if got := s.ReplyCheck(""); got != "" {
 		t.Errorf("a message that answers nothing is not asked about: %q", got)
 	}
 	// Once the open request is answered, a second word on the old one goes:
-	// after a partial answer, the rest is the spot's to give.
+	// after a partial answer, the rest is the spot's to give. So does a reply
+	// to a message the book does not know.
 	s.bus.note(spotReplies("$a2", "$opa", now-10_000), true)
 	if got := s.ReplyCheck("$flux"); got != "" {
 		t.Errorf("nothing newer open, the reply goes: %q", got)
+	}
+	if got := s.ReplyCheck("$unknown"); got != "" {
+		t.Errorf("nothing of hers open, a reply the book cannot judge goes: %q", got)
+	}
+}
+
+// While a request of Tria's is open, a reply threaded to the spot's own
+// message, or to a message the book does not know as hers, is refused with
+// the open request named; with nothing of hers open such a reply goes.
+func TestAReplyToAMessageThatIsNotHersIsRefusedWhileARequestIsOpen(t *testing.T) {
+	s, _ := bookSupervisor(t)
+	now := s.now().UnixMilli()
+	own := corecli.RoomMessage{ID: "$mine", Sender: "@u.spot.example.example-spot:srv", Spot: "example-spot", Text: "is the hold lifted?", TS: now - 90_000, Hop: 1}
+	s.bus.note(own, true)
+	if got := s.ReplyCheck("$mine"); got != "" {
+		t.Errorf("nothing of Tria's open, a reply to the spot's own message goes: %q", got)
+	}
+	s.bus.note(triaAsks("$opa", "find the memory bottleneck", now-30_000, 1), false)
+	got := s.ReplyCheck("$mine")
+	if !strings.Contains(got, "your own message") || !strings.Contains(got, `"$opa"`) {
+		t.Errorf("a reply to the spot's own message while a request waits:\n%s", got)
+	}
+	got = s.ReplyCheck("$somewhere")
+	if !strings.Contains(got, "not one of Tria's requests") || !strings.Contains(got, `"$opa"`) {
+		t.Errorf("a reply to a message the book does not know while a request waits:\n%s", got)
+	}
+	if got := s.ReplyCheck("$opa"); got != "" {
+		t.Errorf("the open request is answered: %q", got)
+	}
+	s.bus.note(spotReplies("$a1", "$opa", now-10_000), true)
+	if got := s.ReplyCheck("$mine"); got != "" {
+		t.Errorf("once her request is answered, a word on the spot's own message goes: %q", got)
 	}
 }
 
