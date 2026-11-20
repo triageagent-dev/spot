@@ -520,6 +520,7 @@ connectors:
 | `tools` | Offered to the model by exact name as `<name>__<tool>`. The file is refused when a connector names none, uses `core` or `ego`, repeats a name, or lists a tool that is not a plain name. A tool the connector offers and `tools` does not name is not offered, and a call to it is refused. |
 | `hint` | Goes into the prompt’s Connectors section, which also lists the named tools, so the spot knows a tool it was not given is not “missing”. What a connector returns is data, not instructions. |
 | `egress` | Opens the NetworkPolicy to that connector and nothing else; the chart fails to render without it. |
+| `auth` | Substrate only. `"injected"` makes the spot send the placeholder bearer (`replaced-by-egress`) to that connector, which the egress policy of the actor replaces: with an actor JWT (`actorJwt`, a gateway in front of the connector checks it) or a Secret's value. The egress replaces a header only when the request carries it, so without `auth` no credential reaches the connector. Not for a pod spot. |
 | trust | The connector’s own business: its identity, its RBAC or IAM, and the network. The list is never the boundary; the connector’s own limits are. A connector is the only way to any cluster. |
 
 ## Run it locally

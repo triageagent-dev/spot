@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/triageagent-dev/spot/internal/config"
+	"github.com/triageagent-dev/spot/internal/injected"
 )
 
 func TestVersionAndUsage(t *testing.T) {
@@ -45,6 +46,17 @@ func TestOtherServersCarryNoTokenForConnectors(t *testing.T) {
 	}
 	if len(otherServers(config.Config{})) != 0 {
 		t.Fatal("no ego, no connectors, no servers")
+	}
+}
+
+func TestAConnectorWithInjectedAuthSendsThePlaceholderBearer(t *testing.T) {
+	cfg := config.Config{Connectors: []config.Connector{
+		{Name: "plain", URL: "http://a.invalid/mcp", Tools: []string{"t"}},
+		{Name: "gated", URL: "http://b.invalid/mcp", Tools: []string{"t"}, Auth: config.ConnectorAuthInjected},
+	}}
+	got := otherServers(cfg)
+	if len(got) != 2 || got[0].TokenFile != "" || got[1].TokenFile != injected.File {
+		t.Fatalf("%+v", got)
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/triageagent-dev/spot/internal/config"
 	"github.com/triageagent-dev/spot/internal/corecli"
 	"github.com/triageagent-dev/spot/internal/identity"
+	"github.com/triageagent-dev/spot/internal/injected"
 	"github.com/triageagent-dev/spot/internal/ledger"
 	"github.com/triageagent-dev/spot/internal/llm"
 	"github.com/triageagent-dev/spot/internal/prompt"
@@ -334,14 +335,19 @@ func coreServer(cfg config.Config) tools.Server {
 }
 
 // otherServers are ego, when configured, and the connectors. A connector holds
-// its own credentials, so the spot sends it none.
+// its own credentials, so the spot sends it none, except the placeholder bearer
+// of a connector with auth "injected" (substrate), which the egress replaces.
 func otherServers(cfg config.Config) []tools.Server {
 	var out []tools.Server
 	if cfg.EgoMCPURL != "" {
 		out = append(out, tools.Server{Name: tools.EgoServer, URL: cfg.EgoMCPURL, TokenFile: cfg.OtelTokenFile, Allow: tools.EgoTools})
 	}
 	for _, c := range cfg.Connectors {
-		out = append(out, tools.Server{Name: c.Name, URL: c.URL, Allow: c.Tools})
+		srv := tools.Server{Name: c.Name, URL: c.URL, Allow: c.Tools}
+		if c.Auth == config.ConnectorAuthInjected {
+			srv.TokenFile = injected.File
+		}
+		out = append(out, srv)
 	}
 	return out
 }
