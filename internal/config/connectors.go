@@ -23,6 +23,10 @@ type Connector struct {
 	// Hint is one or two plain sentences for the spot's prompt: what the
 	// connector reaches and when to use it.
 	Hint string `json:"hint"`
+	// Writes names the tools in Tools that change state. A turn whose standing
+	// notes were read may call the others at once; a write still waits for the
+	// model's search of the subject. Empty = no tool is known to be a read.
+	Writes []string `json:"writes,omitempty"`
 	// Auth is empty, or AuthInjected: a substrate actor holds no credential, so
 	// it sends the placeholder bearer and the egress in front of the connector
 	// replaces it (with an actor JWT or a Secret's value). Without it no header
@@ -87,6 +91,15 @@ func parseConnectors(b []byte, flagName string) ([]Connector, error) {
 		}
 		if c.Auth != "" && c.Auth != ConnectorAuthInjected {
 			errs = append(errs, fmt.Errorf("%s: auth %q is not %q", where, c.Auth, ConnectorAuthInjected))
+		}
+		for _, w := range c.Writes {
+			found := false
+			for _, t := range c.Tools {
+				found = found || t == w
+			}
+			if !found {
+				errs = append(errs, fmt.Errorf("%s: write %q is not one of its tools", where, w))
+			}
 		}
 		if len(c.Tools) == 0 {
 			errs = append(errs, fmt.Errorf("%s: tools must name the tools the spot may call; none means the connector is unused", where))

@@ -40,6 +40,7 @@ func TestLoadConnectorsRefusesWhatWouldWidenTheSpot(t *testing.T) {
 		"not http":         `[{"name":"x","url":"ftp://a/mcp","tools":["t"]}]`,
 		"wildcard tool":    `[{"name":"x","url":"http://a/mcp","tools":["*"]}]`,
 		"tool with a rule": `[{"name":"x","url":"http://a/mcp","tools":["t(*)"]}]`,
+		"write not a tool": `[{"name":"x","url":"http://a/mcp","tools":["t"],"writes":["u"]}]`,
 		"not json":         `{`,
 	} {
 		if _, err := LoadConnectors(writeConnectors(t, body)); err == nil {

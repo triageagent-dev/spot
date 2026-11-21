@@ -393,6 +393,41 @@ func TestToolCallsPastTheCapAreRefusedAndTheModelWrapsUp(t *testing.T) {
 	}
 }
 
+// The last calls of a turn are kept for the note and the answer: a turn that
+// spent its calls on reading still tells the person what it found.
+func TestTheLastCallsOfATurnAreKeptForTheNoteAndTheAnswer(t *testing.T) {
+	ft := newFakeTools()
+	work := llm.Call{Name: "core__list_open_issues"}
+	note := llm.Call{Name: "core__upsert_memory_item"}
+	say := llm.Call{Name: "core__say_in_workspace"}
+	f := llm.NewFake(
+		llm.ToolUse(u, work, work, work, work, work), // 5 of 8: the work is used up
+		llm.ToolUse(u, work),                         // more work is refused, the answer is not
+		llm.ToolUse(u, note, say),
+		llm.EndTurn("done", u))
+	res := newAgent(f, ft, func(o *Options) { o.MaxToolCalls = 8 }).Run(context.Background(), Turn{Prompt: "p"})
+	if res.Failed || res.ToolLimit || res.ToolCalls != 7 || res.ReserveRefused != 1 {
+		t.Fatalf("calls %v result %+v", ft.calls, res)
+	}
+	if got := ft.calls[len(ft.calls)-1]; got != "core__say_in_workspace" {
+		t.Errorf("the answer did not run: %v", ft.calls)
+	}
+	rs := f.Requests()[2].Messages[4].Content
+	if len(rs) != 1 || !rs[0].IsError || !strings.Contains(rs[0].Content, "kept for your note and your answer") {
+		t.Errorf("refusal: %+v", rs)
+	}
+	if first := f.Requests()[0].Messages[0].Content[0].Text; !strings.Contains(first, "The last 3 of them are kept for your note and your answer") {
+		t.Errorf("the first message does not say it: %q", first)
+	}
+}
+
+// A small cap keeps nothing back: the existing cap tests use 2 and 3.
+func TestASmallCapKeepsNoCallsBack(t *testing.T) {
+	if ReserveFor(3) != 0 || ReserveFor(7) != 0 || ReserveFor(8) != 3 || ReserveFor(20) != 3 {
+		t.Errorf("%d %d %d %d", ReserveFor(3), ReserveFor(7), ReserveFor(8), ReserveFor(20))
+	}
+}
+
 func TestAModelThatKeepsCallingToolsAfterTheCapEndsTheTurn(t *testing.T) {
 	ft := newFakeTools()
 	call := llm.Call{Name: "core__list_open_issues"}

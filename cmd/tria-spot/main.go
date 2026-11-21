@@ -343,7 +343,7 @@ func otherServers(cfg config.Config) []tools.Server {
 		out = append(out, tools.Server{Name: tools.EgoServer, URL: cfg.EgoMCPURL, TokenFile: cfg.OtelTokenFile, Allow: tools.EgoTools})
 	}
 	for _, c := range cfg.Connectors {
-		srv := tools.Server{Name: c.Name, URL: c.URL, Allow: c.Tools}
+		srv := tools.Server{Name: c.Name, URL: c.URL, Allow: c.Tools, Writes: c.Writes}
 		if c.Auth == config.ConnectorAuthInjected {
 			srv.TokenFile = injected.File
 		}
