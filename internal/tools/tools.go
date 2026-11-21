@@ -39,6 +39,12 @@ type Server struct {
 	Allow    []string
 	Deny     []string
 	AllowAll bool
+	// Writes are the tools of a connector that change state. When a connector
+	// names them, every other tool it offers is a read, which a turn whose
+	// standing notes the supervisor read may call without searching the subject
+	// first; a write still waits for that search. Empty = the connector does not
+	// say, and all its tools wait.
+	Writes []string
 }
 
 // Options configure a Registry.
@@ -143,6 +149,9 @@ const MaxTasksPerTurn = 3
 type route struct {
 	server string
 	tool   string
+	// read is a connector tool its server did not name as a write (see
+	// Server.Writes).
+	read bool
 }
 
 type session struct {
@@ -350,7 +359,7 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 				r.log.Warn("tool skipped: its name is not one the model API takes", "server", l.srv.Name, "tool", t.Name)
 				continue
 			}
-			routes[name] = route{server: l.srv.Name, tool: t.Name}
+			routes[name] = route{server: l.srv.Name, tool: t.Name, read: len(l.srv.Writes) > 0 && !inList(l.srv.Writes, t.Name)}
 			defs = append(defs, llm.ToolDef{Name: name, Description: t.Description, InputSchema: t.InputSchema})
 		}
 	}
@@ -521,6 +530,9 @@ func (r *Registry) heldForRecall(rt route) bool {
 	if rt.server == EgoServer {
 		return false
 	}
+	if rt.read && r.notes {
+		return false
+	}
 	if rt.server == CoreServer {
 		if r.notes {
 			return false
@@ -606,6 +618,21 @@ func IsBuiltin(name string) bool {
 		name = name[i+1:]
 	}
 	return isBuiltinName(name)
+}
+
+// answerTools are the core tools a turn may still call in the calls kept back
+// for its answer: the read the post gate wants, the note, and the post.
+var answerTools = []string{"search_memory", "get_memory_context", "upsert_memory_item", "supersede_memory_item", "say_in_workspace"}
+
+// IsAnswerTool reports whether name is one of the core tools that write the
+// turn's note and answer (see answerTools), with or without a prefix the model
+// added.
+func IsAnswerTool(name string) bool {
+	if i := strings.LastIndexAny(name, ":."); i >= 0 && i < len(name)-1 {
+		name = name[i+1:]
+	}
+	name = strings.TrimPrefix(name, CoreServer+Sep)
+	return inList(answerTools, name)
 }
 
 // IsStartTask reports whether name is the start_task tool, with or without a

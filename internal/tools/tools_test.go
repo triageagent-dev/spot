@@ -1046,6 +1046,45 @@ func TestTheNotesTheSupervisorReadCountAsTheSearchForTheCoresToolsOnly(t *testin
 	}
 }
 
+// A connector that names its writes lets its reads through once the supervisor
+// read the standing notes; its writes still wait for the model's search of the
+// subject, so a person's rule about that subject is seen before a change.
+func TestAConnectorsReadsNeedNoSearchOnceTheNotesWereReadButItsWritesDo(t *testing.T) {
+	url, _ := fakeServer(t)
+	r := newRegistry(t, url, func(o *Options) {
+		o.RecallFirst = true
+		o.Core.Allow = []string{"search_memory", "list_open_issues"}
+		o.Others = []Server{
+			{Name: "kube", URL: url, Allow: []string{"get_pods", "big_tool"}, Writes: []string{"big_tool"}},
+			{Name: "plain", URL: url, Allow: []string{"get_pods"}},
+		}
+	})
+	ctx := context.Background()
+	r.Begin()
+	if _, err := r.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c, isErr := r.Call(ctx, "kube__get_pods", nil); !isErr || !strings.Contains(c, "search your notes first") {
+		t.Errorf("a read before the notes were read: %q %v", c, isErr)
+	}
+	r.NotesRead()
+	if c, _ := r.Call(ctx, "kube__get_pods", nil); strings.Contains(c, "search your notes first") {
+		t.Errorf("a named connector's read was held after the notes were read: %q", c)
+	}
+	if c, isErr := r.Call(ctx, "kube__big_tool", nil); !isErr || !strings.Contains(c, "search your notes first") {
+		t.Errorf("a write ran on the supervisor's read alone: %q %v", c, isErr)
+	}
+	if c, isErr := r.Call(ctx, "plain__get_pods", nil); !isErr || !strings.Contains(c, "search your notes first") {
+		t.Errorf("a connector that names no writes keeps every tool held: %q %v", c, isErr)
+	}
+	if _, isErr := r.Call(ctx, "core__search_memory", json.RawMessage(`{"query":"scale"}`)); isErr {
+		t.Fatal("search_memory")
+	}
+	if c, _ := r.Call(ctx, "kube__big_tool", nil); strings.Contains(c, "search your notes first") {
+		t.Errorf("a write is still held after the search: %q", c)
+	}
+}
+
 func TestTheBusIsTheOnlyRoomAToolReachesAndATaskStaysInItsWorkspace(t *testing.T) {
 	// A workspace tool goes to the bus, whether or not the model named it, and
 	// never to another room; a spot is not named, the core takes the token's.

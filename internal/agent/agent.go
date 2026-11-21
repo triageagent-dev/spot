@@ -61,6 +61,9 @@ type Turn struct {
 
 // Result is what a turn did.
 type Result struct {
+	// ReserveRefused counts the calls refused because only the calls kept for
+	// the note and the answer were left (Caps.Reserve).
+	ReserveRefused int
 	// Text is the final assistant text, for logs; nobody reads it.
 	Text string
 	// Summary is what the model passed to finish.
@@ -193,6 +196,9 @@ func FirstMessage(prompt string, down []string, c Caps) string {
 		first += fmt.Sprintf("\nThe tools of these servers are not available in this turn, because they could not be reached: %s.\n", strings.Join(down, ", "))
 	}
 	first += fmt.Sprintf("\nYou have at most %d model steps and %d tool calls in this turn.\n", c.MaxSteps, c.MaxToolCalls)
+	if c.Reserve > 0 {
+		first += fmt.Sprintf("The last %d of them are kept for your note and your answer: do the work in the first %d, so that what you found reaches the person.\n", c.Reserve, c.MaxToolCalls-c.Reserve)
+	}
 	if c.MaxTurnTokens > 0 {
 		first += fmt.Sprintf("The turn also ends at about %dk tokens: every step sends the whole conversation again, so a long run costs most.\n", c.MaxTurnTokens/1000)
 	}
@@ -355,7 +361,7 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 		return res
 	}
 
-	first := FirstMessage(t.Prompt, a.o.Tools.Down(), Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens})
+	first := FirstMessage(t.Prompt, a.o.Tools.Down(), Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens, Reserve: ReserveFor(a.o.MaxToolCalls)})
 	steps := Steps{
 		Complete: func(req llm.Request) (llm.Response, error) {
 			chat := root.Chat(a.o.Model, req)
@@ -390,10 +396,10 @@ func (a *Agent) Run(ctx context.Context, t Turn) (res Result) {
 	if a.o.LogContent {
 		steps.Text = func(step int, text string) { log.Debug("model text", "step", step, "text", clip(text, 600)) }
 	}
-	loop := RunLoop(steps, Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens},
+	loop := RunLoop(steps, Caps{MaxSteps: a.o.MaxSteps, MaxToolCalls: a.o.MaxToolCalls, MaxTurnTokens: a.o.MaxTurnTokens, Reserve: ReserveFor(a.o.MaxToolCalls)},
 		Request{System: a.o.System, Tools: defs, MaxTokens: a.o.MaxTokens, Effort: a.o.Effort, Model: a.o.Model}, first, log)
 	// The deferred closure above fills the rest of res from the world.
-	res.Text, res.Steps, res.ToolCalls, res.Usage, res.ContextTokens, res.Model = loop.Text, loop.Steps, loop.ToolCalls, loop.Usage, loop.ContextTokens, loop.Model
+	res.Text, res.Steps, res.ToolCalls, res.ReserveRefused, res.Usage, res.ContextTokens, res.Model = loop.Text, loop.Steps, loop.ToolCalls, loop.ReserveRefused, loop.Usage, loop.ContextTokens, loop.Model
 	res.StepsExhausted, res.ToolLimit, res.TokenLimit, res.Failed, res.AuthFailed, res.Err = loop.StepsExhausted, loop.ToolLimit, loop.TokenLimit, loop.Failed, loop.AuthFailed, loop.Err
 	return res
 }

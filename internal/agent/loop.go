@@ -38,6 +38,20 @@ type Caps struct {
 	MaxSteps      int
 	MaxToolCalls  int
 	MaxTurnTokens int64
+	// Reserve is how many of the last tool calls only the note and the answer
+	// may use (tools.IsAnswerTool): the work stops that many calls before the
+	// cap, so a turn that spent its calls on reading still has the ones that
+	// tell the person what it found. 0 = none kept back.
+	Reserve int
+}
+
+// ReserveFor is the calls kept for the answer in a turn of max tool calls: 3
+// (a read, the note, the post) once the cap is large enough to leave room for work.
+func ReserveFor(max int) int {
+	if max >= 8 {
+		return 3
+	}
+	return 0
 }
 
 // Request is the fixed part of every model request of a turn.
@@ -211,6 +225,14 @@ func runTools(s Steps, c Caps, calls []llm.Block, res *Result) (out []llm.Block,
 			out[i] = llm.ToolResult(call.ID, text, true)
 			continue
 		}
+		if text := reserveText(c, res, call.Name); text != "" && !tools.IsBuiltin(call.Name) {
+			// Not the cap: the model may still answer. It is refused, and not
+			// told the turn is over, unless it keeps asking for more work.
+			res.ReserveRefused++
+			refused = refused || res.ReserveRefused > c.Reserve
+			out[i] = llm.ToolResult(call.ID, text, true)
+			continue
+		}
 		content, isErr := callTool(s, call, res)
 		held = held || (isErr && tools.Held(content))
 		out[i] = llm.ToolResult(call.ID, content, isErr)
@@ -249,6 +271,18 @@ func callTool(s Steps, c llm.Block, res *Result) (content string, isErr bool) {
 func overTokens(c Caps, res *Result) bool {
 	return c.MaxTurnTokens > 0 && res.Usage.Billable() >= c.MaxTurnTokens
 }
+
+// reserveText is the refusal for a call that is not the note or the answer
+// once only the calls kept for those are left, or empty.
+func reserveText(c Caps, res *Result, name string) string {
+	if c.Reserve <= 0 || res.ToolCalls < c.MaxToolCalls-c.Reserve || tools.IsAnswerTool(name) {
+		return ""
+	}
+	return fmt.Sprintf(reserveRefusalText, c.Reserve)
+}
+
+const reserveRefusalText = "not run: the last %d tool calls of this turn are kept for your note and your answer. " +
+	"Write your note (upsert_memory_item) and post your answer (say_in_workspace, reply_to the request) now, with what you found and what you did, then finish."
 
 // limitText is the refusal for a tool call when a cap is spent, or empty.
 func limitText(c Caps, res *Result) string {
