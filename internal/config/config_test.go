@@ -469,6 +469,21 @@ func TestConnectorsCanBeGivenInlineForARuntimeWithNoFile(t *testing.T) {
 	}
 }
 
+func TestConnectorAuthInjectedIsForAnActorOnly(t *testing.T) {
+	js := `[{"name":"gated","url":"http://gw.invalid/mcp","tools":["t"],"auth":"injected"}]`
+	c, err := Parse(with(substrateArgs, "--connectors-json", js), io.Discard)
+	if err != nil || len(c.Connectors) != 1 || c.Connectors[0].Auth != ConnectorAuthInjected {
+		t.Fatalf("%+v %v", c.Connectors, err)
+	}
+	if _, err := Parse(with(substrateArgs, "--connectors-json", `[{"name":"gated","url":"http://gw.invalid/mcp","tools":["t"],"auth":"basic"}]`), io.Discard); err == nil {
+		t.Error("an unknown auth was accepted")
+	}
+	deployment := []string{"--tenant", "example", "--core-mcp-url", "http://core.invalid/mcp", "--connectors-json", js}
+	if _, err := Parse(append(deployment, "--anthropic-key-file", "/k"), io.Discard); err == nil {
+		t.Error("a pod spot has no egress to replace the placeholder, yet auth injected was accepted")
+	}
+}
+
 func TestAnActorReachesEgoOnlyWithAnInjectedToken(t *testing.T) {
 	// No token file, but the egress replaces a bearer only if the spot sends one.
 	ok := with(substrateArgs, "--otel-endpoint", "http://ego.invalid:4318", "--ego-mcp-url", "http://ego.invalid:8001/mcp", "--otel-token-injected")

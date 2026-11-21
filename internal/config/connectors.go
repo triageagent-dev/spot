@@ -23,7 +23,15 @@ type Connector struct {
 	// Hint is one or two plain sentences for the spot's prompt: what the
 	// connector reaches and when to use it.
 	Hint string `json:"hint"`
+	// Auth is empty, or AuthInjected: a substrate actor holds no credential, so
+	// it sends the placeholder bearer and the egress in front of the connector
+	// replaces it (with an actor JWT or a Secret's value). Without it no header
+	// is sent and the egress has nothing to replace.
+	Auth string `json:"auth,omitempty"`
 }
+
+// ConnectorAuthInjected is the one Auth a connector may name.
+const ConnectorAuthInjected = "injected"
 
 var (
 	connectorName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,29}$`)
@@ -76,6 +84,9 @@ func parseConnectors(b []byte, flagName string) ([]Connector, error) {
 		seen[c.Name] = true
 		if !strings.HasPrefix(c.URL, "http://") && !strings.HasPrefix(c.URL, "https://") {
 			errs = append(errs, fmt.Errorf("%s: url must be http:// or https://", where))
+		}
+		if c.Auth != "" && c.Auth != ConnectorAuthInjected {
+			errs = append(errs, fmt.Errorf("%s: auth %q is not %q", where, c.Auth, ConnectorAuthInjected))
 		}
 		if len(c.Tools) == 0 {
 			errs = append(errs, fmt.Errorf("%s: tools must name the tools the spot may call; none means the connector is unused", where))

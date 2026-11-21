@@ -455,6 +455,11 @@ func (c *Config) Validate() error {
 	if c.OtelTokenInjected && (!c.Substrate() || c.OtelTokenFile != injected.File) {
 		errs = append(errs, errors.New("--otel-token-injected needs --runtime=substrate and not --otel-token-file"))
 	}
+	for _, cn := range c.Connectors {
+		if cn.Auth == ConnectorAuthInjected && !c.Substrate() {
+			errs = append(errs, fmt.Errorf("connector %q: auth injected needs --runtime=substrate: only the egress of an actor replaces the placeholder", cn.Name))
+		}
+	}
 	if c.CoreAPIURL != "" && !strings.HasPrefix(c.CoreAPIURL, "http://") && !strings.HasPrefix(c.CoreAPIURL, "https://") {
 		errs = append(errs, errors.New("--core-api-url must be an http:// or https:// URL"))
 	}

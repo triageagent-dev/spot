@@ -1936,6 +1936,28 @@ func TestStatsSayWhoPausedTheSpot(t *testing.T) {
 	})
 }
 
+// The hourly ceiling is its own pause: the stats name it, so the person who
+// asked is not told "workspace cap".
+func TestPauseReasonNamesTheHourlyCeiling(t *testing.T) {
+	led, err := ledger.New(t.TempDir())
+	must(t, err)
+	now := time.Date(2026, 10, 21, 10, 30, 0, 0, time.UTC)
+	cfg := config.Config{HourlyTokenCeil: 200}
+	s := New(cfg, led, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.SetClock(func() time.Time { return now })
+	if got := s.pauseReason(); got != "workspace-cap" {
+		t.Fatalf("nothing over: %q", got) // paused() is false then; the stats name a pause only while paused
+	}
+	s.recent = []tokenAt{{at: now.Add(-10 * time.Minute), tokens: 220}}
+	if got := s.pauseReason(); got != "hourly-ceiling" {
+		t.Fatalf("hour over the ceiling: %q", got)
+	}
+	s.recent = []tokenAt{{at: now.Add(-2 * time.Hour), tokens: 220}}
+	if got := s.pauseReason(); got == "hourly-ceiling" {
+		t.Fatalf("turn older than an hour counted: %q", got)
+	}
+}
+
 func TestTheCoresCountOfTheSpotIsTheFloorOfItsCounter(t *testing.T) {
 	trig := newFakeTrigger(true)
 	h := newHarness(t, func(c *config.Config) { c.PollInterval = time.Hour })
