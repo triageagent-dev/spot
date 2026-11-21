@@ -589,6 +589,22 @@ func (s *Supervisor) coreBlocked() bool {
 	return ok && b.Blocked
 }
 
+// pauseReason names what holds the spot back, in the order pauseForCeiling
+// decides in: its own daily ceiling, the core's cap, then its hourly ceiling
+// (which only pauses when neither of those holds).
+func (s *Supervisor) pauseReason() string {
+	_, hourly := s.hourlyUntil()
+	switch {
+	case s.led.CeilingReached(s.cfg.DailyTokenCeil):
+		return "own-ceiling"
+	case s.coreBlocked():
+		return "workspace-cap"
+	case hourly:
+		return "hourly-ceiling"
+	}
+	return "workspace-cap"
+}
+
 func (s *Supervisor) pauseForCeiling() {
 	if !s.led.CeilingReached(s.cfg.DailyTokenCeil) && !s.coreBlocked() {
 		if until, ok := s.hourlyUntil(); ok {
@@ -2185,9 +2201,9 @@ func (s *Supervisor) reportStats(force bool) {
 	st.Config = s.reportedConfig()
 	st.Tasks = s.taskLines()
 	if s.status.State == "paused-ceiling" {
-		st.Pause = "workspace-cap"
-		if s.led.CeilingReached(s.cfg.DailyTokenCeil) {
-			st.Pause = "own-ceiling"
+		st.Pause = s.pauseReason()
+		if n := s.status.NextWake; n != nil {
+			st.PauseUntil = n.At
 		}
 	}
 	if t := s.status.LastTurn; t != nil {

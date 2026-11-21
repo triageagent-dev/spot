@@ -200,8 +200,11 @@ type Stats struct {
 	Triggers        string  `json:"triggers,omitempty"`
 	Version         string  `json:"version,omitempty"`
 	// Pause says why the spot is not waking: "own-ceiling" (its own daily
-	// ceiling) or "workspace-cap" (the core's cap); empty when it is not paused.
-	Pause string `json:"pause,omitempty"`
+	// ceiling), "hourly-ceiling" (its own tokens-an-hour ceiling, which clears
+	// as the hour ages) or "workspace-cap" (the core's cap); empty when it is
+	// not paused. PauseUntil is when it expects to wake again (RFC 3339).
+	Pause      string `json:"pause,omitempty"`
+	PauseUntil string `json:"pauseUntil,omitempty"`
 	// Config is how the spot is set up, so the core knows its limits.
 	Config *Config `json:"config,omitempty"`
 	// Tasks is every wake the spot has in hand, running or waiting for a place,
