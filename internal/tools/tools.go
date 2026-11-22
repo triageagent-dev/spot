@@ -66,6 +66,11 @@ type Options struct {
 	RoomSince func(room string) int64
 	// Core is the core's MCP server. Without it a turn cannot run.
 	Core Server
+	// Reauth says hello to the core again and takes a new access token into the
+	// core's token file. When the core refuses the token on connect (an actor
+	// resumed from a suspend holds one the core has since revoked), the registry
+	// calls it once and connects again. Nil = no second try.
+	Reauth func(ctx context.Context) error
 	// Others are ego and the connectors. One that cannot be reached is left
 	// out of the turn.
 	Others []Server
@@ -305,6 +310,16 @@ func (r *Registry) List(ctx context.Context) ([]llm.ToolDef, error) {
 			defer cancel()
 			l := listed{srv: s}
 			l.conn, l.err = mcptools.Connect(cctx, s.URL, s.TokenFile, r.o.CallTimeout+5*time.Second)
+			if i == 0 && l.err != nil && r.o.Reauth != nil && mcptools.Unauthorized(l.err) {
+				// The core said "authorization required": the token is one it no
+				// longer takes. Say hello again and connect once more.
+				r.log.Warn("the core refused the access token; saying hello again", "err", l.err)
+				if err := r.o.Reauth(cctx); err != nil {
+					r.log.Warn("hello again failed", "err", err)
+				} else {
+					l.conn, l.err = mcptools.Connect(cctx, s.URL, s.TokenFile, r.o.CallTimeout+5*time.Second)
+				}
+			}
 			if l.err == nil {
 				if l.tools, l.err = l.conn.Tools(cctx); l.err != nil {
 					l.conn.Close()

@@ -75,6 +75,17 @@ func Connect(ctx context.Context, url, tokenFile string, httpTimeout time.Durati
 	return c, nil
 }
 
+// Unauthorized reports whether err says the server refused the access token
+// (HTTP 401, which the client reads as "authorization required").
+func Unauthorized(err error) bool {
+	if err == nil {
+		return false
+	}
+	return client.IsOAuthAuthorizationRequiredError(err) ||
+		strings.Contains(err.Error(), "authorization required") ||
+		strings.Contains(err.Error(), "401")
+}
+
 func readToken(path string) string {
 	if tok, ok := injected.Read(path); ok {
 		return tok

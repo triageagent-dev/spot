@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1136,5 +1139,71 @@ func TestAReplyInTheBusCarriesTheNextHopAndTheModelCannotSetIt(t *testing.T) {
 	r.Begin()
 	if h, _ := hopOf(`{"reply_to":"$read"}`); h != 2 {
 		t.Errorf("a new turn remembers the last turn's reads: %d", h)
+	}
+}
+
+// An actor resumed from a suspend holds an access token the core has revoked
+// since: the core answers 401 on connect. The registry says hello again (Reauth,
+// which saves the new token) and connects once more; without Reauth, or when the
+// hello fails, the core is down for the turn.
+func TestCoreRefusingTheTokenIsRetriedAfterAFreshHello(t *testing.T) {
+	back, _ := fakeServer(t)
+	target, err := url.Parse(back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var mu sync.Mutex
+	var refused int
+	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh-token" {
+			mu.Lock()
+			refused++
+			mu.Unlock()
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(gate.Close)
+
+	var tokenFile string
+	var hellos int
+	r := newRegistry(t, gate.URL+target.Path, func(o *Options) {
+		tokenFile = o.Core.TokenFile
+		o.Reauth = func(context.Context) error {
+			hellos++
+			return os.WriteFile(tokenFile, []byte("fresh-token\n"), 0o600)
+		}
+	})
+	r.Begin()
+	defs, err := r.List(context.Background())
+	if err != nil {
+		t.Fatalf("list after a fresh hello: %v", err)
+	}
+	if hellos != 1 {
+		t.Errorf("hellos = %d, want 1", hellos)
+	}
+	mu.Lock()
+	if refused == 0 {
+		t.Error("the stale token was never refused: the test does not test the retry")
+	}
+	mu.Unlock()
+	if len(defs) == 0 {
+		t.Error("no tools after the retry")
+	}
+
+	// A hello that fails leaves the core down; no hook means no second try.
+	r2 := newRegistry(t, gate.URL+target.Path, func(o *Options) {
+		o.Reauth = func(context.Context) error { return errors.New("the core does not take the hello") }
+	})
+	r2.Begin()
+	if _, err := r2.List(context.Background()); !errors.Is(err, ErrCoreDown) {
+		t.Errorf("failed hello: %v", err)
+	}
+	r3 := newRegistry(t, gate.URL+target.Path, nil)
+	r3.Begin()
+	if _, err := r3.List(context.Background()); !errors.Is(err, ErrCoreDown) {
+		t.Errorf("no hook: %v", err)
 	}
 }
