@@ -210,11 +210,17 @@ func (f *scriptTurner) Run(ctx context.Context, t agent.Turn) agent.Result {
 	}
 	next, summary := f.vals["next"], f.vals["summary"]
 	asked := f.vals["tasks"]
+	trace := f.vals["trace"]
 	f.mu.Unlock()
 
 	u := llm.Usage{Input: tin, Output: tout}
 	res := agent.Result{Usage: u, Steps: 2, ToolCalls: 3, Model: "fake-model", Text: "ok", Summary: summary, Duration: time.Second,
 		Trace: []agent.Step{{Kind: "model", Name: "fake-model", Ms: 12, Tokens: u.Billable()}, {Kind: "tool", Name: "core__list_open_issues", Ms: 3}}}
+	if trace == "idle" {
+		// A turn that only read its room and planned the next wake.
+		res.Trace = []agent.Step{{Kind: "model", Name: "fake-model", Ms: 12, Tokens: u.Billable()},
+			{Kind: "tool", Name: "core__read_workspace_room", Ms: 3}, {Kind: "tool", Name: "schedule_next"}, {Kind: "tool", Name: "finish"}}
+	}
 	if asked != "" {
 		var reqs []struct{ Title, Goal string }
 		_ = json.Unmarshal([]byte(asked), &reqs)
@@ -942,6 +948,64 @@ func TestQuietWakeMakesNoModelCall(t *testing.T) {
 	if in := h.file("stdin", 1); !strings.Contains(in, "Wake reason: edge") {
 		t.Errorf("the issue did not wake the agent:\n%s", in)
 	}
+}
+
+// A timer wake whose turn only read the room and planned the next wake is not
+// repeated: the wake the model planned at its end makes no model call, even
+// with an issue open, until something changes or idleReview has passed.
+func TestTimerWakeAfterATurnThatDidNothingMakesNoModelCall(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.SkipQuietWakes = true })
+	h.set("next", `{"after":"3m","why":"quiet tick: check the room"}`)
+	h.set("trace", "idle")
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1) // the startup wake: an issue is open
+
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(2) // the wake the model asked for runs, and does nothing
+
+	h.clock.Advance(4 * time.Minute)
+	h.waitFor("the quiet wake", func() bool {
+		st := h.status()
+		return st.State == "idle" && st.NextWake != nil && st.NextWake.Source == "quiet"
+	})
+	if h.turns() != 2 {
+		t.Fatalf("a model call for a wake planned by a turn that did nothing: %d turns", h.turns())
+	}
+
+	// Something changes: the model is asked again, and a turn that works ends the quiet.
+	h.set("trace", "")
+	h.core.setIssues(issue("a", "critical", 0))
+	h.waitIdle(3)
+	if in := h.file("stdin", 3); !strings.Contains(in, "Wake reason: edge") {
+		t.Errorf("the change did not wake the agent:\n%s", in)
+	}
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(4)
+}
+
+// After idleReview the model looks again, once, though nothing changed.
+func TestIdleTimerWakesAreReviewedAfterAWhile(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.SkipQuietWakes = true })
+	h.set("next", `{"after":"3m","why":"quiet tick"}`)
+	h.set("trace", "idle")
+	h.core.setIssues(issue("a", "warning", 0))
+	h.start()
+	defer h.stop()
+	h.waitIdle(1)
+	h.clock.Advance(4 * time.Minute)
+	h.waitIdle(2)
+	h.clock.Advance(3 * time.Hour)
+	h.waitFor("the quiet wake", func() bool {
+		st := h.status()
+		return st.State == "idle" && st.NextWake != nil && st.NextWake.Source == "quiet"
+	})
+	if h.turns() != 2 {
+		t.Fatalf("turns: %d", h.turns())
+	}
+	h.clock.Advance(idleReview)
+	h.waitIdle(3)
 }
 
 // With an issue open the startup wake runs.

@@ -87,6 +87,15 @@ func (l *Ledger) Path(name string) string { return filepath.Join(l.sup, name) }
 // every wake starts an empty one.
 type Session struct {
 	Running bool `json:"running,omitempty"` // a turn was in flight when this was written
+	// PlanSource is who made the plan the next timer wake belongs to: "agent"
+	// when the model asked for it, else the supervisor's own label (quiet,
+	// backoff, a default). Empty in a state written before this was kept.
+	PlanSource string `json:"planSource,omitempty"`
+	// Idle counts the timer wakes in a row whose turn did nothing but read the
+	// room and plan the next one.
+	Idle int `json:"idle,omitempty"`
+	// LastTurn is when the last model turn that did not fail ended, Unix ms.
+	LastTurn int64 `json:"lastTurn,omitempty"`
 }
 
 // LoadSession returns the saved session; a missing or unreadable file is an
