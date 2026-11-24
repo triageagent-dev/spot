@@ -67,6 +67,7 @@ type Link struct {
 	ready     chan struct{}
 	reauth    chan struct{}
 	frameSlot chan struct{} // one request of the core at a time
+	helloMu   sync.Mutex    // one hello exchange at a time (the loop's and a turn's Refresh)
 
 	// The link starts with the first request of the core, not with the process:
 	// an actor is also booted to be snapshotted before it has a wake, and the key
@@ -133,6 +134,19 @@ func (l *Link) Actor() string {
 // (`tasks: true`). A core that does not say so, or has not been heard yet, has
 // none, and the spot does not offer start_task.
 func (l *Link) TasksOffered() bool { return l.tasks.Load() }
+
+// Refresh says hello to the core again and takes the new access token (it is
+// written to the token file the MCP client reads on every request). The turn
+// that finds the core refusing its token calls it: an actor resumed from a
+// suspend can hold a token the core has revoked since, and the hello is what
+// replaces it. One hello runs at a time; a caller that waits behind another
+// takes that one's token.
+func (l *Link) Refresh(ctx context.Context) error {
+	if err := l.open(); err != nil {
+		return err
+	}
+	return l.connect(ctx)
+}
 
 // WaitReady blocks until the first hello is done: the spot has its access token,
 // the link is connected and the schedule is with the core.
@@ -502,6 +516,8 @@ type linkIn struct {
 // connect does what the spot's certificate calls for, in as many exchanges as
 // it takes: join, or renew, then hello. It returns nil when hello was accepted.
 func (l *Link) connect(ctx context.Context) error {
+	l.helloMu.Lock()
+	defer l.helloMu.Unlock()
 	id := l.cert.ID
 	for range 3 {
 		nonce := make([]byte, 32)

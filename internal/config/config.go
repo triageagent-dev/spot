@@ -266,7 +266,7 @@ func Parse(args []string, out io.Writer) (Config, error) {
 	fs.DurationVar(&c.ToolTimeout, "tool-timeout", 60*time.Second, "cap on one tool call; past it the model gets an error result")
 	fs.IntVar(&c.ToolResultMax, "tool-result-max-bytes", 12288, "cap on the bytes of one tool result the model sees; a longer one is cut and says so")
 	fs.Int64Var(&c.HourlyTokenCeil, "hourly-token-ceiling", 600_000, "tokens in any rolling hour after which no wake starts until the hour has room again; 0 disables the ceiling")
-	fs.BoolVar(&c.SkipQuietWakes, "skip-quiet-wakes", true, "end a startup or timer wake without a model call when it has no facts and the core shows no open issue (a wake a person or the agent asked for still runs)")
+	fs.BoolVar(&c.SkipQuietWakes, "skip-quiet-wakes", true, "end a startup or timer wake without a model call when it has no facts and the core shows no open issue (a wake a person or the agent asked for still runs), and a timer wake that follows one whose turn only read the room")
 	fs.Int64Var(&c.DailyTokenCeil, "daily-token-ceiling", 2_000_000, "tokens per UTC day after which no wake starts; 0 disables the ceiling")
 	fs.DurationVar(&c.PollInterval, "poll-interval", 30*time.Second, "how often the core is polled for edges between turns; with --core-api-url only while the trigger stream is down")
 	fs.DurationVar(&c.EdgeCooldown, "edge-cooldown", time.Minute, "minimum gap between the end of a turn and an edge wake")

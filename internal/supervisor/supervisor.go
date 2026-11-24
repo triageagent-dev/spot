@@ -355,7 +355,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			orderedWake = pend != nil && s.cfg.Substrate()
 		}
 		if pend == nil && s.selfWakeDue() {
-			pend = &pending{reason: prompt.Tick, scheduledBy: s.scheduledWhy}
+			pend = &pending{reason: prompt.Tick, scheduledBy: s.askedBy(s.scheduledWhy)}
 		}
 		if pend != nil {
 			if s.paused() {
@@ -484,6 +484,9 @@ func (s *Supervisor) ordered() *pending {
 			return nil
 		}
 		s.log.Info("the core asks for a wake", "reason", o.Reason)
+		if o.Reason == "tick" {
+			why = s.askedBy(why)
+		}
 		return &pending{reason: prompt.Tick, scheduledBy: why}
 	}
 	switch o.Reason {
@@ -503,6 +506,7 @@ func (s *Supervisor) ordered() *pending {
 		if why == "" {
 			why = s.scheduledWhy
 		}
+		why = s.askedBy(why)
 	default:
 		s.log.Debug("a wake of a reason the spot does not know is dropped", "reason", o.Reason)
 		return nil
@@ -820,6 +824,7 @@ func (s *Supervisor) idleWake(reason, why, source string) {
 		s.nextTick, s.scheduledWhy = e.At, e.Why
 	}
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: s.scheduledWhy, Source: source}
+	s.notePlan(source, nil)
 	s.reportWake(reason, LaneLong, source, agent.Result{}, s.nextTick, source)
 	s.setState("idle")
 }
@@ -942,14 +947,101 @@ func turnOutcome(failed bool) string {
 // model call: every step of a turn sends the whole prompt again, and a spot that
 // is woken for nothing would read its notes and go looking. An event, a message
 // or the wake the agent asked for still runs a turn.
+//
+// Two more wakes are quiet. One carried only facts that are no longer true (an
+// issue that closed before the wake ran): its edges are still there, its facts
+// are not, and there is nothing to show the model. The other follows a timer
+// wake whose turn did nothing (idleTurn): the model looked and found nothing,
+// so until something changes it is not asked again, open issue or not, for
+// idleReview.
 func (s *Supervisor) quiet(ctx context.Context, reason prompt.Reason, p *pending, asked bool) bool {
-	if !s.cfg.SkipQuietWakes || asked || (reason != prompt.Startup && reason != prompt.Tick) || len(p.facts) > 0 || len(p.edges) > 0 {
+	if !s.cfg.SkipQuietWakes || asked || (reason != prompt.Startup && reason != prompt.Tick) || len(p.facts) > 0 || hasMessage(p.edges) {
 		return false
+	}
+	if s.idleNow() {
+		return true
 	}
 	qctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	issues, err := s.core.ListOpenIssues(qctx)
 	return err == nil && len(issues) == 0
+}
+
+// idleReview is how long after a turn that did nothing the timer wakes stay
+// without a model call. After it the model looks again, once.
+const idleReview = 12 * time.Hour
+
+// idleNow reports whether the last timer wake's turn did nothing and that was
+// less than idleReview ago. It is read from the state directory: a process
+// started for one wake (an actor) holds nothing else of the wake before.
+func (s *Supervisor) idleNow() bool {
+	sess := s.led.LoadSession()
+	return sess.Idle > 0 && sess.LastTurn > 0 && s.now().Sub(time.UnixMilli(sess.LastTurn)) < idleReview
+}
+
+// askedBy is the reason a timer wake is the agent's own: why, when the plan it
+// belongs to was the model's and its last turn did something. A plan the
+// supervisor made (quiet, backoff, a default) was asked for by nobody, and
+// neither is the wake a model planned at the end of a turn that did nothing:
+// such a wake only repeats the look. The core sends the words of the plan with
+// its order and not who made it, so this is read from the state directory.
+func (s *Supervisor) askedBy(why string) string {
+	sess := s.led.LoadSession()
+	switch schedule.Source(sess.PlanSource) {
+	case "", schedule.SourceAgent, schedule.SourceClamped:
+	default:
+		return ""
+	}
+	if s.idleNow() {
+		return ""
+	}
+	return why
+}
+
+// notePlan keeps who made the plan the next timer wake belongs to.
+func (s *Supervisor) notePlan(source string, change func(*ledger.Session)) {
+	sess := s.led.LoadSession()
+	sess.PlanSource = source
+	if change != nil {
+		change(&sess)
+	}
+	if err := s.led.SaveSession(sess); err != nil {
+		s.log.Error("saving session", "err", err)
+	}
+}
+
+// hasMessage reports whether a wake carries something a person or Tria wrote.
+func hasMessage(es []heldEdge) bool {
+	for _, e := range es {
+		if e.Kind == edges.Message {
+			return true
+		}
+	}
+	return false
+}
+
+// lightTools are the calls of a turn that did nothing: it read its room and
+// planned its next wake.
+var lightTools = map[string]bool{"read_workspace_room": true, "schedule_next": true, "finish": true}
+
+// idleTurn reports whether a turn's tool calls were all of lightTools.
+func idleTurn(res agent.Result) bool {
+	for _, st := range res.Trace {
+		if st.Kind == "cut" {
+			return false
+		}
+		if st.Kind != "tool" {
+			continue
+		}
+		name := st.Name
+		if i := strings.LastIndex(name, "__"); i >= 0 {
+			name = name[i+2:]
+		}
+		if !lightTools[name] {
+			return false
+		}
+	}
+	return res.Steps > 0
 }
 
 // currentFacts drops what the wake need not show: the same fact twice, and a
@@ -1990,6 +2082,20 @@ func (s *Supervisor) turn(ctx context.Context, p *pending) {
 	s.kept = plan.Kept
 	s.setPromises(plan.Promises)
 	s.status.NextWake = &Next{At: s.nextTick.UTC().Format(time.RFC3339), Why: w.Why, Source: string(w.Source), Note: w.Note}
+	s.notePlan(string(w.Source), func(sess *ledger.Session) {
+		if failed {
+			return
+		}
+		sess.LastTurn = s.now().UnixMilli()
+		// A timer wake nobody wrote to, with nothing to show, whose turn only
+		// read the room: the next timer wake is not the agent's to ask for.
+		if p.reason == prompt.Tick && !asked && len(p.facts) == 0 && idleTurn(res) {
+			sess.Idle++
+			s.log.Info("the turn did nothing: timer wakes make no model call until something changes", "idle", sess.Idle)
+		} else {
+			sess.Idle = 0
+		}
+	})
 	s.reportWake(string(p.reason), LaneLong, turnOutcome(failed), res, s.nextTick, string(w.Source))
 	if !failed {
 		s.addDigest(p.reason, res)
