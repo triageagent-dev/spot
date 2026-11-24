@@ -417,16 +417,17 @@ func (s *Supervisor) primeRooms(ctx context.Context) {
 	s.hold(s.pollRooms(pctx, cold...))
 }
 
-// withRooms reads the rooms for a wake the core ordered from an actor and adds
-// what it finds to that wake. The core's request may have come with no usable
-// token, which the actor answers with a plain tick that reads nothing of it:
-// what was said in the rooms is then a fact of this wake, not of a wake that may
-// never come. The wake keeps its reason and the words it was ordered with.
+// withRooms reads the rooms and the open issues for a wake the core ordered
+// from an actor and adds what it finds to that wake. The core's request may
+// have come with no usable token, which the actor answers with a plain tick
+// that reads nothing of it: what was said in the rooms is then a fact of this
+// wake, not of a wake that may never come. An issue that changed while the
+// actor was suspended is a fact of this wake too: read only after the turn, it
+// started a second turn a few seconds later, with the whole prompt again. The
+// wake keeps its reason and the words it was ordered with.
 func (s *Supervisor) withRooms(ctx context.Context, p *pending) {
-	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	now := s.now()
-	for _, e := range s.pollRooms(pctx, BusRoom) {
+	for _, e := range s.poll(ctx) {
 		p.facts = append(p.facts, e.Fact)
 		p.edges = append(p.edges, heldEdge{Edge: e, at: now})
 		if e.Human {
