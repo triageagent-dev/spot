@@ -1777,6 +1777,21 @@ func TestAPersonsMessageDuringATurnIsHandedToIt(t *testing.T) {
 	}
 }
 
+// The core names the rooms with news, among them rooms the spot does not read.
+func TestARoomTheSpotDoesNotReadDuringATurnIsIgnored(t *testing.T) {
+	h, trig, g := midTurn(t)
+	defer h.stop()
+	h.post("bus", say("alice", "alice", "@example-spot and also the cart"))
+	trig.say(triggers.Pending{Rooms: []string{"team", "agents", "bus"}})
+	h.waitFor("the bus message to reach the running turn", func() bool { return len(g.injected()) == 1 })
+	g.set(func() { g.gated = false })
+	close(g.release)
+	h.waitIdle(2)
+	if h.status().State != "idle" {
+		t.Fatalf("state %q", h.status().State)
+	}
+}
+
 func TestAMessageTheTurnDoesNotTakeWakesTheAgentAfterIt(t *testing.T) {
 	h, trig, g := midTurn(t)
 	defer h.stop()

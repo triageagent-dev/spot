@@ -1471,7 +1471,11 @@ func (s *Supervisor) saveCursors() {
 
 // pollRoom reads one room. It returns the edges and whether the cursor moved.
 func (s *Supervisor) pollRoom(ctx context.Context, room string) ([]edges.Edge, bool) {
-	rs := s.rooms[room]
+	rs, ok := s.rooms[room]
+	if !ok {
+		// The core names every room with news. The spot reads only its own.
+		return nil, false
+	}
 	if s.now().Before(rs.disabled) {
 		return nil, false
 	}
