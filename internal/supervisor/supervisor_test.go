@@ -2405,6 +2405,36 @@ func TestATickOfAnActorReadsTheRooms(t *testing.T) {
 	}
 }
 
+// An issue that changed while the actor was suspended rides with the tick that
+// wakes it: one turn, not a tick turn and then a second turn for the change.
+func TestATickOfAnActorCarriesTheIssueThatChanged(t *testing.T) {
+	trig := newFakeTrigger(true)
+	h := newHarness(t, func(c *config.Config) {
+		c.Runtime = config.RuntimeSubstrate
+		c.PollInterval = 5 * time.Millisecond
+	})
+	h.trig = trig
+	h.core.setIssues(issue("a", "warning", 0))
+	h.set("next", `{"after":"2h"}`)
+	h.start()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(1)
+	h.stop()
+
+	h.core.setIssues(issue("a", "critical", 0))
+	h.start()
+	defer h.stop()
+	trig.say(triggers.Pending{Order: &triggers.Order{Reason: "tick"}})
+	h.waitIdle(2)
+	if in := h.file("stdin", 2); !strings.Contains(in, "Wake reason: tick") || !strings.Contains(in, `severity "warning" -> "critical"`) {
+		t.Fatalf("the tick must carry the change:\n%s", in)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if h.turns() != 2 {
+		t.Fatalf("the change started a turn of its own: %d turns", h.turns())
+	}
+}
+
 // What a wake was ordered for is not lost to what was said in a room: the
 // promise is still the reason, and the line in the room comes with it.
 func TestAPromisedWakeKeepsItsWordsWhenARoomHasNews(t *testing.T) {
